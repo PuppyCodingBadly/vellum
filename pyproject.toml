@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vellum"
+version = "0.1.0"
+description = "A calibre-like ebook library manager"
+requires-python = ">=3.11"
+dependencies = ["requests", "PyGObject"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

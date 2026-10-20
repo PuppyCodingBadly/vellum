@@ -1,0 +1,49 @@
+# Vellum Flatpak manifest.
+#
+# Build with (run from the repository root):
+#   flatpak-builder --user --install --force-clean build flatpak/io.github.vellum.Vellum.yml
+#
+# Note: flatpak-builder resolves relative module source paths against the
+# directory containing this manifest (flatpak/), hence the "../.." and
+# "../data/..." paths below.
+
+app-id: io.github.vellum.Vellum
+runtime: org.gnome.Platform
+# If the 48 runtime is not yet available on your system, 47 works too:
+#   flatpak install org.gnome.Platform//47 org.gnome.Sdk//47
+# and change the version below to "47".
+runtime-version: "48"
+sdk: org.gnome.Sdk
+command: vellum
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --share=network
+  # Needed so users can import books from their Documents folder.
+  - --filesystem=xdg-documents
+
+modules:
+  - name: python3-requests
+    buildsystem: simple
+    build-commands:
+      - pip install --prefix=/app urllib3
+      - pip install --prefix=/app charset-normalizer
+      - pip install --prefix=/app idna
+      - pip install --prefix=/app certifi
+      - pip install --prefix=/app requests
+
+  - name: vellum
+    buildsystem: simple
+    build-commands:
+      # Installs the src-layout package and the `vellum` entry point
+      # defined in pyproject.toml at the repository root.
+      - pip install --prefix=/app --no-build-isolation .
+      # Desktop integration files live in ../data relative to this
+      # manifest; install them into the sandbox share dir.
+      - install -Dm644 ../data/io.github.vellum.Vellum.desktop ${FLATPAK_DEST}/share/applications/io.github.vellum.Vellum.desktop
+      - install -Dm644 ../data/io.github.vellum.Vellum.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.vellum.Vellum.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..

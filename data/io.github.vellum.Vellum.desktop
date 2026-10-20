@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Vellum
+Comment=Manage your ebook library
+Exec=vellum
+Icon=io.github.vellum.Vellum
+Type=Application
+Categories=Office;Utility;
+Keywords=ebook;books;library;metadata;
+StartupNotify=true

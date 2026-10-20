@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.vellum.Vellum</id>
+  <name>Vellum</name>
+  <summary>A modern ebook library manager</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      Vellum is a calibre-inspired ebook library manager with a modern
+      GTK4/Libadwaita user interface. Organize your ebook collection, edit
+      metadata, and keep your library tidy.
+    </p>
+    <p>
+      Vellum supports calibre metadata-source plugins, so the rich ecosystem
+      of community plugins works out of the box, and it can fetch metadata
+      and covers online from sources such as Google Books and OpenLibrary.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.vellum.Vellum.desktop</launchable>
+  <developer>
+    <name>Vellum contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-19"/>
+  </releases>
+</component>
