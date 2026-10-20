@@ -23,6 +23,8 @@ from gi.repository import GdkPixbuf  # noqa: E402
 
 THUMB_MAX_WIDTH = 320
 THUMB_MAX_HEIGHT = 480
+MAX_COVER_BYTES = 25 * 1024 * 1024
+MAX_COVER_PIXELS = 80_000_000
 
 
 def thumb_cache_path(data_dir: str, book_id: int, cover_path: str) -> str:
@@ -57,6 +59,16 @@ def thumb_path(data_dir: str, book_id: int, cover_path: str) -> str:
                 return thumb
         except OSError:
             pass
+
+        try:
+            if os.path.getsize(cover_path) > MAX_COVER_BYTES:
+                return cover_path
+            info = GdkPixbuf.Pixbuf.get_file_info(cover_path)
+            _fmt, width, height = info
+        except Exception:
+            return cover_path
+        if not width or not height or width * height > MAX_COVER_PIXELS:
+            return cover_path
 
         pixbuf = GdkPixbuf.Pixbuf.new_from_file(cover_path)
         src_w = pixbuf.get_width()

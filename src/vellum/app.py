@@ -12,10 +12,14 @@ import os
 import sys
 import threading
 
-# WebKitGTK's DMA-BUF renderer has crashed the compositor on some Intel
-# GPUs (notably Surface Go 2-class hardware). Use the shared-memory path
-# instead; EPUB/MOBI pages still render with the software compositor.
+# WebKitGTK's DMA-BUF renderer and GPU compositing have crashed the
+# compositor on some Intel GPUs (notably Surface Go 2-class hardware).
+# Use WebKit's software/Cairo path instead; EPUB/MOBI pages still render.
 os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+# GTK's GL renderer is another driver-facing path. Cairo rendering is
+# slower but cannot take down the session via a GPU driver bug.
+os.environ.setdefault("GSK_RENDERER", "cairo")
 
 if __package__ in (None, ""):
     sys.path.insert(
@@ -36,7 +40,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.4"
+    __version__ = "0.1.5"
 
 logger = logging.getLogger(__name__)
 

@@ -74,7 +74,7 @@ def import_calibre_library(
     if not db_path.is_file():
         raise ValueError(f"no metadata.db in {folder}")
 
-    db = _open_database(db_path)
+    db = _open_database(db_path, _snapshot_root(library))
     conn = db.conn
     try:
         if not _has_table(conn, "books"):
@@ -125,7 +125,9 @@ class _OpenedDatabase:
                 self._tempdir.cleanup()
 
 
-def _open_database(db_path: Path) -> _OpenedDatabase:
+def _open_database(
+    db_path: Path, temp_root: Path | None = None
+) -> _OpenedDatabase:
     """Open a calibre database through a writable snapshot.
 
     Calibre libraries are commonly read-only to the app (Flatpak's
@@ -136,7 +138,10 @@ def _open_database(db_path: Path) -> _OpenedDatabase:
     private temporary directory sidesteps locking, WAL, and FUSE quirks;
     the calibre library itself is never modified.
     """
-    tempdir = tempfile.TemporaryDirectory(prefix="vellum-calibre-")
+    tempdir = tempfile.TemporaryDirectory(
+        prefix="vellum-calibre-",
+        dir=str(temp_root) if temp_root is not None else None,
+    )
     try:
         dest = Path(tempdir.name) / "metadata.db"
         shutil.copy2(db_path, dest)
@@ -154,6 +159,16 @@ def _open_database(db_path: Path) -> _OpenedDatabase:
     except Exception:
         tempdir.cleanup()
         raise
+
+
+def _snapshot_root(library: Library) -> Path | None:
+    """Prefer a disk-backed temp dir over Flatpak's RAM-backed /tmp."""
+    try:
+        root = library.base_dir / "tmp" / "calibre"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError:
+        return None
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:

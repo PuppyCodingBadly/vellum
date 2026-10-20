@@ -23,6 +23,15 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.5" date="2026-10-19">
+      <description>
+        <p>Stability hardening for low-memory and Intel-GPU systems:
+        software rendering for GTK and WebKit, GdkPixbuf-only thumbnail
+        generation off the main thread, bounded cover downloads and image
+        decoding, and disk-backed calibre database snapshots. Includes the
+        0.1.4 universal metadata grabber.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-19">
       <description>
         <p>Add a universal metadata grabber: paste any book page URL and

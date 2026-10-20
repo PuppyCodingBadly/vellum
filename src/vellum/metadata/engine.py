@@ -11,6 +11,8 @@ from vellum.metadata.sources.base import Metadata, MetadataSource
 
 log = logging.getLogger(__name__)
 
+MAX_COVER_BYTES = 10 * 1024 * 1024
+
 
 class MetadataEngine:
     """Queries registered metadata sources and merges results.
@@ -144,12 +146,23 @@ class MetadataEngine:
                 meta.cover_url,
                 timeout=15,
                 headers={"User-Agent": "Vellum/0.1 metadata grabber"},
+                stream=True,
             )
             resp.raise_for_status()
             content_type = (resp.headers.get("Content-Type") or "").lower()
             if content_type and not content_type.startswith("image/"):
                 return None
-            return resp.content
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in resp.iter_content(64 * 1024):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_COVER_BYTES:
+                    return None
+                chunks.append(chunk)
+            resp.close()
+            return b"".join(chunks)
         except Exception as exc:
             log.warning("Cover fetch from %s failed: %s", meta.cover_url, exc)
             return None

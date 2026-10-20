@@ -265,3 +265,29 @@ def test_broken_optional_table_does_not_fail_book(lib, calibre_library):
     assert result.added == 1
     assert result.failed == 0
     assert lib.all_books(include_hidden=True)[0].tags == []
+
+
+def test_snapshot_uses_disk_backed_temp_dir(lib, calibre_library, monkeypatch):
+    import tempfile
+
+    from vellum.core import calibre
+
+    dirs = []
+    original = tempfile.TemporaryDirectory
+
+    class RecordingTempDir:
+        def __init__(self, *args, **kwargs):
+            dirs.append(kwargs.get("dir"))
+            self._inner = original(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def cleanup(self):
+            self._inner.cleanup()
+
+    monkeypatch.setattr(
+        calibre.tempfile, "TemporaryDirectory", RecordingTempDir
+    )
+    import_calibre_library(lib, str(calibre_library))
+    assert dirs == [str(lib.base_dir / "tmp" / "calibre")]
