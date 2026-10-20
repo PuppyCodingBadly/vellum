@@ -39,6 +39,35 @@ def test_thumb_created_and_scaled(tmp_path):
     assert (width, height) == (320, 480)
 
 
+def test_thumb_contains_rendered_pixels(tmp_path):
+    cover = tmp_path / "cover.png"
+    _make_cover(cover)
+    thumb = thumb_path(str(tmp_path), 5, str(cover))
+    surface = cairo.ImageSurface.create_from_png(thumb)
+    data = bytes(surface.get_data())
+    stride = surface.get_stride()
+    width = surface.get_width()
+    height = surface.get_height()
+    center = (height // 2) * stride + (width // 2) * 4
+    # Premultiplied ARGB32: opaque blue-ish fill from _make_cover.
+    assert data[center + 3] == 255
+    assert data[center:center + 3] != b"\x00\x00\x00"
+
+
+def test_thumb_paths_are_unique_across_libraries(tmp_path):
+    # Book ids are per-library; the same id with a different cover must
+    # not reuse another library's thumbnail.
+    cover_a = tmp_path / "a.png"
+    cover_b = tmp_path / "b.png"
+    _make_cover(cover_a)
+    _make_cover(cover_b)
+    thumb_a = thumb_path(str(tmp_path), 1, str(cover_a))
+    thumb_b = thumb_path(str(tmp_path), 1, str(cover_b))
+    assert thumb_a != thumb_b
+    assert os.path.isfile(thumb_a)
+    assert os.path.isfile(thumb_b)
+
+
 def test_thumb_regenerates_on_newer_source(tmp_path):
     cover = tmp_path / "cover.png"
     _make_cover(cover)

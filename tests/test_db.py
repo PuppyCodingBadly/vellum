@@ -230,3 +230,12 @@ def test_import_epub_isbn_via_opf_scheme(lib, tmp_path):
     assert book.isbn == "9780306406157"
     assert book.title == "Scheme ISBN Book"
     assert book.authors == ["Jane Author"]
+
+
+def test_memory_library_roundtrip():
+    library = Library(":memory:")
+    library.open()
+    book = Book(title="Memory Book", authors=["Ada"])
+    book_id = library.add_book(book)
+    assert library.get_book(book_id).title == "Memory Book"
+    library.close()

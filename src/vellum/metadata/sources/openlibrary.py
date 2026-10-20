@@ -25,7 +25,14 @@ class OpenLibrary(MetadataSource):
         isbn: str = "",
         timeout: float = 15.0,
     ) -> list[Metadata]:
-        params: dict = {"limit": 20}
+        params: dict = {
+            "limit": 20,
+            # Without an explicit fields list the search API omits ISBNs.
+            "fields": (
+                "key,title,author_name,first_publish_year,publisher,"
+                "language,subject,cover_i,isbn"
+            ),
+        }
         if title:
             params["title"] = title
         authors = authors or []

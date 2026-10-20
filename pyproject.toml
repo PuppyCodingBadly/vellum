@@ -7,7 +7,10 @@ name = "vellum"
 version = "0.1.0"
 description = "A calibre-like ebook library manager"
 requires-python = ">=3.11"
-dependencies = ["requests", "PyGObject"]
+dependencies = ["requests", "PyGObject", "beautifulsoup4"]
+
+[project.scripts]
+vellum = "vellum.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

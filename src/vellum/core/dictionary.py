@@ -61,7 +61,7 @@ def _lookup_dictionaryapi(word: str, language: str) -> dict | None:
         return _normalize_entry(data[0])
     except requests.RequestException as exc:
         log.warning("dictionary lookup failed for %r: %s", word, exc)
-    except (IndexError, KeyError, TypeError, ValueError) as exc:
+    except (IndexError, KeyError, TypeError, ValueError, AttributeError) as exc:
         log.warning("dictionary: could not parse entry for %r: %s", word, exc)
     return None
 

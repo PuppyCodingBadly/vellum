@@ -120,6 +120,13 @@ class VellumWindow(Adw.ApplicationWindow):
     def show_toast(self, message: str) -> None:
         self.toast_overlay.add_toast(Adw.Toast(title=message, timeout=3))
 
+    def add_store(self, adapter) -> None:
+        """Register a store plugin installed while the window is open."""
+        if any(getattr(s, "name", None) == adapter.name for s in self.stores):
+            return
+        self.stores.append(adapter)
+        self.store_view.add_store(adapter)
+
     # -- internals --------------------------------------------------------------
 
     def _on_search_changed(self, _entry: Gtk.SearchEntry) -> None:

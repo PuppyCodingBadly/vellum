@@ -20,6 +20,10 @@ class PluginManager:
         self._adapters: dict[str, object] = {}
         self._zip_paths: dict[str, str] = {}
 
+    @property
+    def plugin_dir(self) -> str:
+        return self._plugin_dir
+
     def load_all(self):
         from vellum.core.store import is_store_plugin
 
@@ -32,6 +36,8 @@ class PluginManager:
                     continue
                 try:
                     self._load_path(path, copy=False)
+                except ValueError as exc:
+                    log.warning("skipping plugin %s: %s", path, exc)
                 except Exception:
                     log.exception("failed to load plugin %s", path)
 

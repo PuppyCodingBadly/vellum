@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.parse
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -13,7 +14,7 @@ from vellum.core.models import Book
 
 log = logging.getLogger(__name__)
 
-SUPPORTED = {".epub", ".mobi", ".azw3", ".pdf", ".cbz"}
+SUPPORTED = {".epub", ".mobi", ".pdf"}
 
 _DC = "{http://purl.org/dc/elements/1.1/}"
 _CONTAINS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
@@ -185,8 +186,13 @@ def _find_cover(
     if not href:
         return None
 
-    full = os.path.normpath(os.path.join(opf_dir, href)) if opf_dir else href
+    decoded = urllib.parse.unquote(href)
+    full = os.path.normpath(os.path.join(opf_dir, decoded)) if opf_dir else decoded
     full = full.replace("\\", "/")
+    if full not in names:
+        # Some EPUBs keep the encoded form as the ZIP entry name.
+        full = os.path.normpath(os.path.join(opf_dir, href)) if opf_dir else href
+        full = full.replace("\\", "/")
     if full not in names:
         return None
     data = zf.read(full)

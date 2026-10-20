@@ -70,8 +70,16 @@ class Library:
 
     def __init__(self, path: str) -> None:
         self.path = path
+        self._memory_conn: sqlite3.Connection | None = None
 
     def _connect(self) -> sqlite3.Connection:
+        if self.path == ":memory:":
+            # Every connection to :memory: is a separate database, so an
+            # in-memory library must reuse one connection.
+            if self._memory_conn is None:
+                self._memory_conn = sqlite3.connect(":memory:")
+                self._memory_conn.execute("PRAGMA foreign_keys = ON")
+            return self._memory_conn
         conn = sqlite3.connect(self.path)
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
@@ -81,8 +89,11 @@ class Library:
             conn.executescript(_SCHEMA)
 
     def close(self) -> None:
-        # Connections are per-method; nothing persistent to close.
-        pass
+        # File-backed connections are per-method; only the in-memory
+        # connection persists.
+        if self._memory_conn is not None:
+            self._memory_conn.close()
+            self._memory_conn = None
 
     # -- helpers -----------------------------------------------------------
 

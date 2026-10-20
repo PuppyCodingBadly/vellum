@@ -8,6 +8,7 @@ regenerated whenever the source cover is newer.
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 import gi
@@ -15,10 +16,23 @@ import gi
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk  # noqa: E402
 
-import cairo  # noqa: E402
-
 THUMB_MAX_WIDTH = 320
 THUMB_MAX_HEIGHT = 480
+
+
+def thumb_cache_path(data_dir: str, book_id: int, cover_path: str) -> str:
+    """Return the thumbnail path for a book's cover without generating it.
+
+    Book ids are only unique within a library, so the source path is
+    hashed into the filename; two libraries can then never share a
+    thumbnail for different books with the same id.
+    """
+    digest = hashlib.sha1(
+        os.path.realpath(cover_path).encode("utf-8", "surrogateescape")
+    ).hexdigest()[:12]
+    return os.path.join(
+        data_dir, "covers", "thumbs", f"{book_id}-{digest}.png"
+    )
 
 
 def thumb_path(data_dir: str, book_id: int, cover_path: str) -> str:
@@ -28,10 +42,14 @@ def thumb_path(data_dir: str, book_id: int, cover_path: str) -> str:
     On any failure the original ``cover_path`` is returned instead.
     """
     try:
+        import cairo
+    except ImportError:
+        return cover_path
+    try:
         if not cover_path or not os.path.isfile(cover_path):
             return cover_path
         thumbs_dir = os.path.join(data_dir, "covers", "thumbs")
-        thumb = os.path.join(thumbs_dir, f"{book_id}.png")
+        thumb = thumb_cache_path(data_dir, book_id, cover_path)
         try:
             if os.path.getmtime(thumb) >= os.path.getmtime(cover_path):
                 return thumb
@@ -48,9 +66,11 @@ def thumb_path(data_dir: str, book_id: int, cover_path: str) -> str:
         dst_h = max(1, round(src_h * scale))
 
         # Download as BGRA premultiplied (== native-endian ARGB32).
-        stride = src_w * 4
-        buf = bytearray(stride * src_h)
-        texture.download(buf, stride)  # GDK_MEMORY_DEFAULT format
+        # Gdk.Texture.download() treats its array as input in PyGObject,
+        # so use the downloader's returned GLib.Bytes instead.
+        downloader = Gdk.TextureDownloader.new(texture)
+        pixels, stride = downloader.download_bytes()
+        buf = bytearray(pixels.get_data())
         src = cairo.ImageSurface.create_for_data(
             buf, cairo.FORMAT_ARGB32, src_w, src_h, stride
         )

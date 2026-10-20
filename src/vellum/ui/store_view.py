@@ -33,6 +33,18 @@ class StoreView(Gtk.Box):
         self._stores = list(stores or [])
         self._library = library
         self._window = window
+        self._build()
+
+    def add_store(self, adapter) -> None:
+        """Add a newly installed store plugin without restarting."""
+        if any(getattr(s, "name", None) == adapter.name for s in self._stores):
+            return
+        self._stores.append(adapter)
+        self._build()
+
+    def _build(self) -> None:
+        while (child := self.get_first_child()) is not None:
+            self.remove(child)
         self._searching = False
         self._store_picker: Gtk.DropDown | None = None
 
@@ -266,17 +278,22 @@ class StoreView(Gtk.Box):
                 self._on_download_error, button, f"Download failed: {exc}"
             )
             return
+        # Resolve at import time: the user may have switched libraries
+        # while the download was running.
+        library = getattr(self._window, "library", None) or self._library
         try:
             from vellum.core.importer import import_path
 
-            ids = import_path(self._library, path)
+            ids = import_path(library, path)
         except Exception as exc:
             logger.warning("Import failed: %s", exc)
             GLib.idle_add(
                 self._on_download_error, button, f"Import failed: {exc}"
             )
             return
-        GLib.idle_add(self._on_download_ok, button, fetched, bool(ids))
+        GLib.idle_add(
+            self._on_download_ok, button, fetched, bool(ids), library
+        )
 
     def _download_file(self, result) -> str:
         import requests
@@ -309,8 +326,15 @@ class StoreView(Gtk.Box):
         self._toast(message)
         return GLib.SOURCE_REMOVE
 
-    def _on_download_ok(self, button, result, imported: bool) -> bool:
+    def _on_download_ok(self, button, result, imported: bool,
+                        library=None) -> bool:
         self._restore_button(button)
+        current = getattr(self._window, "library", None)
+        if imported and current is not None and library is not current:
+            self._toast(
+                f"Added {result.title or 'book'} to the previous library"
+            )
+            return GLib.SOURCE_REMOVE
         if imported:
             self._toast(f"Added {result.title or 'book'} to library")
             try:

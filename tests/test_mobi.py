@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import struct
+from xml.etree import ElementTree
 
 import pytest
 
@@ -12,21 +13,24 @@ from vellum.core.mobi import MobiBook
 _TEXT = (
     b"<h1>Alpha</h1><p>one</p>"
     b"<mbp:pagebreak/>"
-    b'<h1>Beta</h1><p>two</p><img recindex="3"/>'
+    b'<h1>Beta</h1><p>two</p><img recindex="1"/>'
 )
 _GIF = b"GIF89a" + b"\x01\x00\x01\x00\x80\x00\x00" + b"\x00" * 16
 
 
-def _make_mobi(path):
+def _make_mobi(path, text=_TEXT, encoding=65001):
     """Build a minimal uncompressed MOBI with 2 text records + 1 GIF image."""
-    rec1 = _TEXT[: len(_TEXT) // 2]
-    rec2 = _TEXT[len(_TEXT) // 2:]
+    if isinstance(text, str):
+        text = text.encode("utf-8")
+    rec1 = text[: len(text) // 2]
+    rec2 = text[len(text) // 2:]
 
     # Record 0: PalmDOC header (16 bytes) + MOBI header.
-    palmdoc = struct.pack(">HHIHHHH", 1, 0, len(_TEXT), 2, 4096, 0, 0)
+    palmdoc = struct.pack(">HHIHHHH", 1, 0, len(text), 2, 4096, 0, 0)
     mobi = bytearray(0x70)
     mobi[0:4] = b"MOBI"
     struct.pack_into(">I", mobi, 4, 0xE8)          # header length
+    struct.pack_into(">I", mobi, 0x0C, encoding)    # text encoding
     struct.pack_into(">I", mobi, 0x50, 3)           # first non-book index
     struct.pack_into(">I", mobi, 0x6C, 3)           # first image index
     rec0 = palmdoc + bytes(mobi)
@@ -67,12 +71,19 @@ def test_section_html_contents_and_img_rewrite(tmp_path):
 
     html0 = mobi.section_html(0)
     assert "Alpha" in html0 and "one" in html0
-    assert html0.startswith("<?xml")
+    assert html0.startswith("<!DOCTYPE html")
 
     html1 = mobi.section_html(1)
     assert "Beta" in html1
     assert 'recindex="' not in html1
     assert os.path.join(dest, "img-3.gif") in html1
+    ElementTree.fromstring(html1)  # generated markup must be well-formed
+
+
+def test_text_encoding_cp1252(tmp_path):
+    text = "<h1>Café</h1><p>one</p>".encode("cp1252")
+    mobi = MobiBook(_make_mobi(tmp_path / "cp1252.mobi", text, encoding=1252))
+    assert "Café" in mobi.section_html(0)
 
 
 def test_extract_to_idempotent(tmp_path):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 
 import gi
 
@@ -75,7 +77,19 @@ class PluginsView(Gtk.Box):
         for info in plugins:
             self._list.append(self._build_row(info))
 
-        self._stack.set_visible_child_name("list" if plugins else "empty")
+        stores = list(getattr(self._window, "stores", []) or [])
+        for store in stores:
+            self._list.append(self._build_store_row(store))
+
+        self._stack.set_visible_child_name(
+            "list" if plugins or stores else "empty"
+        )
+
+    def _build_store_row(self, store) -> Adw.ActionRow:
+        name = str(getattr(store, "name", "") or "Unnamed store")
+        description = str(getattr(store, "description", "") or "")
+        subtitle = f"Store plugin · {description}" if description else "Store plugin"
+        return Adw.ActionRow(title=name, subtitle=subtitle)
 
     # -- internals ----------------------------------------------------------
 
@@ -124,6 +138,30 @@ class PluginsView(Gtk.Box):
         if not path:
             self._toast("Only local plugin files are supported")
             return
+
+        from vellum.core.store import is_store_plugin, load_store_plugin
+
+        if is_store_plugin(path):
+            dest = os.path.join(
+                self._manager.plugin_dir, os.path.basename(path)
+            )
+            try:
+                if os.path.abspath(path) != os.path.abspath(dest):
+                    shutil.copy2(path, dest)
+                adapter = load_store_plugin(dest)
+            except Exception as exc:
+                self._toast(f"Failed to load store plugin: {exc}")
+                return
+            if adapter is None:
+                self._toast("Failed to load store plugin")
+                return
+            self._window.add_store(adapter)
+            self._toast(
+                f"Loaded store plugin '{adapter.name}' — see Get Books"
+            )
+            self.refresh()
+            return
+
         try:
             name = self._manager.load(path)
         except Exception as exc:

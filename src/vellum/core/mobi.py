@@ -6,6 +6,7 @@ import os
 import re
 import struct
 import tempfile
+from pathlib import Path
 
 _PDB_HEADER_LEN = 78
 _MOBI_HEADER_OFF = 16  # MOBI header starts after the 16-byte PalmDOC header
@@ -111,6 +112,7 @@ class MobiBook:
         mobi = rec0[_MOBI_HEADER_OFF:]
         if mobi[0:4] != b"MOBI":
             raise ValueError("missing MOBI header")
+        encoding = struct.unpack(">I", mobi[0x0C:0x10])[0]
         self._first_non_book = struct.unpack(
             ">I", mobi[_FIRST_NON_BOOK_OFF:_FIRST_NON_BOOK_OFF + 4])[0]
         self._first_image = struct.unpack(
@@ -126,7 +128,11 @@ class MobiBook:
             else:
                 chunks.append(record)
         text = b"".join(chunks)[:text_length]
-        self._html = text.decode("utf-8", errors="replace")
+        codec = "utf-8" if encoding in (0, 65001) else f"cp{encoding}"
+        try:
+            self._html = text.decode(codec, errors="replace")
+        except LookupError:
+            self._html = text.decode("utf-8", errors="replace")
         self._sections = self._split_sections()
 
     def _split_sections(self) -> list[tuple[int, str]]:
@@ -163,26 +169,32 @@ class MobiBook:
         return list(self._sections)
 
     def section_html(self, index: int) -> str:
-        """Full XHTML document for section *index* with image refs rewritten."""
+        """Full HTML document for section *index* with image refs rewritten."""
         if not 0 <= index < len(self._chunks):
             raise IndexError(f"section index out of range: {index}")
         if not self._image_dir:
             self.extract_to(tempfile.mkdtemp(prefix="vellum-mobi-"))
         body = _RECINDEX_RE.sub(self._rewrite_img, self._chunks[index])
         return (
-            '<?xml version="1.0" encoding="utf-8"?>\n'
-            '<html xmlns="http://www.w3.org/1999/xhtml">'
-            '<head><meta charset="utf-8"/></head>'
+            "<!DOCTYPE html>\n"
+            '<html><head><meta charset="utf-8" /></head>'
             f"<body>{body}</body></html>"
         )
 
     def _rewrite_img(self, match: re.Match) -> str:
         pre, recindex, post = match.group(1), int(match.group(2)), match.group(3)
-        filename = self._image_files.get(recindex)
-        if filename is None:
-            return f"{pre}{post}>"
-        uri = "file://" + os.path.join(self._image_dir, filename)
-        return f'{pre}src="{uri}"{post}>'
+        # MOBI recindex is 1-based and relative to the first image record.
+        record = self._first_image + recindex - 1
+        filename = self._image_files.get(record)
+        attrs = post.strip()
+        if attrs.endswith("/"):
+            attrs = attrs[:-1].rstrip()
+        src = ""
+        if filename is not None:
+            uri = Path(self._image_dir, filename).as_uri()
+            src = f' src="{uri}"'
+        tail = f" {attrs}" if attrs else ""
+        return f"{pre.rstrip()}{src}{tail} />"
 
     def extract_to(self, dest_dir: str) -> str:
         """Extract image records into *dest_dir* (idempotent); returns the dir."""

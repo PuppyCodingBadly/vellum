@@ -159,10 +159,28 @@ class StoreAdapter:
             if not ok:
                 return None
             downloads = getattr(sr, "downloads", None) or {}
-            url = downloads.get(result.formats) or next(iter(downloads.values()), "")
+            wanted = [
+                f.strip() for f in (result.formats or "").split(",") if f.strip()
+            ]
+            chosen = ""
+            url = ""
+            for fmt in wanted:
+                for key, value in downloads.items():
+                    if key.upper() == fmt.upper() and value:
+                        chosen, url = fmt, value
+                        break
+                if url:
+                    break
+            if not url and downloads:
+                # Last resort: take the plugin's first download but keep
+                # the extension consistent with the URL's format key.
+                key, value = next(iter(downloads.items()))
+                if value:
+                    chosen, url = key, value
             if not url:
                 return None
             result.download_url = str(url)
+            result.formats = chosen or result.formats
             cover = getattr(sr, "cover_url", "")
             if cover:
                 result.cover_url = str(cover)

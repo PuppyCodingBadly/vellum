@@ -101,6 +101,32 @@ def test_chapter_file_returns_existing_path(tmp_path):
     assert os.path.isabs(path)
 
 
+def test_encoded_spine_href_resolves_extracted_file(tmp_path):
+    path = tmp_path / "encoded.epub"
+    container = """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+    opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <manifest>
+    <item id="c1" href="chapter%201.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("OEBPS/content.opf", opf)
+        zf.writestr("OEBPS/chapter 1.xhtml", "<html><body>one</body></html>")
+
+    book = EpubBook(str(path))
+    assert book.chapters()[0][0] == "chapter 1.xhtml"
+    chapter = book.chapter_file(str(tmp_path / "extract"), 0)
+    assert os.path.isfile(chapter)
+
+
 def test_garbage_file_raises_value_error(tmp_path):
     bad = tmp_path / "garbage.epub"
     bad.write_bytes(b"this is not a zip at all")

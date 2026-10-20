@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -49,6 +50,7 @@ class EpubBook:
         if not self._opf_path:
             raise ValueError(f"No OPF rootfile in container: {path}")
 
+        self._opf_path = urllib.parse.unquote(self._opf_path)
         self._opf_dir = os.path.dirname(self._opf_path)
 
         try:
@@ -97,7 +99,9 @@ class EpubBook:
             href, mtype = entry
             if mtype in ("application/xhtml+xml", "text/html") or \
                     href.lower().endswith((".xhtml", ".html", ".htm")):
-                self._spine.append(href)
+                # Manifest hrefs are URL-encoded per OCF, but ZIP entry
+                # names (and extracted files) are not.
+                self._spine.append(urllib.parse.unquote(href))
 
         titles = self._load_titles(ncx_href, nav_href, manifest)
 
@@ -177,11 +181,12 @@ class EpubBook:
         return titles
 
     def _opf_join(self, href: str) -> str:
+        href = urllib.parse.unquote(href)
         return f"{self._opf_dir}/{href}" if self._opf_dir else href
 
     @staticmethod
     def _normalize_href(href: str) -> str:
-        return href.split("#", 1)[0]
+        return urllib.parse.unquote(href.split("#", 1)[0])
 
     @staticmethod
     def _stem(href: str) -> str:

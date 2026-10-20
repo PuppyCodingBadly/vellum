@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from vellum.core.store import (
+    StoreAdapter,
     StoreResult,
     is_store_plugin,
     load_store_plugin,
 )
 from vellum.metadata.engine import MetadataEngine
+from vellum.plugins import calibre_shim
 from vellum.plugins.manager import PluginManager
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -107,6 +109,26 @@ def test_fetch_download(store_zip):
     out = adapter.fetch_download(result)
     assert out is not None
     assert out.download_url == "https://example.invalid/book.epub"
+
+
+def test_fetch_download_selects_matching_format():
+    calibre_shim.install()
+
+    class FakeModule:
+        @staticmethod
+        def resolve_spa_download(result, timeout):
+            result.downloads = {
+                "MOBI": "https://example.invalid/book.mobi",
+                "EPUB": "https://example.invalid/book.epub",
+            }
+            return True
+
+    adapter = StoreAdapter("Fake", "", "", [FakeModule])
+    result = StoreResult(title="Book", formats="EPUB, MOBI")
+    out = adapter.fetch_download(result)
+    assert out is not None
+    assert out.download_url == "https://example.invalid/book.epub"
+    assert out.formats == "EPUB"
 
 
 def test_manager_skips_store_zips(store_zip, tmp_path):

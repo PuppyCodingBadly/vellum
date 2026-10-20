@@ -138,7 +138,10 @@ def _find_import_name(zf: zipfile.ZipFile) -> str:
     for name in zf.namelist():
         base = name.rsplit("/", 1)[-1]
         if base.startswith("plugin-import-name-") and base.endswith(".txt"):
-            return zf.read(name).decode("utf-8").strip()
+            content = zf.read(name).decode("utf-8").strip()
+            if content:
+                return content
+            return base[len("plugin-import-name-"):-len(".txt")]
     raise ValueError("plugin zip has no plugin-import-name-*.txt marker")
 
 
@@ -149,6 +152,13 @@ def _load_package(zf: zipfile.ZipFile, import_name: str):
         if n.startswith(prefix) and n.endswith(".py")
         and "/" not in n[len(prefix):]  # top-level package files only
     )
+    if not py_files:
+        # Some plugin zips ship their modules at the archive root.
+        prefix = ""
+        py_files = sorted(
+            n for n in zf.namelist()
+            if n.endswith(".py") and "/" not in n
+        )
     if not py_files:
         raise ValueError(f"no top-level .py files for package {import_name!r}")
 
@@ -178,7 +188,6 @@ def _load_package(zf: zipfile.ZipFile, import_name: str):
 
 
 def _find_plugin_instance(pkg, modules):
-    from calibre.customize import Plugin
     from calibre.ebooks.metadata.sources.base import Source
 
     # Prefer the declared entry point: Plugin subclass with load_actual_plugin.
@@ -208,6 +217,16 @@ def load_plugin_zip(zip_path: str) -> MetadataSource:
     calibre_shim.install()
     with zipfile.ZipFile(zip_path) as zf:
         import_name = _find_import_name(zf)
+        init_name = f"{import_name}/__init__.py"
+        if init_name not in zf.namelist():
+            init_name = "__init__.py"
+        if init_name in zf.namelist():
+            source = zf.read(init_name).decode("utf-8", "replace")
+            if "InterfaceActionBase" in source:
+                raise ValueError(
+                    "this is a Calibre GUI action plugin; Vellum supports "
+                    "metadata-source and store plugins"
+                )
         pkg, modules = _load_package(zf, import_name)
     plugin = _find_plugin_instance(pkg, modules)
     return CalibrePluginAdapter(plugin)

@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import gi
 
@@ -22,7 +23,9 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk, Pango, WebKit
 from vellum.core.epub import EpubBook
 from vellum.core.mobi import MobiBook
 from vellum.core.models import Book
-from vellum.core.pdfbook import PdfBook
+
+if TYPE_CHECKING:
+    from vellum.core.pdfbook import PdfBook
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +235,7 @@ class ReaderPage(Gtk.Box):
         self._pdf_render_serial = 0
         self._pdf_displayed_paintable: Gdk.Paintable | None = None
         self._last_position_write = 0.0
+        self._position_flush_source = 0
         self._pending_selection: dict | None = None
         self._selection_popover: Gtk.Popover | None = None
         self._selection_source = 0
@@ -253,15 +257,27 @@ class ReaderPage(Gtk.Box):
         if self._theme not in ("follow", "light", "sepia", "dark"):
             self._theme = "follow"
 
-        key = book.id or hashlib.sha1(book.path.encode()).hexdigest()[:16]
+        # Book ids are per-library, and a file can be replaced; include
+        # the path and source signature so cached extractions never
+        # leak between libraries or stale versions.
+        try:
+            st = os.stat(book.path)
+            signature = f"{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            signature = "0:0"
+        key = hashlib.sha1(
+            f"{book.id}:{book.path}:{signature}".encode(
+                "utf-8", "surrogateescape"
+            )
+        ).hexdigest()[:16]
         self._cache_dir = os.path.join(
-            GLib.get_user_cache_dir(), "vellum", "reader", str(key)
+            GLib.get_user_cache_dir(), "vellum", "reader", key
         )
 
         try:
             self._open()
-        except (ValueError, OSError):
-            self._show_error()
+        except (ValueError, OSError) as exc:
+            self._show_error(str(exc))
             return
 
         self._build_reader()
@@ -285,27 +301,34 @@ class ReaderPage(Gtk.Box):
                 self._style_handler = 0
 
         self.connect("unrealize", _disconnect_style)
+        self.connect("unrealize", self._flush_position_on_unrealize)
 
     # -- setup ----------------------------------------------------------------
 
     @staticmethod
     def _primary_format(book: Book) -> str:
         formats = {f.lower() for f in (book.formats or [])}
-        for fmt in ("epub", "pdf", "mobi", "azw3"):
+        for fmt in ("epub", "pdf", "mobi"):
             if fmt in formats:
                 return fmt
         return "epub"
 
     @property
     def _is_web(self) -> bool:
-        return self._kind in ("epub", "mobi", "azw3")
+        return self._kind in ("epub", "mobi")
 
     def _open(self) -> None:
         if self._kind == "pdf":
+            try:
+                from vellum.core.pdfbook import PdfBook
+            except (ImportError, ValueError) as exc:
+                raise ValueError(
+                    "PDF support requires the Poppler GI bindings"
+                ) from exc
             self._pdf = PdfBook(self._book.path)
             count = self._pdf.page_count()
             self._items = [("", self._pdf.title_at(i)) for i in range(count)]
-        elif self._kind in ("mobi", "azw3"):
+        elif self._kind == "mobi":
             self._mobi = MobiBook(self._book.path)
             sections = self._mobi.sections()
             if not sections:
@@ -347,10 +370,10 @@ class ReaderPage(Gtk.Box):
 
     # -- UI -------------------------------------------------------------------
 
-    def _show_error(self) -> None:
+    def _show_error(self, detail: str = "") -> None:
         status = Adw.StatusPage(
             title="Cannot Open Book",
-            description="This book file is not valid or is corrupted.",
+            description=detail or "This book file is not valid or is corrupted.",
             icon_name="dialog-error-symbolic",
             vexpand=True,
         )
@@ -729,10 +752,10 @@ class ReaderPage(Gtk.Box):
             placeholder = self._pdf_placeholder()
             self._start_pdf_render(index)
             return placeholder
-        if self._kind in ("mobi", "azw3"):
+        if self._kind == "mobi":
             html = self._mobi.section_html(index)
             section_path = os.path.join(
-                self._cache_dir, "mobi", f"section-{index}.xhtml"
+                self._cache_dir, "mobi", f"section-{index}.html"
             )
             with open(section_path, "w", encoding="utf-8") as fh:
                 fh.write(html)
@@ -878,6 +901,7 @@ class ReaderPage(Gtk.Box):
 
     def _show_item(self, index: int, direction: int) -> None:
         self._index = index
+        self._cancel_position_flush()
         self._dismiss_selection_popover()
         try:
             content = self._build_content(index)
@@ -888,7 +912,7 @@ class ReaderPage(Gtk.Box):
         self._swap_content(content, direction)
         _, title = self._items[index]
         self._title_label.set_label(title)
-        prefix = {"pdf": "Page", "mobi": "Section", "azw3": "Section"}.get(
+        prefix = {"pdf": "Page", "mobi": "Section"}.get(
             self._kind, ""
         )
         counter = f"{index + 1} / {len(self._items)}"
@@ -927,6 +951,20 @@ class ReaderPage(Gtk.Box):
         if not 0 <= index < len(self._items):
             return 0, 0.0
         return index, max(0.0, min(1.0, fraction))
+
+    def _cancel_position_flush(self) -> None:
+        if self._position_flush_source:
+            GLib.source_remove(self._position_flush_source)
+            self._position_flush_source = 0
+
+    def _flush_position(self) -> bool:
+        self._position_flush_source = 0
+        self._save_position(self._last_fraction)
+        return GLib.SOURCE_REMOVE
+
+    def _flush_position_on_unrealize(self, *_args) -> None:
+        self._cancel_position_flush()
+        self._save_position(self._last_fraction)
 
     def _save_position(self, fraction: float) -> None:
         self._last_position_write = time.monotonic()
@@ -1003,6 +1041,10 @@ class ReaderPage(Gtk.Box):
         webview = self._webview
         if webview is None or webview.get_user_content_manager() is not ucm:
             return
+        if webview.is_loading():
+            # A pooled webview can still deliver messages from the page
+            # it is navigating away from; they belong to the old item.
+            return
         try:
             data = json.loads(value.to_json(0))
         except Exception:
@@ -1037,8 +1079,17 @@ class ReaderPage(Gtk.Box):
             # _SCROLL_SAVE_MIN_INTERVAL; _show_item persists the latest
             # fraction on navigation.
             now = time.monotonic()
-            if now - self._last_position_write >= _SCROLL_SAVE_MIN_INTERVAL:
+            elapsed = now - self._last_position_write
+            if elapsed >= _SCROLL_SAVE_MIN_INTERVAL:
                 self._save_position(self._last_fraction)
+            elif not self._position_flush_source:
+                # Keep the final position after a scroll stops.
+                delay = int(
+                    (_SCROLL_SAVE_MIN_INTERVAL - elapsed) * 1000
+                ) + 1
+                self._position_flush_source = GLib.timeout_add(
+                    delay, self._flush_position
+                )
 
     def _cancel_selection_timeout(self) -> None:
         if self._selection_source:

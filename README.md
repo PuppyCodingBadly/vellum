@@ -12,7 +12,7 @@ online sources such as Google Books and OpenLibrary.
 - SQLite-backed book library (authors, tags, formats, ratings, covers)
 - Fast full-text-ish search across titles, authors, ISBNs, and tags
 - Online metadata lookup with per-source result merging and cover downloads
-- Built-in reader for EPUB, PDF, MOBI, and AZW3 with a page-turn animation (toggleable in Preferences)
+- Built-in reader for EPUB, PDF, and MOBI with a page-turn animation (toggleable in Preferences)
   - Text highlights (yellow/green/pink) with a highlights panel to review, jump to, and delete them (EPUB/MOBI only; PDF pages are image-rendered, so highlighting is not available there)
   - In-reader dictionary lookup for any selected word
   - Automatic reading-position resume per book
@@ -25,11 +25,14 @@ online sources such as Google Books and OpenLibrary.
 
 ## Quick start (development)
 
-Vellum needs the system GTK4/Libadwaita Python bindings (PyGObject). Install
-them via your distro, e.g.:
+Vellum needs PyGObject, GTK4/Libadwaita, WebKitGTK 6, Poppler's GI bindings,
+and pycairo. Install them via your distro, e.g.:
 
-- Fedora: `sudo dnf install python3-gobject gtk4 libadwaita`
-- Debian/Ubuntu: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
+- Fedora: `sudo dnf install python3-gobject gtk4 libadwaita webkitgtk6.0 poppler-glib python3-cairo`
+- Debian/Ubuntu: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-webkit-6.0 gir1.2-poppler-0.18 python3-cairo`
+
+Without Poppler the rest of the app still runs, but PDF books show an
+error instead of opening.
 
 Then, from the repository root:
 
@@ -50,19 +53,28 @@ flatpak-builder --user --install --force-clean build flatpak/io.github.vellum.Ve
 flatpak run io.github.vellum.Vellum
 ```
 
-The manifest targets the GNOME 48 runtime; see the comment at the top of
-`flatpak/io.github.vellum.Vellum.yml` if you only have 47 available.
+Or build with the Flathub Builder app without installing flatpak-builder:
 
-> **Icon:** the desktop file and metainfo reference the icon name
-> `io.github.vellum.Vellum`, but a real icon file is a TODO placeholder —
-> no icon binary ships yet.
+```sh
+flatpak run org.flatpak.Builder --user --install --force-clean build flatpak/io.github.vellum.Vellum.yml
+flatpak run io.github.vellum.Vellum
+```
+
+The manifest targets the GNOME 49 runtime; it builds Poppler from source
+because the GNOME runtime does not ship Poppler. Python dependencies are
+vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ## Plugins
 
-Vellum can load calibre metadata-source plugins. On the **Plugins** page in
-the app, drop a calibre metadata-source plugin `.zip` and it will be
-installed and registered as a metadata source automatically. Loaded plugins
-can be removed from the same page.
+Vellum can load calibre metadata-source plugins and store plugins. On the
+**Plugins** page in the app, drop a calibre plugin `.zip`: metadata-source
+plugins are registered as metadata sources, and store plugins appear under
+**Get Books** immediately. Loaded metadata plugins can be removed from the
+same page.
+
+Calibre **GUI action plugins** (the Qt toolbar/dialog plugins) are not
+supported, because Vellum is not a calibre GUI host. Store plugins and
+metadata-source plugins are the supported extension points.
 
 ## Project layout
 

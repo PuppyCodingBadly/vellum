@@ -13,7 +13,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: F401  (Adw: css classes)
 
-from vellum.core.covers import thumb_path
+from vellum.core.covers import thumb_cache_path, thumb_path
 from vellum.core.models import Book
 
 COVER_WIDTH = 160
@@ -62,9 +62,9 @@ class LibraryView(Gtk.ScrolledWindow):
 
         # Lazy thumbnail generation on a single daemon worker thread.
         self._thumb_queue: queue.Queue = queue.Queue()
-        self._thumb_pending: set[int] = set()
+        self._thumb_pending: set[tuple[int, str]] = set()
         self._thumb_lock = threading.Lock()
-        self._thumb_cards: dict[int, weakref.ref] = {}
+        self._thumb_cards: dict[tuple[int, str], weakref.ref] = {}
         worker = threading.Thread(target=self._thumb_worker, daemon=True)
         worker.start()
 
@@ -72,6 +72,8 @@ class LibraryView(Gtk.ScrolledWindow):
 
     def set_books(self, books: list[Book]) -> None:
         self._thumb_cards.clear()
+        with self._thumb_lock:
+            self._thumb_pending.clear()
         self._store.remove_all()
         for book in books:
             self._store.append(BookObject(book))
@@ -155,12 +157,13 @@ class LibraryView(Gtk.ScrolledWindow):
             ", ".join(book.authors) if book.authors else "Unknown author"
         )
 
+        card._book_id = book.id
+        card._cover_path = book.cover_path
         if book.cover_path and os.path.isfile(book.cover_path):
-            card._book_id = book.id
             if book.id is not None:
-                self._thumb_cards[book.id] = weakref.ref(card)
-            thumb = os.path.join(
-                self._data_dir, "covers", "thumbs", f"{book.id}.png"
+                self._thumb_cards[(book.id, book.cover_path)] = weakref.ref(card)
+            thumb = thumb_cache_path(
+                self._data_dir, book.id, book.cover_path
             )
             if os.path.isfile(thumb) and os.path.getmtime(
                 thumb
@@ -173,7 +176,6 @@ class LibraryView(Gtk.ScrolledWindow):
                 card._cover_stack.set_visible_child_name("placeholder")
                 self._request_thumb(book)
         else:
-            card._book_id = None
             card._picture.set_filename(None)
             card._placeholder.set_label(_initials(book.title))
             card._cover_stack.set_visible_child_name("placeholder")
@@ -183,27 +185,38 @@ class LibraryView(Gtk.ScrolledWindow):
     def _request_thumb(self, book: Book) -> None:
         if book.id is None:
             return
+        key = (book.id, book.cover_path)
         with self._thumb_lock:
-            if book.id in self._thumb_pending:
+            if key in self._thumb_pending:
                 return
-            self._thumb_pending.add(book.id)
+            self._thumb_pending.add(key)
         self._thumb_queue.put((book.id, book.cover_path))
 
     def _thumb_worker(self) -> None:
         while True:
             book_id, cover_path = self._thumb_queue.get()
+            key = (book_id, cover_path)
             try:
                 thumb = thumb_path(self._data_dir, book_id, cover_path)
-                if thumb != cover_path:
-                    GLib.idle_add(self._apply_thumb, book_id, thumb)
+                # thumb_path returns the source cover when thumbnailing
+                # fails; still show that rather than a bare placeholder.
+                if os.path.isfile(thumb):
+                    GLib.idle_add(
+                        self._apply_thumb, book_id, cover_path, thumb
+                    )
             finally:
                 with self._thumb_lock:
-                    self._thumb_pending.discard(book_id)
+                    self._thumb_pending.discard(key)
 
-    def _apply_thumb(self, book_id: int, thumb: str) -> bool:
-        ref = self._thumb_cards.get(book_id)
+    def _apply_thumb(self, book_id: int, cover_path: str,
+                     thumb: str) -> bool:
+        ref = self._thumb_cards.get((book_id, cover_path))
         card = ref() if ref is not None else None
-        if card is not None and getattr(card, "_book_id", None) == book_id:
+        if (
+            card is not None
+            and getattr(card, "_book_id", None) == book_id
+            and getattr(card, "_cover_path", None) == cover_path
+        ):
             card._picture.set_filename(thumb)
             card._cover_stack.set_visible_child_name("cover")
         return False

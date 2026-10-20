@@ -166,6 +166,7 @@ class VellumApplication(Adw.Application):
         self.engine: MetadataEngine | None = None
         self.plugin_manager: PluginManager | None = None
         self.stores: list = []
+        self.startup_warning: str = ""
 
     # -- GApplication hooks ----------------------------------------------------
 
@@ -194,6 +195,9 @@ class VellumApplication(Adw.Application):
                 stores=self.stores,
             )
         window.present()
+        if self.startup_warning:
+            window.show_toast(self.startup_warning)
+            self.startup_warning = ""
 
     # -- setup -------------------------------------------------------------------
 
@@ -254,7 +258,26 @@ class VellumApplication(Adw.Application):
             self.save_config()
 
         self.library = Library(library_path)
-        self.library.open()
+        try:
+            self.library.open()
+        except Exception as exc:
+            # A configured library can disappear (removed USB drive,
+            # unmounted network share, deleted folder). Never let that
+            # prevent the app from starting.
+            fallback = os.path.join(self.data_dir, "library.db")
+            if os.path.realpath(fallback) == os.path.realpath(library_path):
+                raise
+            logger.error(
+                "Could not open library %s (%s); using %s",
+                library_path, exc, fallback,
+            )
+            self.library = Library(fallback)
+            self.library.open()
+            self.config["library_path"] = fallback
+            self.save_config()
+            self.startup_warning = (
+                f"Could not open {library_path}; using the default library"
+            )
 
         self.engine = MetadataEngine()
         self._register_builtin_sources()
@@ -424,7 +447,7 @@ class VellumApplication(Adw.Application):
                 application_icon=APP_ID,
                 version=__version__,
                 developer_name="Vellum developers",
-                license_type=Gtk.License.MIT_X11,
+                license_type=Gtk.License.GPL_3_0,
                 comments="A calibre-like ebook library manager.",
             )
             dialog.present(parent)
@@ -435,7 +458,7 @@ class VellumApplication(Adw.Application):
                 application_icon=APP_ID,
                 version=__version__,
                 developer_name="Vellum developers",
-                license_type=Gtk.License.MIT_X11,
+                license_type=Gtk.License.GPL_3_0,
                 comments="A calibre-like ebook library manager.",
             )
             about_window.present()

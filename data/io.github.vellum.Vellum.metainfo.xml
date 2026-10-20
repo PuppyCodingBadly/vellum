@@ -18,7 +18,7 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.vellum.Vellum.desktop</launchable>
-  <developer>
+  <developer id="io.github.vellum">
     <name>Vellum contributors</name>
   </developer>
   <content_rating type="oars-1.1"/>

@@ -79,6 +79,10 @@ class GoogleBooks(MetadataSource):
         if links.get("thumbnail"):
             # Prefer a higher-resolution image than the default thumbnail.
             cover_url = links["thumbnail"].replace("zoom=1", "zoom=0")
+        try:
+            rating = float(info.get("averageRating") or 0.0)
+        except (TypeError, ValueError):
+            rating = 0.0
         return Metadata(
             title=info.get("title", ""),
             authors=list(info.get("authors") or []),
@@ -88,7 +92,7 @@ class GoogleBooks(MetadataSource):
             language=info.get("language", ""),
             description=info.get("description", ""),
             tags=list(info.get("categories") or []),
-            rating=float(info.get("averageRating") or 0.0),
+            rating=rating,
             cover_url=cover_url,
             source_id=item.get("id", ""),
             source_name="Google Books",
