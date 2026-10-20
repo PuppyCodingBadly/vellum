@@ -244,6 +244,9 @@ class _Response:
     def getcode(self):
         return self._response.getcode()
 
+    def close(self):
+        self._response.close()
+
     @property
     def headers(self):
         return self._response.headers
