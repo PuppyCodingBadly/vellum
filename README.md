@@ -64,6 +64,19 @@ The manifest targets the GNOME 49 runtime; it builds Poppler from source
 because the GNOME runtime does not ship Poppler. Python dependencies are
 vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
+### Install and update from the Vellum repository
+
+The signed `v0.1.0` build is published at
+`https://puppycodingbadly.github.io/vellum/`:
+
+```sh
+flatpak install --user https://puppycodingbadly.github.io/vellum/io.github.vellum.Vellum.flatpakref
+flatpak update io.github.vellum.Vellum
+```
+
+The `.flatpakref` and `.flatpakrepo` files are also checked in at the
+repository root.
+
 ## Plugins
 
 Vellum can load calibre metadata-source plugins and store plugins. On the
