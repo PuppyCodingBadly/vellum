@@ -122,6 +122,9 @@ class BookDetails(Gtk.Box):
             and os.path.isfile(book.path)
         )
         actions.append(self._read_button)
+        self._hide_button = Gtk.Button()
+        self._hide_button.connect("clicked", self._on_hide_clicked)
+        actions.append(self._hide_button)
         right.append(actions)
 
         # -- detail rows -----------------------------------------------------
@@ -208,8 +211,21 @@ class BookDetails(Gtk.Box):
             and bool(book.path)
             and os.path.isfile(book.path)
         )
+        self._hide_button.set_label("Unhide Book" if book.hidden else "Hide Book")
 
     # -- internals ----------------------------------------------------------
+
+    def _on_hide_clicked(self, _button: Gtk.Button) -> None:
+        book = self._book
+        if book.id is None:
+            return
+        hidden = not book.hidden
+        self._library.set_hidden(book.id, hidden)
+        book.hidden = hidden
+        self.refresh()
+        if self._on_changed is not None:
+            self._on_changed()
+        self._window.show_toast("Book hidden" if hidden else "Book shown")
 
     def _on_fetch_clicked(self, _button: Gtk.Button) -> None:
         from vellum.ui.metadata_dialog import MetadataDialog

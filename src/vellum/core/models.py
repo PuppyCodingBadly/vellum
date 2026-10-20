@@ -26,3 +26,5 @@ class Book:
     path: str = ""
     rating: float = 0.0
     added: str = ""
+    hidden: bool = False
+    source_id: str = ""

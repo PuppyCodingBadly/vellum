@@ -21,6 +21,9 @@ finish-args:
   - --share=network
   # Needed so users can import books from their Documents folder.
   - --filesystem=xdg-documents
+  # Calibre libraries commonly live directly in the home directory
+  # (e.g. ~/Calibre Library); reading them requires more than Documents.
+  - --filesystem=home:ro
 
 modules:
   # The GNOME runtime ships WebKitGTK but not Poppler, which Vellum needs

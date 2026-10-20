@@ -159,6 +159,10 @@ class LibraryView(Gtk.ScrolledWindow):
 
         card._book_id = book.id
         card._cover_path = book.cover_path
+        if book.hidden:
+            card.add_css_class("hidden-book")
+        else:
+            card.remove_css_class("hidden-book")
         if book.cover_path and os.path.isfile(book.cover_path):
             if book.id is not None:
                 self._thumb_items[(book.id, book.cover_path)] = weakref.ref(item)

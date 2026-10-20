@@ -1,5 +1,6 @@
 """Tests for vellum.core.db.Library."""
 
+import sqlite3
 import zipfile
 
 import pytest
@@ -239,3 +240,90 @@ def test_memory_library_roundtrip():
     book_id = library.add_book(book)
     assert library.get_book(book_id).title == "Memory Book"
     library.close()
+
+
+def test_hidden_books_excluded_by_default(lib):
+    visible = lib.add_book(make_book(title="Visible Book", isbn="1"))
+    hidden = lib.add_book(make_book(title="Hidden Book", isbn="2"))
+    lib.set_hidden(hidden, True)
+
+    assert [b.title for b in lib.all_books()] == ["Visible Book"]
+    assert {b.title for b in lib.all_books(include_hidden=True)} == {
+        "Hidden Book",
+        "Visible Book",
+    }
+
+    # Hidden books never match a search unless explicitly included.
+    assert lib.search("hidden") == []
+    assert [b.title for b in lib.search("hidden", include_hidden=True)] == [
+        "Hidden Book"
+    ]
+    assert lib.get_book(hidden).hidden is True
+
+    lib.set_hidden(hidden, False)
+    assert [b.title for b in lib.all_books()] == ["Hidden Book", "Visible Book"]
+
+
+def test_set_hidden_unknown_id_raises(lib):
+    with pytest.raises(KeyError):
+        lib.set_hidden(9999, True)
+
+
+def test_find_by_source_id(lib):
+    source = "calibre:6f0e6b2e-0000-0000-0000-000000000000"
+    book_id = lib.add_book(make_book(source_id=source))
+    assert lib.find_by_source_id(source).id == book_id
+    assert lib.find_by_source_id("calibre:missing") is None
+    assert lib.find_by_source_id("") is None
+
+
+def test_open_migrates_older_books_table(tmp_path):
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE books ("
+        " id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '',"
+        " sort TEXT NOT NULL DEFAULT '', isbn TEXT NOT NULL DEFAULT '',"
+        " publisher TEXT NOT NULL DEFAULT '', pubdate TEXT NOT NULL DEFAULT '',"
+        " language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',"
+        " cover_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '',"
+        " rating REAL NOT NULL DEFAULT 0.0, added TEXT NOT NULL DEFAULT '')"
+    )
+    conn.commit()
+    conn.close()
+
+    library = Library(str(db))
+    library.open()
+    book_id = library.add_book(make_book(title="Migrated"))
+    fetched = library.get_book(book_id)
+    assert fetched.title == "Migrated"
+    assert fetched.hidden is False
+    assert fetched.source_id == ""
+    library.close()
+
+
+def test_delete_books_without_files_protects_real_books(lib):
+    lib.add_book(
+        make_book(title="Dune", isbn="old", path="", formats=[])
+    )  # seeded-style
+    hidden = lib.add_book(
+        make_book(title="Clean Code", isbn="old", path="", formats=[])
+    )
+    lib.set_hidden(hidden, True)
+    lib.add_book(
+        make_book(title="Dune", isbn="real", path="/books/dune.epub")
+    )
+    lib.add_book(
+        make_book(
+            title="Unrelated", isbn="keep", path="/books/unrelated.epub"
+        )
+    )
+
+    removed = lib.delete_books_without_files({"Dune", "Clean Code"})
+
+    assert removed == 2
+    remaining = lib.all_books(include_hidden=True)
+    assert [(b.title, b.path) for b in remaining] == [
+        ("Dune", "/books/dune.epub"),
+        ("Unrelated", "/books/unrelated.epub"),
+    ]

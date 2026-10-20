@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import threading
 
 if __package__ in (None, ""):
     sys.path.insert(
@@ -23,7 +24,6 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gdk, Gtk
 
 from vellum.core.db import Library
-from vellum.core.models import Book
 from vellum.metadata.engine import MetadataEngine
 from vellum.plugins.manager import PluginManager
 from vellum.ui.window import VellumWindow
@@ -31,7 +31,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.0"
+    __version__ = "0.1.1"
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,9 @@ CSS = """
     border-radius: 999px;
     padding: 2px 10px;
 }
+.hidden-book {
+    opacity: 0.55;
+}
 """
 
 # Libadwaita 1.9 accent palette: name -> (bg/color, fg) hex pairs.
@@ -70,78 +73,16 @@ ACCENTS = {
     "slate": ("#6f8396", "#ffffff"),
 }
 
-DEMO_BOOKS = [
-    Book(
-        title="The Left Hand of Darkness",
-        authors=["Ursula K. Le Guin"],
-        isbn="9780441478125",
-        publisher="Ace Books",
-        pubdate="1969",
-        language="en",
-        description=(
-            "A lone human envoy must win over the ambisexual inhabitants of "
-            "the icebound planet Gethen to the cause of the Ekumen."
-        ),
-        tags=["Science Fiction", "Classic"],
-        rating=4.5,
-    ),
-    Book(
-        title="Pride and Prejudice",
-        authors=["Jane Austen"],
-        isbn="9780141439518",
-        publisher="Penguin Classics",
-        pubdate="1813",
-        language="en",
-        description=(
-            "Elizabeth Bennet spars with the proud Mr. Darcy in Austen's "
-            "enduring comedy of manners."
-        ),
-        tags=["Romance", "Classic"],
-        rating=4.3,
-    ),
-    Book(
-        title="The Hobbit",
-        authors=["J. R. R. Tolkien"],
-        isbn="9780547928227",
-        publisher="Houghton Mifflin",
-        pubdate="1937",
-        language="en",
-        description=(
-            "Bilbo Baggins is swept from his comfortable hole into a quest "
-            "for dragon-guarded treasure."
-        ),
-        tags=["Fantasy", "Adventure"],
-        rating=4.7,
-    ),
-    Book(
-        title="Clean Code",
-        authors=["Robert C. Martin"],
-        isbn="9780132350884",
-        publisher="Prentice Hall",
-        pubdate="2008",
-        language="en",
-        description=(
-            "A handbook of agile software craftsmanship: principles, "
-            "patterns, and practices of writing maintainable code."
-        ),
-        tags=["Programming", "Software"],
-        rating=4.4,
-    ),
-    Book(
-        title="Dune",
-        authors=["Frank Herbert"],
-        isbn="9780441172719",
-        publisher="Ace Books",
-        pubdate="1965",
-        language="en",
-        description=(
-            "Paul Atreides rises on the desert world Arrakis, the only "
-            "source of the spice melange."
-        ),
-        tags=["Science Fiction"],
-        rating=4.6,
-    ),
-]
+# Titles that 0.1.0 seeded into a new library. Existing installs are
+# cleaned up once, matched by title and by having no file path so a real
+# imported book with the same title survives.
+LEGACY_DEMO_TITLES = {
+    "The Left Hand of Darkness",
+    "Pride and Prejudice",
+    "The Hobbit",
+    "Clean Code",
+    "Dune",
+}
 
 
 class VellumApplication(Adw.Application):
@@ -167,6 +108,7 @@ class VellumApplication(Adw.Application):
         self.plugin_manager: PluginManager | None = None
         self.stores: list = []
         self.startup_warning: str = ""
+        self._calibre_import_running: bool = False
 
     # -- GApplication hooks ----------------------------------------------------
 
@@ -224,6 +166,17 @@ class VellumApplication(Adw.Application):
         self.add_action(quit_action)
         self.set_accels_for_action("app.quit", ["<Ctrl>q"])
 
+        show_hidden = Gio.SimpleAction(
+            name="show-hidden",
+            state=GLib.Variant("b", bool(self.config.get("show_hidden", False))),
+        )
+        show_hidden.connect("activate", self._on_show_hidden)
+        self.add_action(show_hidden)
+
+        import_calibre = Gio.SimpleAction(name="import-calibre")
+        import_calibre.connect("activate", self._on_import_calibre)
+        self.add_action(import_calibre)
+
     def _setup_backend(self) -> None:
         self.data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -253,6 +206,9 @@ class VellumApplication(Adw.Application):
             changed = changed or "color_scheme" not in config
         if not self.config.get("accent_color"):
             self.config["accent_color"] = "blue"
+            changed = True
+        if not isinstance(self.config.get("show_hidden"), bool):
+            self.config["show_hidden"] = False
             changed = True
         if changed:
             self.save_config()
@@ -314,8 +270,12 @@ class VellumApplication(Adw.Application):
         except Exception as exc:
             logger.warning("Store plugin setup failed: %s", exc)
 
-        if not self.library.all_books():
-            self._seed_demo_books()
+        self._purge_legacy_demo_books()
+        show_hidden_action = self.lookup_action("show-hidden")
+        if show_hidden_action is not None:
+            show_hidden_action.set_state(
+                GLib.Variant("b", bool(self.config.get("show_hidden", False)))
+            )
 
     def _register_builtin_sources(self) -> None:
         try:
@@ -326,12 +286,21 @@ class VellumApplication(Adw.Application):
         except Exception as exc:
             logger.warning("Could not register metadata sources: %s", exc)
 
-    def _seed_demo_books(self) -> None:
-        for book in DEMO_BOOKS:
-            try:
-                self.library.add_book(book)
-            except Exception as exc:
-                logger.warning("Failed to seed '%s': %s", book.title, exc)
+    def _purge_legacy_demo_books(self) -> None:
+        """Delete the sample books that 0.1.0 seeded into new libraries."""
+        if self.config.get("legacy_demo_books_purged"):
+            return
+        try:
+            removed = self.library.delete_books_without_files(
+                LEGACY_DEMO_TITLES
+            )
+        except Exception as exc:
+            logger.warning("Could not purge legacy sample books: %s", exc)
+            return
+        self.config["legacy_demo_books_purged"] = True
+        self.save_config()
+        if removed:
+            logger.info("Removed %d legacy sample books", removed)
 
     # -- config / appearance -----------------------------------------------------
 
@@ -432,6 +401,96 @@ class VellumApplication(Adw.Application):
         self._accent_provider.load_from_string(css)
 
     # -- actions -----------------------------------------------------------------
+
+    def set_show_hidden(self, value: bool) -> None:
+        """Show or hide books marked hidden and refresh the library grid."""
+        self.config["show_hidden"] = bool(value)
+        self.save_config()
+        action = self.lookup_action("show-hidden")
+        if action is not None:
+            action.set_state(GLib.Variant("b", bool(value)))
+        window = self.get_active_window()
+        if window is not None:
+            window.refresh_library()
+
+    def _on_show_hidden(self, action, _param) -> None:
+        self.set_show_hidden(not action.get_state().get_boolean())
+
+    def _on_import_calibre(self, *_args) -> None:
+        dialog = Gtk.FileDialog(
+            modal=True, title="Choose Calibre Library Folder"
+        )
+        dialog.select_folder(
+            self.get_active_window(),
+            None,
+            self._on_calibre_folder_chosen,
+            dialog,
+        )
+
+    def _on_calibre_folder_chosen(self, dialog, result, _data=None) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except Exception:
+            return  # cancelled or failed
+        if folder is None:
+            return
+        path = folder.get_path()
+        if path:
+            self.import_calibre_folder(path)
+
+    def import_calibre_folder(self, path: str) -> None:
+        """Import a calibre library directory on a background thread."""
+        from vellum.core.calibre import is_calibre_library
+
+        window = self.get_active_window()
+        if not is_calibre_library(path):
+            if window is not None:
+                window.show_toast("Not a calibre library (no metadata.db)")
+            return
+        if self._calibre_import_running:
+            if window is not None:
+                window.show_toast("A calibre import is already running")
+            return
+        self._calibre_import_running = True
+        if window is not None:
+            window.show_toast("Importing calibre library…")
+        threading.Thread(
+            target=self._calibre_import_worker, args=(path,), daemon=True
+        ).start()
+
+    def _calibre_import_worker(self, path: str) -> None:
+        from vellum.core.calibre import import_calibre_library
+
+        try:
+            result = import_calibre_library(self.library, path)
+        except Exception as exc:
+            logger.exception("Calibre import failed")
+            GLib.idle_add(self._calibre_import_done, None, str(exc))
+        else:
+            GLib.idle_add(self._calibre_import_done, result, None)
+
+    def _calibre_import_done(self, result, error) -> bool:
+        self._calibre_import_running = False
+        window = self.get_active_window()
+        if error is not None:
+            if window is not None:
+                window.show_toast(f"Calibre import failed: {error}")
+            return False
+        if window is not None:
+            # StoreView captured the library at construction; keep it in sync.
+            if getattr(window, "store_view", None) is not None:
+                window.store_view._library = self.library
+            window.refresh_library()
+            parts = [
+                f"Imported {result.added} calibre "
+                f"{'book' if result.added == 1 else 'books'}"
+            ]
+            if result.skipped:
+                parts.append(f"{result.skipped} already present")
+            if result.failed:
+                parts.append(f"{result.failed} failed")
+            window.show_toast(" · ".join(parts))
+        return False
 
     def _on_preferences(self, *_args) -> None:
         from vellum.ui.preferences import PreferencesDialog

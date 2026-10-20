@@ -8,7 +8,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from vellum.app import ACCENTS
 
@@ -51,6 +51,28 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._library_row.add_suffix(choose_button)
         self._library_row.set_activatable_widget(choose_button)
         library_group.add(self._library_row)
+
+        import_row = Adw.ActionRow(
+            title="Import calibre library",
+            subtitle="Add books from a folder containing metadata.db",
+        )
+        import_button = Gtk.Button(label="Import…", valign=Gtk.Align.CENTER)
+        import_button.connect("clicked", self._on_import_calibre)
+        import_row.add_suffix(import_button)
+        import_row.set_activatable_widget(import_button)
+        library_group.add(import_row)
+
+        self._hidden_row = Adw.SwitchRow(
+            title="Show hidden books",
+            subtitle="Hidden books stay in the library but are left out of the grid",
+        )
+        self._hidden_row.set_active(
+            bool(self.app.config.get("show_hidden", False))
+        )
+        self._hidden_row.connect(
+            "notify::active", self._on_show_hidden_toggled
+        )
+        library_group.add(self._hidden_row)
 
         group = Adw.PreferencesGroup(title="Appearance")
         page.add(group)
@@ -179,6 +201,17 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_animation_toggled(self, row, _param) -> None:
         self.app.config["reader_animation"] = row.get_active()
         self.app.save_config()
+
+    def _on_show_hidden_toggled(self, row, _param) -> None:
+        self.app.set_show_hidden(row.get_active())
+
+    def _on_import_calibre(self, _button) -> None:
+        # Close the modal preferences dialog before presenting the folder
+        # chooser, otherwise the chooser can be left behind it.
+        self.close()
+        GLib.idle_add(
+            lambda: self.app.activate_action("import-calibre", None)
+        )
 
     def _on_scheme(self, row, _param, schemes) -> None:
         self.app.config["color_scheme"] = schemes[row.get_selected()]

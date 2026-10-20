@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS books (
     cover_path TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL DEFAULT '',
     rating REAL NOT NULL DEFAULT 0.0,
-    added TEXT NOT NULL DEFAULT ''
+    added TEXT NOT NULL DEFAULT '',
+    hidden INTEGER NOT NULL DEFAULT 0,
+    source_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS authors (
     id INTEGER PRIMARY KEY,
@@ -64,6 +66,13 @@ CREATE TABLE IF NOT EXISTS reading_positions (
 );
 """
 
+# Columns added after the initial 0.1.0 schema. ``open`` applies any that
+# an existing library database is missing.
+_MIGRATIONS = {
+    "hidden": "ALTER TABLE books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+    "source_id": "ALTER TABLE books ADD COLUMN source_id TEXT NOT NULL DEFAULT ''",
+}
+
 
 class Library:
     """A SQLite-backed ebook library."""
@@ -87,6 +96,12 @@ class Library:
     def open(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            existing = {
+                row[1] for row in conn.execute("PRAGMA table_info(books)")
+            }
+            for column, statement in _MIGRATIONS.items():
+                if column not in existing:
+                    conn.execute(statement)
 
     def close(self) -> None:
         # File-backed connections are per-method; only the in-memory
@@ -146,6 +161,8 @@ class Library:
             book.path,
             book.rating,
             book.added,
+            int(book.hidden),
+            book.source_id,
         )
 
     # -- public API ---------------------------------------------------------
@@ -156,8 +173,8 @@ class Library:
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO books (title, sort, isbn, publisher, pubdate, language,"
-                " description, cover_path, path, rating, added)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " description, cover_path, path, rating, added, hidden, source_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 self._book_row(book),
             )
             book.id = cur.lastrowid
@@ -170,7 +187,8 @@ class Library:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE books SET title=?, sort=?, isbn=?, publisher=?, pubdate=?,"
-                " language=?, description=?, cover_path=?, path=?, rating=?, added=?"
+                " language=?, description=?, cover_path=?, path=?, rating=?, added=?,"
+                " hidden=?, source_id=?"
                 " WHERE id=?",
                 self._book_row(book) + (book.id,),
             )
@@ -220,12 +238,14 @@ class Library:
             path=row[9],
             rating=row[10],
             added=row[11],
+            hidden=bool(row[12]),
+            source_id=row[13],
         )
         return self._hydrate(conn, book)
 
     _COLUMNS = (
         "id, title, sort, isbn, publisher, pubdate, language, description,"
-        " cover_path, path, rating, added"
+        " cover_path, path, rating, added, hidden, source_id"
     )
 
     def get_book(self, book_id: int) -> Book | None:
@@ -237,17 +257,18 @@ class Library:
                 return None
             return self._row_to_book(conn, row)
 
-    def all_books(self) -> list[Book]:
+    def all_books(self, include_hidden: bool = False) -> list[Book]:
         with self._connect() as conn:
+            where = "" if include_hidden else " WHERE hidden = 0"
             rows = conn.execute(
-                f"SELECT {self._COLUMNS} FROM books ORDER BY title"
+                f"SELECT {self._COLUMNS} FROM books{where} ORDER BY title"
             ).fetchall()
             return [self._row_to_book(conn, r) for r in rows]
 
-    def search(self, query: str) -> list[Book]:
+    def search(self, query: str, include_hidden: bool = False) -> list[Book]:
         tokens = query.split()
         if not tokens:
-            return self.all_books()
+            return self.all_books(include_hidden=include_hidden)
         clause = (
             "(lower(b.title) LIKE ? OR lower(b.isbn) LIKE ?"
             " OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a"
@@ -258,7 +279,10 @@ class Library:
             "   WHERE bt.book_id = b.id AND lower(t.name) LIKE ?))"
         )
         sql = f"SELECT {', '.join('b.' + c.strip() for c in self._COLUMNS.split(','))} FROM books b"
-        sql += " WHERE " + " AND ".join([clause] * len(tokens)) + " ORDER BY b.title"
+        conditions = [clause] * len(tokens)
+        if not include_hidden:
+            conditions.append("b.hidden = 0")
+        sql += " WHERE " + " AND ".join(conditions) + " ORDER BY b.title"
         params: list[str] = []
         for token in tokens:
             like = f"%{token.lower()}%"
@@ -270,6 +294,47 @@ class Library:
     def delete_book(self, book_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+
+    def delete_books_without_files(self, titles: set[str]) -> int:
+        """Delete books with one of *titles* that have no path or formats.
+
+        Used to clean up catalogue-only entries (for example the sample
+        books older versions seeded) without touching real imported books.
+        Returns the number of rows deleted.
+        """
+        if not titles:
+            return 0
+        placeholders = ", ".join("?" for _ in titles)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM books WHERE path = '' AND title IN ({placeholders})"
+                " AND NOT EXISTS (SELECT 1 FROM formats f"
+                "   WHERE f.book_id = books.id)",
+                tuple(titles),
+            )
+            return cur.rowcount
+
+    def set_hidden(self, book_id: int, hidden: bool) -> None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE books SET hidden = ? WHERE id = ?",
+                (int(hidden), book_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(book_id)
+
+    def find_by_source_id(self, source_id: str) -> Book | None:
+        if not source_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._COLUMNS} FROM books WHERE source_id = ?"
+                " ORDER BY id LIMIT 1",
+                (source_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_book(conn, row)
 
     # -- highlights ---------------------------------------------------------
 

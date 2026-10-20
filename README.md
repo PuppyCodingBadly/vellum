@@ -39,6 +39,9 @@ Updates: `flatpak update io.github.vellum.Vellum`.
   - Fullscreen reading (F11) and a bottom progress bar
 - Switchable library directory from Preferences (calibre-style; the app
   reopens the library at the chosen folder)
+- Import an existing calibre library folder (`metadata.db`), keeping books
+  linked to the files already in that folder
+- Hide books from the library grid, with a "Show hidden books" toggle
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
 

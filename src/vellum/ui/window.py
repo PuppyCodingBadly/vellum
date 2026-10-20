@@ -54,6 +54,8 @@ class VellumWindow(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
+        menu.append("Import Calibre Library…", "app.import-calibre")
+        menu.append("Show Hidden Books", "app.show-hidden")
         menu.append("About Vellum", "app.about")
         menu.append("Close Window", "window.close")
         menu.append("Quit", "app.quit")
@@ -103,7 +105,14 @@ class VellumWindow(Adw.ApplicationWindow):
     def refresh_library(self) -> None:
         """Reload the grid from the library, honoring the current query."""
         query = self.search_entry.get_text().strip()
-        books = self.library.search(query) if query else self.library.all_books()
+        application = self.get_application()
+        include_hidden = bool(
+            getattr(application, "config", {}).get("show_hidden", False)
+        )
+        if query:
+            books = self.library.search(query, include_hidden=include_hidden)
+        else:
+            books = self.library.all_books(include_hidden=include_hidden)
         self.library_view.set_books(books)
 
     def show_book_details(self, book: Book) -> None:
