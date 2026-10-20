@@ -1,8 +1,11 @@
 """Tests for vellum.core.db.Library."""
 
+import zipfile
+
 import pytest
 
 from vellum.core.db import Library
+from vellum.core.importer import import_path
 from vellum.core.models import Book
 
 
@@ -141,3 +144,43 @@ def test_all_books_sorted_by_title(lib):
     lib.add_book(make_book(title="Apple"))
     lib.add_book(make_book(title="Mango"))
     assert [b.title for b in lib.all_books()] == ["Apple", "Mango", "Zebra"]
+
+
+_OPF_SCHEME_ISBN = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:opf="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata>
+    <dc:title>Scheme ISBN Book</dc:title>
+    <dc:creator>Jane Author</dc:creator>
+    <dc:identifier id="bid" opf:scheme="ISBN">9780306406157</dc:identifier>
+  </metadata>
+  <manifest/>
+  <spine/>
+</package>"""
+
+_CONTAINER = """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf"
+              media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+
+
+def _write_epub(path, opf):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("META-INF/container.xml", _CONTAINER)
+        zf.writestr("OEBPS/content.opf", opf)
+
+
+def test_import_epub_isbn_via_opf_scheme(lib, tmp_path):
+    epub = tmp_path / "scheme.epub"
+    _write_epub(epub, _OPF_SCHEME_ISBN)
+
+    ids = import_path(lib, str(epub))
+    assert len(ids) == 1
+    book = lib.get_book(ids[0])
+    assert book.isbn == "9780306406157"
+    assert book.title == "Scheme ISBN Book"
+    assert book.authors == ["Jane Author"]

@@ -51,6 +51,7 @@ class VellumWindow(Adw.ApplicationWindow):
         header.set_title_widget(self.search_entry)
 
         menu = Gio.Menu()
+        menu.append("Preferences", "app.preferences")
         menu.append("About Vellum", "app.about")
         menu.append("Quit", "app.quit")
         menu_button = Gtk.MenuButton(

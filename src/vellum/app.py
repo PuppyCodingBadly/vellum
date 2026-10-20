@@ -57,6 +57,19 @@ CSS = """
 }
 """
 
+# Libadwaita 1.9 accent palette: name -> (bg/color, fg) hex pairs.
+ACCENTS = {
+    "blue": ("#3584e4", "#ffffff"),
+    "teal": ("#2190a4", "#ffffff"),
+    "green": ("#3a944a", "#ffffff"),
+    "yellow": ("#c88800", "#ffffff"),
+    "orange": ("#ed5b00", "#ffffff"),
+    "red": ("#e62d42", "#ffffff"),
+    "pink": ("#d56199", "#ffffff"),
+    "purple": ("#9141ac", "#ffffff"),
+    "slate": ("#6f8396", "#ffffff"),
+}
+
 DEMO_BOOKS = [
     Book(
         title="The Left Hand of Darkness",
@@ -146,6 +159,9 @@ class VellumApplication(Adw.Application):
             None,
         )
         self.data_dir: str = ""
+        self.config: dict = {}
+        self.config_path: str = ""
+        self._accent_provider: Gtk.CssProvider | None = None
         self.library: Library | None = None
         self.engine: MetadataEngine | None = None
         self.plugin_manager: PluginManager | None = None
@@ -163,6 +179,7 @@ class VellumApplication(Adw.Application):
         self._load_css()
         self._setup_actions()
         self._setup_backend()
+        self.apply_appearance()
 
     def do_activate(self):
         window = self.get_active_window()
@@ -192,6 +209,10 @@ class VellumApplication(Adw.Application):
         about.connect("activate", self._on_about)
         self.add_action(about)
 
+        preferences = Gio.SimpleAction(name="preferences")
+        preferences.connect("activate", self._on_preferences)
+        self.add_action(preferences)
+
         quit_action = Gio.SimpleAction(name="quit")
         quit_action.connect("activate", lambda *_args: self.quit())
         self.add_action(quit_action)
@@ -202,24 +223,33 @@ class VellumApplication(Adw.Application):
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(os.path.join(self.data_dir, "covers"), exist_ok=True)
 
-        # Library location comes from a plain JSON config file.
-        config_path = os.path.join(self.data_dir, "config.json")
+        # Settings (library location, appearance) live in a plain JSON file.
+        self.config_path = os.path.join(self.data_dir, "config.json")
         config: dict = {}
-        if os.path.isfile(config_path):
+        if os.path.isfile(self.config_path):
             try:
-                with open(config_path, "r", encoding="utf-8") as handle:
+                with open(self.config_path, "r", encoding="utf-8") as handle:
                     config = json.load(handle)
             except (OSError, ValueError) as exc:
-                logger.warning("Ignoring unreadable config %s: %s", config_path, exc)
-        library_path = config.get("library_path") or os.path.join(
+                logger.warning(
+                    "Ignoring unreadable config %s: %s", self.config_path, exc
+                )
+        self.config = config
+        library_path = self.config.get("library_path") or os.path.join(
             self.data_dir, "library.db"
         )
-        if config.get("library_path") != library_path:
-            try:
-                with open(config_path, "w", encoding="utf-8") as handle:
-                    json.dump({"library_path": library_path}, handle, indent=2)
-            except OSError as exc:
-                logger.warning("Could not write config %s: %s", config_path, exc)
+        changed = False
+        if self.config.get("library_path") != library_path:
+            self.config["library_path"] = library_path
+            changed = True
+        if self.config.get("color_scheme") not in ("system", "light", "dark"):
+            self.config.setdefault("color_scheme", "system")
+            changed = changed or "color_scheme" not in config
+        if not self.config.get("accent_color"):
+            self.config["accent_color"] = "blue"
+            changed = True
+        if changed:
+            self.save_config()
 
         self.library = Library(library_path)
         self.library.open()
@@ -254,7 +284,59 @@ class VellumApplication(Adw.Application):
             except Exception as exc:
                 logger.warning("Failed to seed '%s': %s", book.title, exc)
 
+    # -- config / appearance -----------------------------------------------------
+
+    def save_config(self) -> None:
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, indent=2)
+        except OSError as exc:
+            logger.warning("Could not write config %s: %s", self.config_path, exc)
+
+    def apply_appearance(self) -> None:
+        scheme = self.config.get("color_scheme", "system")
+        style_manager = Adw.StyleManager.get_default()
+        style_manager.set_color_scheme(
+            {
+                "light": Adw.ColorScheme.FORCE_LIGHT,
+                "dark": Adw.ColorScheme.FORCE_DARK,
+            }.get(scheme, Adw.ColorScheme.PREFER_LIGHT)
+        )
+
+        accent = self.config.get("accent_color", "blue")
+        if accent in ACCENTS:
+            bg, fg = ACCENTS[accent]
+        else:
+            bg, fg = accent, "#ffffff"
+        css = (
+            ":root {"
+            f" --accent-bg-color: {bg};"
+            f" --accent-color: {bg};"
+            f" --accent-fg-color: {fg};"
+            " }\n"
+            f"@define-color accent_bg_color {bg};\n"
+            f"@define-color accent_color {bg};\n"
+            f"@define-color accent_fg_color {fg};\n"
+        )
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        if self._accent_provider is None:
+            self._accent_provider = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(
+                display,
+                self._accent_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            )
+        self._accent_provider.load_from_string(css)
+
     # -- actions -----------------------------------------------------------------
+
+    def _on_preferences(self, *_args) -> None:
+        from vellum.ui.preferences import PreferencesDialog
+
+        dialog = PreferencesDialog(self)
+        dialog.present(self.get_active_window())
 
     def _on_about(self, *_args) -> None:
         parent = self.get_active_window()

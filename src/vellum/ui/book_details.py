@@ -103,6 +103,15 @@ class BookDetails(Gtk.Box):
         fetch.add_css_class("suggested-action")
         fetch.connect("clicked", self._on_fetch_clicked)
         actions.append(fetch)
+        self._read_button = Gtk.Button(label="Read")
+        self._read_button.add_css_class("suggested-action")
+        self._read_button.connect("clicked", self._on_read_clicked)
+        self._read_button.set_visible(
+            "epub" in (book.formats or [])
+            and bool(book.path)
+            and os.path.isfile(book.path)
+        )
+        actions.append(self._read_button)
         right.append(actions)
 
         # -- detail rows -----------------------------------------------------
@@ -184,6 +193,12 @@ class BookDetails(Gtk.Box):
             self._placeholder.set_label(_initials(book.title))
             self._cover_stack.set_visible_child_name("placeholder")
 
+        self._read_button.set_visible(
+            "epub" in (book.formats or [])
+            and bool(book.path)
+            and os.path.isfile(book.path)
+        )
+
     # -- internals ----------------------------------------------------------
 
     def _on_fetch_clicked(self, _button: Gtk.Button) -> None:
@@ -198,6 +213,15 @@ class BookDetails(Gtk.Box):
             on_applied=self._on_metadata_applied,
         )
         dialog.present_dialog()
+
+    def _on_read_clicked(self, _button: Gtk.Button) -> None:
+        from vellum.ui.reader_view import ReaderPage
+
+        page = Adw.NavigationPage(
+            child=ReaderPage(self._book, self._data_dir),
+            title=self._book.title or "Reader",
+        )
+        self._window.nav.push(page)
 
     def _on_metadata_applied(self) -> None:
         self.refresh()

@@ -86,6 +86,14 @@ def _store_cover(library: Library, book_id: int, cover: tuple[str, bytes]) -> st
     return str(dest)
 
 
+def _strip_isbn_prefix(text: str) -> str:
+    lowered = text.lower()
+    for prefix in ("urn:isbn:", "isbn:"):
+        if lowered.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text.strip()
+
+
 def _read_epub(file: Path) -> tuple[dict, tuple[str, bytes] | None]:
     """Parse an epub, returning (metadata dict, (cover_ext, cover_bytes) | None)."""
     with zipfile.ZipFile(file) as zf:
@@ -124,10 +132,12 @@ def _read_epub(file: Path) -> tuple[dict, tuple[str, bytes] | None]:
                 meta["title"] = text
             elif name == "creator" and text:
                 meta.setdefault("authors", []).append(text)
-            elif name == "identifier" and text and "isbn" in text.lower():
-                isbn = text.lower().replace("urn:isbn:", "").replace("isbn:", "").strip()
-                if "isbn" not in meta:
-                    meta["isbn"] = isbn
+            elif name == "identifier" and text:
+                is_isbn = "isbn" in text.lower() or any(
+                    v.strip().lower() == "isbn" for v in el.attrib.values()
+                )
+                if is_isbn and "isbn" not in meta:
+                    meta["isbn"] = _strip_isbn_prefix(text)
             elif name == "language" and text and "language" not in meta:
                 meta["language"] = text
             elif name == "publisher" and text and "publisher" not in meta:
