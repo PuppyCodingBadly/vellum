@@ -31,7 +31,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.2"
+    __version__ = "0.1.3"
 
 logger = logging.getLogger(__name__)
 
@@ -488,7 +488,12 @@ class VellumApplication(Adw.Application):
             if result.skipped:
                 parts.append(f"{result.skipped} already present")
             if result.failed:
-                parts.append(f"{result.failed} failed")
+                detail = result.first_error
+                if len(detail) > 140:
+                    detail = detail[:137] + "…"
+                parts.append(
+                    f"{result.failed} failed" + (f": {detail}" if detail else "")
+                )
             window.show_toast(" · ".join(parts))
         return False
 

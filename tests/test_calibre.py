@@ -232,3 +232,36 @@ def test_import_does_not_modify_calibre_database(lib, calibre_library):
     import_calibre_library(lib, str(calibre_library))
 
     assert db.read_bytes() == before
+
+
+def test_row_failure_does_not_abort_import(lib, calibre_library, monkeypatch):
+    from vellum.core import calibre
+
+    original = calibre._import_row
+
+    def fail_first(conn, library, root, row):
+        if row["id"] == 1:
+            raise RuntimeError("boom")
+        return original(conn, library, root, row)
+
+    monkeypatch.setattr(calibre, "_import_row", fail_first)
+    result = import_calibre_library(lib, str(calibre_library))
+    assert result.failed == 1
+    assert result.added == 0
+    assert result.first_error.startswith("RuntimeError: boom")
+
+
+def test_broken_optional_table_does_not_fail_book(lib, calibre_library):
+    conn = sqlite3.connect(calibre_library / "metadata.db")
+    conn.execute("DROP TABLE books_tags_link")
+    conn.execute(
+        "CREATE TABLE books_tags_link ("
+        " id INTEGER PRIMARY KEY, book INTEGER, tag_id INTEGER)"
+    )
+    conn.commit()
+    conn.close()
+
+    result = import_calibre_library(lib, str(calibre_library))
+    assert result.added == 1
+    assert result.failed == 0
+    assert lib.all_books(include_hidden=True)[0].tags == []

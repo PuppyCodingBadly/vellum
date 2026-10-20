@@ -44,6 +44,7 @@ class CalibreImportResult:
     added: int = 0
     skipped: int = 0
     failed: int = 0
+    first_error: str = ""
 
 
 def is_calibre_library(folder: str) -> bool:
@@ -86,12 +87,14 @@ def import_calibre_library(
                     result.added += 1
                 else:
                     result.skipped += 1
-            except Exception:
+            except Exception as exc:
                 result.failed += 1
+                if not result.first_error:
+                    result.first_error = f"{type(exc).__name__}: {exc}"
                 log.exception(
                     "failed to import calibre book %s (%s)",
-                    row.get("title", ""),
-                    row.get("id", ""),
+                    row["title"],
+                    row["id"],
                 )
             if progress is not None and (done % 25 == 0 or done == total):
                 progress(done, total)
@@ -185,6 +188,20 @@ def _book_rows(
 
 def _values(conn: sqlite3.Connection, sql: str, book_id: int) -> list[str]:
     return [str(row[0]) for row in conn.execute(sql, (book_id,)) if row[0]]
+
+
+def _optional(default, func, *args):
+    """Run an optional calibre metadata query, falling back to *default*.
+
+    Calibre schema details vary between versions and some libraries have
+    malformed or missing link tables. A single optional field must never
+    abort the import of an otherwise readable book.
+    """
+    try:
+        return func(*args)
+    except sqlite3.Error as exc:
+        log.warning("calibre metadata query failed: %s", exc)
+        return default
 
 
 def _author_names(conn: sqlite3.Connection, book_id: int) -> list[str]:
@@ -292,6 +309,8 @@ def _format_files(
     """Map lowercase format name to an existing file inside the library."""
     if not _has_table(conn, "data"):
         return {}
+    if not {"book", "format", "name"} <= _columns(conn, "data"):
+        return {}
     book_dir = _join_inside(root, book_path)
     if not book_dir or not os.path.isdir(book_dir):
         return {}
@@ -357,7 +376,9 @@ def _import_row(
         return False
 
     book_path = str(row["path"] or "")
-    files = _format_files(conn, root, book_id, book_path)
+    files = _optional(
+        {}, _format_files, conn, root, book_id, book_path
+    )
     preferred = next(
         (files[fmt] for fmt in _PREFERRED_FORMATS if fmt in files),
         next(iter(files.values()), ""),
@@ -367,17 +388,17 @@ def _import_row(
     book = Book(
         title=str(row["title"] or "").strip() or "Untitled",
         sort=str(row["sort"] or "").strip() if "sort" in row.keys() else "",
-        authors=_author_names(conn, book_id),
-        isbn=_isbn(conn, row),
-        publisher=_publisher(conn, book_id),
+        authors=_optional([], _author_names, conn, book_id),
+        isbn=_optional("", _isbn, conn, row),
+        publisher=_optional("", _publisher, conn, book_id),
         pubdate=_pubdate(row["pubdate"] if "pubdate" in row.keys() else ""),
-        language=_language(conn, book_id),
-        description=_description(conn, book_id),
-        tags=_tag_names(conn, book_id),
+        language=_optional("", _language, conn, book_id),
+        description=_optional("", _description, conn, book_id),
+        tags=_optional([], _tag_names, conn, book_id),
         formats=sorted(files),
         cover_path=_cover_file(root, book_path, has_cover),
         path=preferred,
-        rating=_rating(conn, book_id),
+        rating=_optional(0.0, _rating, conn, book_id),
         source_id=source_id,
     )
     library.add_book(book)

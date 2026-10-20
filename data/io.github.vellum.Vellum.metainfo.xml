@@ -23,6 +23,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.3" date="2026-10-19">
+      <description>
+        <p>Fix a crash while reporting calibre import errors, show the
+        first per-book failure in the toast, and keep importing when an
+        optional calibre metadata table is missing or malformed.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-19">
       <description>
         <p>Fix importing calibre libraries whose metadata.db is read-only,
