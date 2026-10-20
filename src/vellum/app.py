@@ -12,6 +12,11 @@ import os
 import sys
 import threading
 
+# WebKitGTK's DMA-BUF renderer has crashed the compositor on some Intel
+# GPUs (notably Surface Go 2-class hardware). Use the shared-memory path
+# instead; EPUB/MOBI pages still render with the software compositor.
+os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+
 if __package__ in (None, ""):
     sys.path.insert(
         0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -31,7 +36,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.3"
+    __version__ = "0.1.4"
 
 logger = logging.getLogger(__name__)
 

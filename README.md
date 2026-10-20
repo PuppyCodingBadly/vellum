@@ -41,6 +41,8 @@ Updates: `flatpak update io.github.vellum.Vellum`.
   reopens the library at the chosen folder)
 - Import an existing calibre library folder (`metadata.db`), keeping books
   linked to the files already in that folder
+- Universal metadata grabber: paste a book page URL and pull JSON-LD,
+  OpenGraph, or microdata; optionally merge every source into one record
 - Hide books from the library grid, with a "Show hidden books" toggle
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
@@ -88,7 +90,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.3` build is published at
+The signed `v0.1.4` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh

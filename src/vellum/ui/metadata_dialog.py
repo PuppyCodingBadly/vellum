@@ -71,9 +71,9 @@ class MetadataDialog(_Base):
         )
         spinner = Gtk.Spinner(spinning=True, width_request=32, height_request=32)
         busy.append(spinner)
-        status = Gtk.Label(label="Searching metadata sources…")
-        status.add_css_class("dim-label")
-        busy.append(status)
+        self._busy_label = Gtk.Label(label="Searching metadata sources…")
+        self._busy_label.add_css_class("dim-label")
+        busy.append(self._busy_label)
         self._stack.add_named(busy, "busy")
 
         scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
@@ -95,12 +95,35 @@ class MetadataDialog(_Base):
         )
         self._stack.add_named(self._status_page, "empty")
 
-        toolbar.set_content(self._stack)
+        url_bar = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=12,
+            margin_end=12,
+        )
+        self._url_entry = Gtk.Entry(
+            placeholder_text="Paste a book page URL…",
+            hexpand=True,
+        )
+        self._url_entry.connect("activate", self._on_grab_url)
+        url_bar.append(self._url_entry)
+        self._grab_button = Gtk.Button(label="Grab", valign=Gtk.Align.CENTER)
+        self._grab_button.connect("clicked", self._on_grab_url)
+        url_bar.append(self._grab_button)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(url_bar)
+        content.append(self._stack)
+        toolbar.set_content(content)
         if _HAS_ADW_DIALOG:
             self.set_child(toolbar)
         else:
             self.set_content(toolbar)
         self._stack.set_visible_child_name("busy")
+
+        self._request_id = 0
 
     # -- public API ---------------------------------------------------------
 
@@ -121,36 +144,98 @@ class MetadataDialog(_Base):
             "authors": list(book.authors) if book.authors else None,
             "isbn": book.isbn or "",
         }
+        request_id = self._begin_request("Searching metadata sources…")
 
         def work() -> None:
             try:
-                results = self._engine.find(**query)
+                results = self._engine.find_all(**query)
             except Exception as exc:  # network/parse failures
                 logger.warning("Metadata search failed: %s", exc)
-                GLib.idle_add(self._on_search_done, None, exc)
+                GLib.idle_add(self._on_search_done, None, exc, request_id)
             else:
-                GLib.idle_add(self._on_search_done, results, None)
+                GLib.idle_add(self._on_search_done, results, None, request_id)
 
         threading.Thread(
             target=work, name="vellum-metadata-search", daemon=True
         ).start()
 
-    def _on_search_done(self, results, error) -> bool:
+    def _begin_request(self, message: str) -> int:
+        self._request_id += 1
+        self._busy_label.set_label(message)
+        self._stack.set_visible_child_name("busy")
+        while (child := self._list.get_first_child()) is not None:
+            self._list.remove(child)
+        self._apply_button.set_sensitive(False)
+        return self._request_id
+
+    def _on_grab_url(self, *_args) -> None:
+        url = self._url_entry.get_text().strip()
+        if not url:
+            self._toast("Paste a book page URL first")
+            return
+        request_id = self._begin_request("Reading book page…")
+        self._grab_button.set_sensitive(False)
+
+        def work() -> None:
+            try:
+                meta = self._engine.grab_url(url)
+            except Exception as exc:
+                logger.warning("URL metadata grab failed: %s", exc)
+                GLib.idle_add(self._on_url_done, None, exc, request_id)
+            else:
+                GLib.idle_add(self._on_url_done, meta, None, request_id)
+
+        threading.Thread(
+            target=work, name="vellum-metadata-url", daemon=True
+        ).start()
+
+    def _on_search_done(self, results, error, request_id) -> bool:
+        if request_id != self._request_id:
+            return GLib.SOURCE_REMOVE
         if error is not None:
-            self._toast(f"Metadata search failed: {error}")
-            self._status_page.set_title("Search Failed")
-            self._status_page.set_description(str(error))
-            self._stack.set_visible_child_name("empty")
+            self._show_error("Search Failed", f"Metadata search failed: {error}")
             return GLib.SOURCE_REMOVE
-
         if not results:
+            self._status_page.set_title("No Results")
+            self._status_page.set_description(
+                "No metadata source returned a match."
+            )
             self._stack.set_visible_child_name("empty")
             return GLib.SOURCE_REMOVE
+        self._show_results(results)
+        return GLib.SOURCE_REMOVE
 
+    def _on_url_done(self, meta, error, request_id) -> bool:
+        self._grab_button.set_sensitive(True)
+        if request_id != self._request_id:
+            return GLib.SOURCE_REMOVE
+        if error is not None:
+            self._show_error("Grab Failed", f"Could not read that page: {error}")
+            return GLib.SOURCE_REMOVE
+        if meta is None:
+            self._status_page.set_title("No Metadata Found")
+            self._status_page.set_description(
+                "The page did not contain recognizable book metadata."
+            )
+            self._stack.set_visible_child_name("empty")
+            return GLib.SOURCE_REMOVE
+        self._show_results([meta], select=True)
+        return GLib.SOURCE_REMOVE
+
+    def _show_results(self, results: list[Metadata], select: bool = False) -> None:
+        while (child := self._list.get_first_child()) is not None:
+            self._list.remove(child)
         for meta in results:
             self._list.append(self._build_row(meta))
         self._stack.set_visible_child_name("results")
-        return GLib.SOURCE_REMOVE
+        if select and self._list.get_row_at_index(0) is not None:
+            self._list.select_row(self._list.get_row_at_index(0))
+
+    def _show_error(self, title: str, message: str) -> None:
+        self._toast(message)
+        self._status_page.set_title(title)
+        self._status_page.set_description(message)
+        self._stack.set_visible_child_name("empty")
 
     def _build_row(self, meta: Metadata) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
