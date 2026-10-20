@@ -58,6 +58,29 @@ class GoogleBooks(MetadataSource):
             log.warning("Google Books cover download failed: %s", exc)
             return None
 
+    def search_free_text(
+        self, query: str, timeout: float = 15.0
+    ) -> list[Metadata]:
+        query = (query or "").strip()
+        if not query:
+            return []
+        try:
+            resp = requests.get(
+                API_URL,
+                params={"q": query, "maxResults": 20},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.warning("Google Books free-text search failed: %s", exc)
+            return []
+        return [
+            meta
+            for meta in (self._parse_item(item) for item in data.get("items", []))
+            if meta
+        ]
+
     @staticmethod
     def _parse_item(item: dict) -> Metadata | None:
         info = item.get("volumeInfo") or {}

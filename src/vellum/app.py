@@ -33,6 +33,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gdk, Gtk
 
 from vellum.core.db import Library
+from vellum.core.sorting import SORT_KEYS
 from vellum.metadata.engine import MetadataEngine
 from vellum.plugins.manager import PluginManager
 from vellum.ui.window import VellumWindow
@@ -40,7 +41,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.7"
+    __version__ = "0.1.8"
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,9 @@ class VellumApplication(Adw.Application):
             changed = True
         if not isinstance(self.config.get("show_hidden"), bool):
             self.config["show_hidden"] = False
+            changed = True
+        if self.config.get("sort_key") not in SORT_KEYS:
+            self.config["sort_key"] = "title"
             changed = True
         if changed:
             self.save_config()

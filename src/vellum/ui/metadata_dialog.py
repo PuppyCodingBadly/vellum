@@ -18,6 +18,11 @@ from gi.repository import Adw, GLib, Gtk, Pango
 
 from vellum.core.models import Book
 from vellum.metadata.sources.base import Metadata
+from vellum.metadata.sorting import (
+    RESULT_SORT_KEYS,
+    RESULT_SORT_OPTIONS,
+    sort_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +46,11 @@ class MetadataDialog(_Base):
 
         if _HAS_ADW_DIALOG:
             self.set_title("Fetch Metadata")
-            self.set_content_width(560)
-            self.set_content_height(520)
+            self.set_content_width(620)
+            self.set_content_height(580)
         else:
             self.set_title("Fetch Metadata")
-            self.set_default_size(560, 520)
+            self.set_default_size(620, 580)
             self.set_modal(True)
 
         toolbar = Adw.ToolbarView()
@@ -95,6 +100,37 @@ class MetadataDialog(_Base):
         )
         self._stack.add_named(self._status_page, "empty")
 
+        query_bar = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            margin_top=6,
+            margin_start=12,
+            margin_end=12,
+        )
+        self._query_entry = Gtk.SearchEntry(
+            placeholder_text="Search metadata by title, author, or ISBN…",
+            hexpand=True,
+        )
+        self._query_entry.connect("activate", self._on_query_search)
+        query_bar.append(self._query_entry)
+        self._search_button = Gtk.Button(
+            label="Search", valign=Gtk.Align.CENTER
+        )
+        self._search_button.connect("clicked", self._on_query_search)
+        query_bar.append(self._search_button)
+        self._result_sort = Gtk.DropDown(
+            model=Gtk.StringList.new(
+                [label for _key, label in RESULT_SORT_OPTIONS]
+            ),
+            tooltip_text="Sort results",
+            valign=Gtk.Align.CENTER,
+        )
+        self._result_sort.set_selected(0)
+        self._result_sort.connect(
+            "notify::selected", self._on_result_sort_changed
+        )
+        query_bar.append(self._result_sort)
+
         url_bar = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
             spacing=6,
@@ -114,6 +150,7 @@ class MetadataDialog(_Base):
         url_bar.append(self._grab_button)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(query_bar)
         content.append(url_bar)
         content.append(self._stack)
         toolbar.set_content(content)
@@ -124,6 +161,9 @@ class MetadataDialog(_Base):
         self._stack.set_visible_child_name("busy")
 
         self._request_id = 0
+        self._results: list[Metadata] = []
+        self._result_sort_key = "relevance"
+        self._select_first = False
 
     # -- public API ---------------------------------------------------------
 
@@ -159,12 +199,51 @@ class MetadataDialog(_Base):
             target=work, name="vellum-metadata-search", daemon=True
         ).start()
 
+    def _on_query_search(self, *_args) -> None:
+        query = self._query_entry.get_text().strip()
+        if not query:
+            self._toast("Enter a title, author, or ISBN to search")
+            return
+        request_id = self._begin_request("Searching metadata sources…")
+        self._search_button.set_sensitive(False)
+
+        def work() -> None:
+            try:
+                results = self._engine.find_query(query)
+            except Exception as exc:
+                logger.warning("Metadata query failed: %s", exc)
+                GLib.idle_add(self._on_query_done, None, exc, request_id)
+            else:
+                GLib.idle_add(self._on_query_done, results, None, request_id)
+
+        threading.Thread(
+            target=work, name="vellum-metadata-query", daemon=True
+        ).start()
+
+    def _on_query_done(self, results, error, request_id) -> bool:
+        self._search_button.set_sensitive(True)
+        if request_id != self._request_id:
+            return GLib.SOURCE_REMOVE
+        if error is not None:
+            self._show_error("Search Failed", f"Metadata search failed: {error}")
+            return GLib.SOURCE_REMOVE
+        if not results:
+            self._status_page.set_title("No Results")
+            self._status_page.set_description(
+                "No metadata source matched that string."
+            )
+            self._stack.set_visible_child_name("empty")
+            return GLib.SOURCE_REMOVE
+        self._show_results(results)
+        return GLib.SOURCE_REMOVE
+
     def _begin_request(self, message: str) -> int:
         self._request_id += 1
         self._busy_label.set_label(message)
         self._stack.set_visible_child_name("busy")
         while (child := self._list.get_first_child()) is not None:
             self._list.remove(child)
+        self._results = []
         self._apply_button.set_sensitive(False)
         return self._request_id
 
@@ -223,13 +302,28 @@ class MetadataDialog(_Base):
         return GLib.SOURCE_REMOVE
 
     def _show_results(self, results: list[Metadata], select: bool = False) -> None:
+        self._results = list(results)
+        self._select_first = select
+        self._render_results()
+
+    def _render_results(self) -> None:
+        had_selection = self._list.get_selected_row() is not None
         while (child := self._list.get_first_child()) is not None:
             self._list.remove(child)
-        for meta in results:
+        for meta in sort_metadata(self._results, self._result_sort_key):
             self._list.append(self._build_row(meta))
         self._stack.set_visible_child_name("results")
-        if select and self._list.get_row_at_index(0) is not None:
+        if (self._select_first or had_selection) and (
+            self._list.get_row_at_index(0) is not None
+        ):
             self._list.select_row(self._list.get_row_at_index(0))
+
+    def _on_result_sort_changed(self, dropdown, _param) -> None:
+        index = dropdown.get_selected()
+        if 0 <= index < len(RESULT_SORT_KEYS):
+            self._result_sort_key = RESULT_SORT_KEYS[index]
+        if self._results:
+            self._render_results()
 
     def _show_error(self, title: str, message: str) -> None:
         self._toast(message)

@@ -36,5 +36,16 @@ class MetadataSource:
     ) -> list[Metadata]:
         raise NotImplementedError
 
+    def search_free_text(
+        self, query: str, timeout: float = 15.0
+    ) -> list[Metadata]:
+        """Fuzzy search by a free-form string.
+
+        Sources with a full-text endpoint should override this; the
+        fallback passes the string as a title query, preserving the
+        plugin interface.
+        """
+        return self.search(title=query, timeout=timeout)
+
     def download_cover(self, meta: Metadata, timeout: float = 15.0) -> bytes | None:
         raise NotImplementedError

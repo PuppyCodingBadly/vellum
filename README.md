@@ -43,6 +43,10 @@ Updates: `flatpak update io.github.vellum.Vellum`.
   linked to the files already in that folder
 - Universal metadata grabber: paste a book page URL and pull JSON-LD,
   OpenGraph, or microdata; optionally merge every source into one record
+- Fuzzy metadata search from a free-form title/author/ISBN string
+- Sort the library by title, author, rating, or recently added, and sort
+  metadata results by relevance, title, author, rating, or newest
+- Swipe left/right in the reader to turn pages/chapters
 - Hide books from the library grid, with a "Show hidden books" toggle
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
@@ -90,7 +94,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.7` build is published at
+The signed `v0.1.8` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh

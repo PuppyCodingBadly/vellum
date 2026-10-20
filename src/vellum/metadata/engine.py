@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
+from difflib import SequenceMatcher
 
 import requests
 
@@ -52,6 +54,47 @@ class MetadataEngine:
         from vellum.metadata.universal import UniversalGrabber
 
         return UniversalGrabber().grab(url, timeout=timeout)
+
+    def find_query(self, query: str, timeout: float = 15.0) -> list[Metadata]:
+        """Search metadata sources with a free-form fuzzy query string.
+
+        An ISBN-like string is looked up by ISBN; anything else is treated
+        as a fuzzy title/author string and ranked locally by token overlap
+        and title similarity after the sources respond.
+        """
+        query = " ".join((query or "").split())
+        if not query:
+            return []
+        isbn = _query_isbn(query)
+        if isbn:
+            results = self.find(isbn=isbn, timeout=timeout)
+        else:
+            results = []
+            for source in self._sources:
+                try:
+                    search_free_text = getattr(
+                        source, "search_free_text", None
+                    )
+                    if search_free_text is not None:
+                        results.extend(
+                            search_free_text(query, timeout=timeout)
+                        )
+                    else:
+                        results.extend(
+                            source.search(title=query, timeout=timeout)
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "Metadata source %s failed: %s", source.id, exc
+                    )
+            results = self._dedupe(results)
+            results.sort(
+                key=lambda meta: (-_fuzzy_score(query, meta), -meta.rating)
+            )
+        merged = self.merge_results(results)
+        if merged is not None and len(results) > 1:
+            return [merged] + results
+        return results
 
     def find_all(
         self,
@@ -187,3 +230,52 @@ class MetadataEngine:
         deduped = [merged[key] for key in order]
         deduped.sort(key=lambda m: -m.rating)
         return deduped
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
+
+
+def _query_isbn(query: str) -> str:
+    digits = re.sub(r"[^0-9Xx]", "", query)
+    if len(digits) == 13 and digits.isdigit():
+        return digits
+    if len(digits) == 10 and digits[:-1].isdigit() and (
+        digits[-1].isdigit() or digits[-1].upper() == "X"
+    ):
+        return digits.upper()
+    return ""
+
+
+def _fuzzy_score(query: str, meta: Metadata) -> float:
+    """Score a result against a free-form query: title, authors, rating."""
+    normalized_query = _normalize(query)
+    title = _normalize(meta.title)
+    authors = _normalize(", ".join(meta.authors))
+    if not normalized_query:
+        return 0.0
+
+    if normalized_query == title:
+        score = 150.0
+    elif normalized_query in title:
+        score = 100.0
+    elif title:
+        score = SequenceMatcher(None, normalized_query, title).ratio() * 40.0
+        if title in normalized_query:
+            score += 40.0
+    else:
+        score = 0.0
+
+    title_tokens = set(title.split())
+    author_tokens = set(authors.split())
+    for token in normalized_query.split():
+        if token in title_tokens:
+            score += 12.0
+        if token in author_tokens:
+            score += 8.0
+        elif token in authors:
+            score += 4.0
+    score += max(0.0, meta.rating) * 2.0
+    if meta.isbn and meta.isbn.lower() in normalized_query:
+        score += 100.0
+    return score

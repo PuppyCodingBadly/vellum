@@ -23,6 +23,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.8" date="2026-10-19">
+      <description>
+        <p>Add fuzzy metadata search from a free-form title/author/ISBN
+        string, sort controls for the library and metadata results, and
+        horizontal swipe page turning in the reader.</p>
+      </description>
+    </release>
     <release version="0.1.7" date="2026-10-19">
       <description>
         <p>Defer destruction of the previous page and its WebKit surfaces

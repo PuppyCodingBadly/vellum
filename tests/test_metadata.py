@@ -235,3 +235,65 @@ def test_download_cover_openlibrary():
         return_value=make_response({}, content=b"IMG"),
     ):
         assert OpenLibrary().download_cover(meta) == b"IMG"
+
+
+def test_google_books_multiword_uses_free_text():
+    with patch(
+        "vellum.metadata.sources.google_books.requests.get",
+        return_value=make_response({"items": []}),
+    ) as get:
+        GoogleBooks().search_free_text("dune frank herbert")
+    assert get.call_args.kwargs["params"]["q"] == "dune frank herbert"
+
+
+def test_openlibrary_multiword_uses_free_text():
+    with patch(
+        "vellum.metadata.sources.openlibrary.requests.get",
+        return_value=make_response({"docs": []}),
+    ) as get:
+        OpenLibrary().search_free_text("dune frank herbert")
+    assert get.call_args.kwargs["params"]["q"] == "dune frank herbert"
+
+
+def test_engine_find_query_uses_isbn_lookup():
+    source = MagicMock(spec=MetadataSource)
+    source.id = "stub"
+    source.name = "Stub"
+    source.search.return_value = []
+    engine = MetadataEngine()
+    engine.register_source(source)
+
+    engine.find_query("978-0-44-101359-3")
+    source.search.assert_called_once_with(
+        title="", authors=None, isbn="9780441013593", timeout=15.0
+    )
+
+
+def test_engine_find_query_ranks_closest_title_first():
+    exact = Metadata(
+        title="Dune", authors=["Frank Herbert"], rating=4.0, source_id="a"
+    )
+    sequel = Metadata(
+        title="Dune Messiah", authors=["Frank Herbert"], rating=5.0,
+        source_id="b",
+    )
+    unrelated = Metadata(
+        title="Cooking", authors=["Someone"], rating=5.0, source_id="c"
+    )
+    source = MagicMock(spec=MetadataSource)
+    source.id = "stub"
+    source.name = "Stub"
+    source.search_free_text.return_value = [unrelated, sequel, exact]
+    engine = MetadataEngine()
+    engine.register_source(source)
+
+    results = engine.find_query("dune frank herbert")
+    assert results[0].source_id == "merged"
+    assert [m.title for m in results[1:]] == [
+        "Dune", "Dune Messiah", "Cooking",
+    ]
+
+
+def test_engine_find_query_empty_returns_empty():
+    engine = MetadataEngine()
+    assert engine.find_query("   ") == []

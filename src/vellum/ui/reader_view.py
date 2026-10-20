@@ -21,6 +21,7 @@ gi.require_version("WebKit", "6.0")
 from gi.repository import Adw, Gdk, GLib, Graphene, Gtk, Pango, WebKit
 
 from vellum.core.epub import EpubBook
+from vellum.core.gestures import swipe_direction
 from vellum.core.mobi import MobiBook
 from vellum.core.models import Book
 
@@ -484,6 +485,15 @@ class ReaderPage(Gtk.Box):
         self._stack = Gtk.Stack(vexpand=True, hexpand=True)
         self.append(self._stack)
 
+        # Touch page turning. Attached only to the content stack, never
+        # the window or navigation, so it cannot interact with shell
+        # gestures. Horizontal swipes turn a page/chapter; vertical
+        # scrolling is left to the content widget.
+        self._swipe = Gtk.GestureSwipe()
+        self._swipe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self._swipe.connect("swipe", self._on_swipe)
+        self._stack.add_controller(self._swipe)
+
         self._progress = Gtk.ProgressBar(show_text=False)
         self._progress.add_css_class("vellum-progress")
         self._progress.set_valign(Gtk.Align.END)
@@ -868,6 +878,13 @@ class ReaderPage(Gtk.Box):
     def next_chapter(self) -> None:
         if self._index < len(self._items) - 1:
             self._show_item(self._index + 1, 1)
+
+    def _on_swipe(self, _gesture, velocity_x: float, velocity_y: float) -> None:
+        direction = swipe_direction(velocity_x, velocity_y)
+        if direction < 0:
+            self.next_chapter()
+        elif direction > 0:
+            self.prev_chapter()
 
     def _animation_enabled(self) -> bool:
         return bool(self._read_config().get("reader_animation", True))

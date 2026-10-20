@@ -40,7 +40,7 @@ class OpenLibrary(MetadataSource):
             params["author"] = authors[0]
         if isbn:
             params["isbn"] = isbn
-        if len(params) == 1:
+        if not (title or authors or isbn):
             return []
         try:
             resp = requests.get(API_URL, params=params, timeout=timeout)
@@ -61,6 +61,33 @@ class OpenLibrary(MetadataSource):
         except Exception as exc:
             log.warning("Open Library cover download failed: %s", exc)
             return None
+
+    def search_free_text(
+        self, query: str, timeout: float = 15.0
+    ) -> list[Metadata]:
+        query = (query or "").strip()
+        if not query:
+            return []
+        params = {
+            "q": query,
+            "limit": 20,
+            "fields": (
+                "key,title,author_name,first_publish_year,publisher,"
+                "language,subject,cover_i,isbn"
+            ),
+        }
+        try:
+            resp = requests.get(API_URL, params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.warning("Open Library free-text search failed: %s", exc)
+            return []
+        return [
+            meta
+            for meta in (self._parse_doc(doc) for doc in data.get("docs", []))
+            if meta
+        ]
 
     @staticmethod
     def _parse_doc(doc: dict) -> Metadata | None:

@@ -9,6 +9,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from vellum.core.models import Book
+from vellum.core.sorting import SORT_KEYS, SORT_OPTIONS, sort_books
 
 from vellum.ui.book_details import BookDetails
 from vellum.ui.library_view import LibraryView
@@ -60,6 +61,18 @@ class VellumWindow(Adw.ApplicationWindow):
             placeholder_text="Search library…", width_chars=36
         )
         header.set_title_widget(self.search_entry)
+
+        self.sort_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new(
+                [label for _key, label in SORT_OPTIONS]
+            ),
+            tooltip_text="Sort library",
+            valign=Gtk.Align.CENTER,
+        )
+        current_sort = self._current_sort_key()
+        self.sort_dropdown.set_selected(SORT_KEYS.index(current_sort))
+        self.sort_dropdown.connect("notify::selected", self._on_sort_changed)
+        header.pack_end(self.sort_dropdown)
 
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
@@ -129,7 +142,23 @@ class VellumWindow(Adw.ApplicationWindow):
             books = self.library.search(query, include_hidden=include_hidden)
         else:
             books = self.library.all_books(include_hidden=include_hidden)
-        self.library_view.set_books(books)
+        self.library_view.set_books(
+            sort_books(books, self._current_sort_key())
+        )
+
+    def _current_sort_key(self) -> str:
+        application = self.get_application()
+        key = getattr(application, "config", {}).get("sort_key", "title")
+        return key if key in SORT_KEYS else "title"
+
+    def _on_sort_changed(self, dropdown, _param) -> None:
+        index = dropdown.get_selected()
+        if not 0 <= index < len(SORT_KEYS):
+            return
+        application = self.get_application()
+        application.config["sort_key"] = SORT_KEYS[index]
+        application.save_config()
+        self.refresh_library()
 
     def show_book_details(self, book: Book) -> None:
         details = BookDetails(
