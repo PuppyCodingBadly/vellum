@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sqlite3
-import urllib.parse
+import tempfile
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -46,18 +47,13 @@ class CalibreImportResult:
 
 
 def is_calibre_library(folder: str) -> bool:
-    """Return True when *folder* looks like a calibre library directory."""
-    db_path = Path(folder) / "metadata.db"
-    if not db_path.is_file():
-        return False
-    try:
-        conn = _connect(db_path)
-        try:
-            return _has_table(conn, "books")
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return False
+    """Return True when *folder* contains a calibre ``metadata.db``.
+
+    This is only a cheap existence check: the database itself is opened
+    and validated on the import worker thread, where snapshotting and
+    SQLite errors can be reported without blocking the UI.
+    """
+    return (Path(folder) / "metadata.db").is_file()
 
 
 def import_calibre_library(
@@ -77,12 +73,12 @@ def import_calibre_library(
     if not db_path.is_file():
         raise ValueError(f"no metadata.db in {folder}")
 
-    conn = _connect(db_path)
+    db = _open_database(db_path)
+    conn = db.conn
     try:
         if not _has_table(conn, "books"):
             raise ValueError(f"{db_path} is not a calibre metadata database")
-        rows = _book_rows(conn)
-        total = len(rows)
+        rows, total = _book_rows(conn)
         result = CalibreImportResult()
         for done, row in enumerate(rows, start=1):
             try:
@@ -101,17 +97,60 @@ def import_calibre_library(
                 progress(done, total)
         return result
     finally:
-        conn.close()
+        db.close()
 
 
 # -- calibre database access -------------------------------------------------
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    uri = f"file:{urllib.parse.quote(str(db_path))}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+class _OpenedDatabase:
+    """A calibre metadata database opened from a local snapshot."""
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        tempdir: tempfile.TemporaryDirectory | None,
+    ) -> None:
+        self.conn = conn
+        self._tempdir = tempdir
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        finally:
+            if self._tempdir is not None:
+                self._tempdir.cleanup()
+
+
+def _open_database(db_path: Path) -> _OpenedDatabase:
+    """Open a calibre database through a writable snapshot.
+
+    Calibre libraries are commonly read-only to the app (Flatpak's
+    ``home:ro`` access, document-portal mounts) and may use WAL mode.
+    SQLite needs to create or write the ``-shm`` sidecar for a WAL
+    database, so a direct read-only open can fail with "unable to open
+    database file". Copying ``metadata.db`` and its WAL sidecars into a
+    private temporary directory sidesteps locking, WAL, and FUSE quirks;
+    the calibre library itself is never modified.
+    """
+    tempdir = tempfile.TemporaryDirectory(prefix="vellum-calibre-")
+    try:
+        dest = Path(tempdir.name) / "metadata.db"
+        shutil.copy2(db_path, dest)
+        os.chmod(dest, 0o600)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{db_path}{suffix}")
+            if sidecar.is_file():
+                copied = Path(f"{dest}{suffix}")
+                shutil.copy2(sidecar, copied)
+                os.chmod(copied, 0o600)
+        conn = sqlite3.connect(str(dest))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        return _OpenedDatabase(conn, tempdir)
+    except Exception:
+        tempdir.cleanup()
+        raise
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:
@@ -125,14 +164,23 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def _book_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def _book_rows(
+    conn: sqlite3.Connection,
+) -> tuple[sqlite3.Cursor, int]:
+    """Return a streaming cursor over calibre's books plus the row count.
+
+    The cursor is iterated on the worker thread, so a large library is
+    never materialised as a Python list.
+    """
     available = _columns(conn, "books")
     wanted = ["id", "title", "sort", "isbn", "pubdate", "path", "uuid",
               "has_cover"]
     selected = [name for name in wanted if name in available]
-    return conn.execute(
+    total = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+    cursor = conn.execute(
         f"SELECT {', '.join(selected)} FROM books ORDER BY id"
-    ).fetchall()
+    )
+    return cursor, total
 
 
 def _values(conn: sqlite3.Connection, sql: str, book_id: int) -> list[str]:

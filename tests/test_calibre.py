@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import pytest
@@ -190,3 +191,44 @@ def test_format_path_outside_library_is_ignored(lib, calibre_library):
     book = lib.all_books(include_hidden=True)[0]
     assert book.path == ""
     assert book.formats == []
+
+
+def test_import_from_read_only_wal_library(lib, calibre_library):
+    """A WAL calibre DB on a read-only mount must import from a snapshot."""
+    db = calibre_library / "metadata.db"
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(
+        "INSERT INTO books (id, title, path, has_cover, uuid)"
+        " VALUES (2, 'WAL Book', '', 0, 'uuid-2')"
+    )
+    writer.commit()
+    assert (calibre_library / "metadata.db-wal").is_file()
+
+    modes = {}
+    try:
+        for path in [calibre_library, *calibre_library.rglob("*")]:
+            if path.is_file():
+                modes[path] = path.stat().st_mode
+                os.chmod(path, 0o444)
+            elif path.is_dir():
+                modes[path] = path.stat().st_mode
+                os.chmod(path, 0o555)
+
+        result = import_calibre_library(lib, str(calibre_library))
+        assert result.added == 2
+        titles = {b.title for b in lib.all_books(include_hidden=True)}
+        assert titles == {"A Book", "WAL Book"}
+    finally:
+        for path, mode in modes.items():
+            os.chmod(path, mode)
+        writer.close()
+
+
+def test_import_does_not_modify_calibre_database(lib, calibre_library):
+    db = calibre_library / "metadata.db"
+    before = db.read_bytes()
+
+    import_calibre_library(lib, str(calibre_library))
+
+    assert db.read_bytes() == before

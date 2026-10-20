@@ -23,6 +23,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.2" date="2026-10-19">
+      <description>
+        <p>Fix importing calibre libraries whose metadata.db is read-only,
+        in WAL mode, or behind a document-portal/FUSE mount. Imports now
+        snapshot the database off the UI thread and stream rows.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-19">
       <description>
         <p>Import books from an existing calibre library folder, hide books
