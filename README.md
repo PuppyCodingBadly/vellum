@@ -1,7 +1,6 @@
 # Vellum
 
-Vellum is a calibre-inspired ebook library manager, ported from the original
-GTK4/Libadwaita application to Flutter for Linux desktop. It keeps the
+Vellum is a calibre-inspired ebook library manager for Linux desktop. It keeps the
 catalogue in a local SQLite database, reads EPUB, MOBI, and PDF books, and
 looks up metadata and covers from several online sources.
 
