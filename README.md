@@ -6,6 +6,25 @@ SQLite library, supports calibre metadata-source plugins out of the box,
 and can look up book metadata (title, authors, covers, descriptions) from
 online sources such as Google Books and OpenLibrary.
 
+## Install
+
+```sh
+flatpak install --user https://puppycodingbadly.github.io/vellum/io.github.vellum.Vellum.flatpakref
+flatpak run io.github.vellum.Vellum
+```
+
+Updates: `flatpak update io.github.vellum.Vellum`.
+
+<img src="docs/screenshots/library.png" alt="Vellum library" width="900">
+
+| Book details | Reader |
+|---|---|
+| <img src="docs/screenshots/details.png" alt="Book details" width="440"> | <img src="docs/screenshots/reader.png" alt="Reader" width="440"> |
+
+| Get Books | Plugins |
+|---|---|
+| <img src="docs/screenshots/get-books.png" alt="Get Books" width="440"> | <img src="docs/screenshots/plugins.png" alt="Plugins" width="440"> |
+
 ## Features
 
 - Modern GTK4/Libadwaita user interface

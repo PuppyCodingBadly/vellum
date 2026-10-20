@@ -67,9 +67,15 @@ class VellumWindow(Adw.ApplicationWindow):
         self.library_view = LibraryView(on_activate=self.show_book_details)
         self.plugins_view = PluginsView(plugin_manager, window=self)
         self.store_view = StoreView(self.stores, library=self.library, window=self)
-        self.stack.add_titled(self.library_view, "library", "Library")
-        self.stack.add_titled(self.store_view, "store", "Get Books")
-        self.stack.add_titled(self.plugins_view, "plugins", "Plugins")
+        self.stack.add_titled_with_icon(
+            self.library_view, "library", "Library", "view-grid-symbolic"
+        )
+        self.stack.add_titled_with_icon(
+            self.store_view, "store", "Get Books", "folder-download-symbolic"
+        )
+        self.stack.add_titled_with_icon(
+            self.plugins_view, "plugins", "Plugins", "application-x-addon-symbolic"
+        )
 
         toolbar_view.set_content(self.stack)
 

@@ -64,14 +64,14 @@ class LibraryView(Gtk.ScrolledWindow):
         self._thumb_queue: queue.Queue = queue.Queue()
         self._thumb_pending: set[tuple[int, str]] = set()
         self._thumb_lock = threading.Lock()
-        self._thumb_cards: dict[tuple[int, str], weakref.ref] = {}
+        self._thumb_items: dict[tuple[int, str], weakref.ref] = {}
         worker = threading.Thread(target=self._thumb_worker, daemon=True)
         worker.start()
 
     # -- public API ---------------------------------------------------------
 
     def set_books(self, books: list[Book]) -> None:
-        self._thumb_cards.clear()
+        self._thumb_items.clear()
         with self._thumb_lock:
             self._thumb_pending.clear()
         self._store.remove_all()
@@ -161,7 +161,7 @@ class LibraryView(Gtk.ScrolledWindow):
         card._cover_path = book.cover_path
         if book.cover_path and os.path.isfile(book.cover_path):
             if book.id is not None:
-                self._thumb_cards[(book.id, book.cover_path)] = weakref.ref(card)
+                self._thumb_items[(book.id, book.cover_path)] = weakref.ref(item)
             thumb = thumb_cache_path(
                 self._data_dir, book.id, book.cover_path
             )
@@ -210,13 +210,20 @@ class LibraryView(Gtk.ScrolledWindow):
 
     def _apply_thumb(self, book_id: int, cover_path: str,
                      thumb: str) -> bool:
-        ref = self._thumb_cards.get((book_id, cover_path))
-        card = ref() if ref is not None else None
+        # Track the Gtk.ListItem, not the card: grid items are recycled,
+        # so a queued thumbnail must find whatever card is bound now.
+        ref = self._thumb_items.get((book_id, cover_path))
+        item = ref() if ref is not None else None
+        obj = item.get_item() if item is not None else None
+        card = item.get_child() if item is not None else None
         if (
-            card is not None
-            and getattr(card, "_book_id", None) == book_id
-            and getattr(card, "_cover_path", None) == cover_path
+            obj is not None
+            and card is not None
+            and getattr(obj.book, "id", None) == book_id
+            and getattr(obj.book, "cover_path", None) == cover_path
         ):
+            card._book_id = book_id
+            card._cover_path = cover_path
             card._picture.set_filename(thumb)
             card._cover_stack.set_visible_child_name("cover")
         return False
