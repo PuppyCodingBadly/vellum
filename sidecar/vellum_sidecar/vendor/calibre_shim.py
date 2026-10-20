@@ -280,8 +280,19 @@ class _Browser:
     def open_novisit(self, url, timeout=30, **kwargs):
         headers = dict(self.addheaders)
         headers.update(kwargs.get("headers") or {})
-        request = url if isinstance(url, urllib.request.Request) else \
-            urllib.request.Request(str(url), headers=headers)
+        data = kwargs.get("data")
+        method = kwargs.get("method")
+        if isinstance(url, urllib.request.Request):
+            request = url
+            if data is not None:
+                request.data = data
+            if method:
+                request.method = method
+            for key, value in headers.items():
+                request.add_header(key, value)
+        else:
+            request = urllib.request.Request(
+                str(url), data=data, headers=headers, method=method)
         return _Response(self._opener.open(request, timeout=timeout))
 
     open = open_novisit
