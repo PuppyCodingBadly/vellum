@@ -118,6 +118,7 @@ class VellumWindow(Adw.ApplicationWindow):
         menu.append("Preferences", "app.preferences")
         menu.append("Import Calibre Library…", "app.import-calibre")
         menu.append("Show Hidden Books", "app.show-hidden")
+        menu.append("Maximize Window", "app.toggle-maximize")
         menu.append("About Vellum", "app.about")
         menu.append("Close Window", "window.close")
         menu.append("Quit", "app.quit")

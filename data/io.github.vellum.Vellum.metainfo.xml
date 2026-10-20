@@ -23,6 +23,12 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.17" date="2026-10-19">
+      <description>
+        <p>Open compact/portrait layouts maximized so the window does not
+        need to be dragged, and add a Maximize Window menu action.</p>
+      </description>
+    </release>
     <release version="0.1.16" date="2026-10-19">
       <description>
         <p>Add VELLUM_DISABLE_TOUCH=1 to swallow touchscreen events and
