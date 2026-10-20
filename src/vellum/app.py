@@ -21,13 +21,11 @@ os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 # slower but cannot take down the session via a GPU driver bug.
 os.environ.setdefault("GSK_RENDERER", "cairo")
 # Keep Mesa entirely in software as a belt-and-braces measure for
-# driver bugs, and prefer Xwayland over direct Wayland surfaces. A
-# misbehaving X11 client is isolated behind Xwayland; a Wayland client
-# shares the compositor's surface lifecycle.
+# driver bugs. Do not override GDK_BACKEND: forcing Xwayland made
+# autorotate/output changes unstable on convertibles, and the session's
+# native backend is the right choice.
 os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
-if os.environ.get("DISPLAY"):
-    os.environ.setdefault("GDK_BACKEND", "x11")
 
 if __package__ in (None, ""):
     sys.path.insert(
@@ -49,7 +47,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.11"
+    __version__ = "0.1.12"
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +89,10 @@ CSS = """
 }
 .cover-author {
     color: rgba(255, 255, 255, 0.82);
+}
+.metadata-cover {
+    border-radius: 6px;
+    background: alpha(@accent_bg_color, 0.15);
 }
 """
 
@@ -316,10 +318,22 @@ class VellumApplication(Adw.Application):
 
     def _register_builtin_sources(self) -> None:
         try:
-            from vellum.metadata.sources import GoogleBooks, OpenLibrary
+            from vellum.metadata.sources import (
+                Crossref,
+                GoogleBooks,
+                InternetArchive,
+                LibraryOfCongress,
+                OpenLibrary,
+            )
 
-            self.engine.register_source(GoogleBooks())
-            self.engine.register_source(OpenLibrary())
+            for source in (
+                GoogleBooks(),
+                OpenLibrary(),
+                InternetArchive(),
+                LibraryOfCongress(),
+                Crossref(),
+            ):
+                self.engine.register_source(source)
         except Exception as exc:
             logger.warning("Could not register metadata sources: %s", exc)
 

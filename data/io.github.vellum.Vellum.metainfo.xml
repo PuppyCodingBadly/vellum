@@ -23,6 +23,14 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.12" date="2026-10-19">
+      <description>
+        <p>Add Internet Archive, Library of Congress, and Crossref
+        metadata sources, preview result covers in the Fetch Metadata
+        dialog, and stop overriding GDK_BACKEND so autorotate/output
+        changes use the session's native backend.</p>
+      </description>
+    </release>
     <release version="0.1.11" date="2026-10-19">
       <description>
         <p>Book grid tiles are now exactly 2:3 cover posters (160x240)

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk, Pango
+gi.require_version("Gdk", "4.0")
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from vellum.core.models import Book
 from vellum.metadata.sources.base import Metadata
@@ -165,6 +167,16 @@ class MetadataDialog(_Base):
         self._results: list[Metadata] = []
         self._result_sort_key = "relevance"
         self._select_first = False
+        self._render_serial = 0
+        self._cover_queue: queue.Queue = queue.Queue()
+        self._cover_cache: dict[str, bytes | None] = {}
+        self._cover_failed: set[str] = set()
+        self._cover_waiters: dict[str, list[tuple]] = {}
+        threading.Thread(
+            target=self._cover_worker,
+            name="vellum-metadata-covers",
+            daemon=True,
+        ).start()
 
     # -- public API ---------------------------------------------------------
 
@@ -318,8 +330,10 @@ class MetadataDialog(_Base):
         had_selection = self._list.get_selected_row() is not None
         while (child := self._list.get_first_child()) is not None:
             self._list.remove(child)
+        self._render_serial += 1
+        serial = self._render_serial
         for meta in sort_metadata(self._results, self._result_sort_key):
-            self._list.append(self._build_row(meta))
+            self._list.append(self._build_row(meta, serial))
         self._stack.set_visible_child_name("results")
         if (self._select_first or had_selection) and (
             self._list.get_row_at_index(0) is not None
@@ -339,7 +353,7 @@ class MetadataDialog(_Base):
         self._status_page.set_description(message)
         self._stack.set_visible_child_name("empty")
 
-    def _build_row(self, meta: Metadata) -> Gtk.ListBoxRow:
+    def _build_row(self, meta: Metadata, serial: int = 0) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         row._meta = meta
 
@@ -349,8 +363,34 @@ class MetadataDialog(_Base):
         box.set_margin_start(8)
         box.set_margin_end(8)
 
+        preview_stack = Gtk.Stack(
+            width_request=48, height_request=72,
+            hhomogeneous=False, vhomogeneous=False,
+        )
+        preview = Gtk.Picture(
+            content_fit=Gtk.ContentFit.COVER, can_shrink=True
+        )
+        placeholder = Gtk.Image.new_from_icon_name(
+            "image-x-generic-symbolic"
+        )
+        placeholder.set_pixel_size(18)
+        placeholder.add_css_class("dim-label")
+        placeholder.set_halign(Gtk.Align.CENTER)
+        placeholder.set_valign(Gtk.Align.CENTER)
+        preview_stack.add_named(preview, "cover")
+        preview_stack.add_named(placeholder, "placeholder")
+        preview_stack.set_visible_child_name("placeholder")
+        preview_frame = Gtk.Frame(css_classes=["metadata-cover"])
+        preview_frame.set_child(preview_stack)
+        preview_aspect = Gtk.AspectFrame(
+            ratio=2.0 / 3.0, obey_child=False, xalign=0.5, yalign=0.5
+        )
+        preview_aspect.set_child(preview_frame)
+        preview_aspect.set_size_request(48, 72)
+        box.append(preview_aspect)
+
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                       hexpand=True)
+                       hexpand=True, valign=Gtk.Align.CENTER)
         title = Gtk.Label(label=meta.title or "Untitled", xalign=0,
                           ellipsize=Pango.EllipsizeMode.END)
         title.add_css_class("heading")
@@ -380,7 +420,63 @@ class MetadataDialog(_Base):
             box.append(rating)
 
         row.set_child(box)
+        row._cover_picture = preview
+        row._cover_stack = preview_stack
+        self._request_cover(meta, preview, preview_stack, serial)
         return row
+
+    # -- cover previews --------------------------------------------------------
+
+    def _cover_worker(self) -> None:
+        while True:
+            meta = self._cover_queue.get()
+            try:
+                data = self._engine.fetch_cover(meta)
+            except Exception as exc:
+                logger.warning("Metadata cover fetch failed: %s", exc)
+                data = None
+            GLib.idle_add(self._apply_cover, meta.cover_url, data)
+
+    def _request_cover(
+        self, meta: Metadata, picture: Gtk.Picture,
+        stack: Gtk.Stack, serial: int,
+    ) -> None:
+        url = meta.cover_url
+        if not url:
+            return
+        if url in self._cover_cache:
+            data = self._cover_cache[url]
+            if data:
+                self._set_cover(picture, stack, data)
+            return
+        if url in self._cover_failed:
+            return
+        waiters = self._cover_waiters.setdefault(url, [])
+        waiters.append((picture, stack, serial))
+        if len(waiters) == 1:
+            self._cover_queue.put(meta)
+
+    def _apply_cover(self, url: str, data: bytes | None) -> bool:
+        if data:
+            self._cover_cache[url] = data
+        else:
+            self._cover_failed.add(url)
+            self._cover_cache[url] = None
+        for picture, stack, serial in self._cover_waiters.pop(url, []):
+            if serial == self._render_serial and data:
+                self._set_cover(picture, stack, data)
+        return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _set_cover(
+        picture: Gtk.Picture, stack: Gtk.Stack, data: bytes
+    ) -> None:
+        try:
+            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            picture.set_paintable(texture)
+            stack.set_visible_child_name("cover")
+        except Exception as exc:
+            logger.warning("Metadata cover preview failed: %s", exc)
 
     def _on_row_selected(self, _listbox, row) -> None:
         self._apply_button.set_sensitive(row is not None and not self._applying)
