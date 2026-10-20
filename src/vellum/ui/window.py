@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 import gi
@@ -20,6 +21,8 @@ from vellum.ui.store_view import StoreView
 
 SEARCH_DEBOUNCE_MS = 300
 
+log = logging.getLogger(__name__)
+
 
 def _initial_window_size() -> tuple[int, int, bool]:
     """Fit the initial window to the monitor, especially in portrait."""
@@ -34,6 +37,14 @@ def _initial_window_size() -> tuple[int, int, bool]:
     scale = max(1, monitor.get_scale_factor())
     logical_width = geometry.width // scale
     logical_height = geometry.height // scale
+    log.info(
+        "monitor geometry=%sx%s scale=%s logical=%sx%s",
+        geometry.width,
+        geometry.height,
+        scale,
+        logical_width,
+        logical_height,
+    )
     portrait = logical_height > logical_width
     width = min(1100, max(480, logical_width - 40))
     height = min(750, max(600, logical_height - 80))
@@ -118,7 +129,6 @@ class VellumWindow(Adw.ApplicationWindow):
         menu.append("Preferences", "app.preferences")
         menu.append("Import Calibre Library…", "app.import-calibre")
         menu.append("Show Hidden Books", "app.show-hidden")
-        menu.append("Maximize Window", "app.toggle-maximize")
         menu.append("About Vellum", "app.about")
         menu.append("Close Window", "window.close")
         menu.append("Quit", "app.quit")

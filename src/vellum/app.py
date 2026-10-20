@@ -29,6 +29,8 @@ os.environ.setdefault("GSK_RENDERER", "cairo")
 # native backend is the right choice.
 os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
+if os.environ.get("VELLUM_X11") == "1":
+    os.environ["GDK_BACKEND"] = "x11"
 
 _CRASH_HANDLE = None
 
@@ -99,7 +101,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.17"
+    __version__ = "0.1.18"
 
 logger = logging.getLogger(__name__)
 
@@ -261,8 +263,6 @@ class VellumApplication(Adw.Application):
                 stores=self.stores,
             )
         window.present()
-        if getattr(window, "_compact", False) and not window.is_maximized():
-            window.maximize()
         self._crash_marker("main window presented")
         if self.startup_warning:
             window.show_toast(self.startup_warning)
@@ -303,10 +303,6 @@ class VellumApplication(Adw.Application):
         import_calibre = Gio.SimpleAction(name="import-calibre")
         import_calibre.connect("activate", self._on_import_calibre)
         self.add_action(import_calibre)
-
-        maximize = Gio.SimpleAction(name="toggle-maximize")
-        maximize.connect("activate", self._on_toggle_maximize)
-        self.add_action(maximize)
 
     def _setup_backend(self) -> None:
         self._crash_marker("backend setup start")
@@ -563,15 +559,6 @@ class VellumApplication(Adw.Application):
 
     def _on_show_hidden(self, action, _param) -> None:
         self.set_show_hidden(not action.get_state().get_boolean())
-
-    def _on_toggle_maximize(self, *_args) -> None:
-        window = self.get_active_window()
-        if window is None:
-            return
-        if window.is_maximized():
-            window.unmaximize()
-        else:
-            window.maximize()
 
     def _on_import_calibre(self, *_args) -> None:
         dialog = Gtk.FileDialog(
