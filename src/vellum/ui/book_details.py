@@ -107,7 +107,7 @@ class BookDetails(Gtk.Box):
         self._read_button.add_css_class("suggested-action")
         self._read_button.connect("clicked", self._on_read_clicked)
         self._read_button.set_visible(
-            "epub" in (book.formats or [])
+            bool({f.lower() for f in (book.formats or [])} & {"epub", "pdf", "mobi", "azw3"})
             and bool(book.path)
             and os.path.isfile(book.path)
         )
@@ -194,7 +194,7 @@ class BookDetails(Gtk.Box):
             self._cover_stack.set_visible_child_name("placeholder")
 
         self._read_button.set_visible(
-            "epub" in (book.formats or [])
+            bool({f.lower() for f in (book.formats or [])} & {"epub", "pdf", "mobi", "azw3"})
             and bool(book.path)
             and os.path.isfile(book.path)
         )

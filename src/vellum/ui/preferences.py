@@ -96,6 +96,19 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._color_button.connect("notify::rgba", self._on_custom_color)
         flow.append(self._color_button)
 
+        reader_group = Adw.PreferencesGroup(title="Reader")
+        page.add(reader_group)
+
+        self._animation_row = Adw.SwitchRow(
+            title="Page turn animation",
+            subtitle="Slide between pages (disable on low-end hardware)",
+        )
+        self._animation_row.set_active(
+            self.app.config.get("reader_animation", True)
+        )
+        self._animation_row.connect("notify::active", self._on_animation_toggled)
+        reader_group.add(self._animation_row)
+
         self._sync_accent_ui()
 
     # -- helpers -----------------------------------------------------------------
@@ -123,6 +136,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
                 self._color_button.set_rgba(rgba)
 
     # -- callbacks -----------------------------------------------------------------
+
+    def _on_animation_toggled(self, row, _param) -> None:
+        self.app.config["reader_animation"] = row.get_active()
+        self.app.save_config()
 
     def _on_scheme(self, row, _param, schemes) -> None:
         self.app.config["color_scheme"] = schemes[row.get_selected()]

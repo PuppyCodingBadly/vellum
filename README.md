@@ -12,6 +12,7 @@ online sources such as Google Books and OpenLibrary.
 - SQLite-backed book library (authors, tags, formats, ratings, covers)
 - Fast full-text-ish search across titles, authors, ISBNs, and tags
 - Online metadata lookup with per-source result merging and cover downloads
+- Built-in reader for EPUB, PDF, MOBI, and AZW3 with a page-turn animation (toggleable in Preferences)
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
 
