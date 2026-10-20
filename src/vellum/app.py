@@ -49,7 +49,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.10"
+    __version__ = "0.1.11"
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,22 @@ CSS = """
 }
 .hidden-book {
     opacity: 0.55;
+}
+.cover-caption {
+    background: linear-gradient(
+        to top,
+        rgba(0, 0, 0, 0.82),
+        rgba(0, 0, 0, 0.0)
+    );
+    border-radius: 0 0 8px 8px;
+    padding: 22px 8px 8px 8px;
+}
+.cover-caption .caption-heading {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+.cover-author {
+    color: rgba(255, 255, 255, 0.82);
 }
 """
 

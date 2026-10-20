@@ -81,13 +81,10 @@ class LibraryView(Gtk.ScrolledWindow):
     # -- factory ------------------------------------------------------------
 
     def _build_card(self) -> Gtk.Box:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        card.set_size_request(COVER_WIDTH, 300)
-        card.set_margin_top(6)
-        card.set_margin_bottom(6)
-        card.set_margin_start(6)
-        card.set_margin_end(6)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        card.set_size_request(COVER_WIDTH, COVER_HEIGHT)
 
+        overlay = Gtk.Overlay(hexpand=True, vexpand=True)
         frame = Gtk.Frame(css_classes=["cover-frame"])
 
         cover_stack = Gtk.Stack(hexpand=True, vexpand=True)
@@ -106,34 +103,35 @@ class LibraryView(Gtk.ScrolledWindow):
             yalign=0.5,
         )
         aspect.set_child(frame)
-        aspect.set_size_request(COVER_WIDTH, -1)
-        center_box = Gtk.CenterBox(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            hexpand=True,
-            vexpand=False,
-            valign=Gtk.Align.START,
-        )
-        center_box.set_center_widget(aspect)
-        card.append(center_box)
+        aspect.set_size_request(COVER_WIDTH, COVER_HEIGHT)
+        overlay.set_child(aspect)
 
+        captions = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=0,
+            valign=Gtk.Align.END,
+            css_classes=["cover-caption"],
+        )
         title = Gtk.Label(
             wrap=False,
             ellipsize=Pango.EllipsizeMode.END,
-            max_width_chars=18,
+            max_width_chars=22,
             xalign=0.0,
-            justify=Gtk.Justification.CENTER,
+            justify=Gtk.Justification.LEFT,
             css_classes=["caption-heading"],
         )
         authors = Gtk.Label(
             wrap=False,
             ellipsize=Pango.EllipsizeMode.END,
-            max_width_chars=18,
+            max_width_chars=24,
             xalign=0.0,
-            justify=Gtk.Justification.CENTER,
-            css_classes=["dim-label", "caption"],
+            justify=Gtk.Justification.LEFT,
+            css_classes=["cover-author", "caption"],
         )
-        card.append(title)
-        card.append(authors)
+        captions.append(title)
+        captions.append(authors)
+        overlay.add_overlay(captions)
+        card.append(overlay)
 
         card._cover_stack = cover_stack
         card._picture = picture
@@ -155,6 +153,10 @@ class LibraryView(Gtk.ScrolledWindow):
         card._title_label.set_label(book.title or "Untitled")
         card._authors_label.set_label(
             ", ".join(book.authors) if book.authors else "Unknown author"
+        )
+        card.set_tooltip_text(
+            f"{book.title or 'Untitled'}\n"
+            + (", ".join(book.authors) if book.authors else "Unknown author")
         )
 
         card._book_id = book.id

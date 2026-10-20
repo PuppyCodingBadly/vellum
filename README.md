@@ -28,6 +28,7 @@ Updates: `flatpak update io.github.vellum.Vellum`.
 ## Features
 
 - Modern GTK4/Libadwaita user interface
+- Library grid with exact 2:3 cover-poster tiles (title/author overlaid)
 - SQLite-backed book library (authors, tags, formats, ratings, covers)
 - Fast full-text-ish search across titles, authors, ISBNs, and tags
 - Online metadata lookup with per-source result merging and cover downloads
@@ -94,7 +95,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.10` build is published at
+The signed `v0.1.11` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh
