@@ -6,11 +6,14 @@ from a source checkout (bootstrap below puts ``src`` on sys.path).
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import logging
 import os
 import sys
 import threading
+import traceback
+from datetime import datetime, timezone
 
 # WebKitGTK's DMA-BUF renderer and GPU compositing have crashed the
 # compositor on some GPUs. Use WebKit's software/Cairo path instead;
@@ -47,7 +50,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.13"
+    __version__ = "0.1.14"
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,7 @@ class VellumApplication(Adw.Application):
         self.stores: list = []
         self.startup_warning: str = ""
         self._calibre_import_running: bool = False
+        self._crash_log = None
 
     # -- GApplication hooks ----------------------------------------------------
 
@@ -155,11 +159,49 @@ class VellumApplication(Adw.Application):
         return -1
 
     def do_startup(self):
+        self._setup_crash_logging()
         Adw.Application.do_startup(self)
         self._load_css()
         self._setup_actions()
         self._setup_backend()
         self.apply_appearance()
+
+    def _setup_crash_logging(self) -> None:
+        """Capture Python tracebacks and fatal signals in a user-readable log."""
+        try:
+            data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
+            os.makedirs(data_dir, exist_ok=True)
+            handle = open(
+                os.path.join(data_dir, "crash.log"),
+                "a",
+                encoding="utf-8",
+                buffering=1,
+            )
+        except OSError:
+            return
+        self._crash_log = handle
+        handle.write(
+            f"\n--- Vellum {__version__} start "
+            f"{datetime.now(timezone.utc).isoformat()} ---\n"
+        )
+        faulthandler.enable(file=handle, all_threads=True)
+
+        def excepthook(exc_type, exc, tb) -> None:
+            traceback.print_exception(exc_type, exc, tb, file=handle)
+            handle.flush()
+            sys.__excepthook__(exc_type, exc, tb)
+
+        def thread_hook(args) -> None:
+            traceback.print_exception(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                file=handle,
+            )
+            handle.flush()
+
+        sys.excepthook = excepthook
+        threading.excepthook = thread_hook
 
     def do_activate(self):
         window = self.get_active_window()

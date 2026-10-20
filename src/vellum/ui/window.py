@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from vellum.core.models import Book
 from vellum.core.sorting import SORT_KEYS, SORT_OPTIONS, sort_books
@@ -17,6 +19,30 @@ from vellum.ui.plugins_view import PluginsView
 from vellum.ui.store_view import StoreView
 
 SEARCH_DEBOUNCE_MS = 300
+
+
+def _initial_window_size() -> tuple[int, int, bool]:
+    """Fit the initial window to the monitor, especially in portrait."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        return 1100, 750, False
+    monitors = display.get_monitors()
+    if monitors is None or monitors.get_n_items() == 0:
+        return 1100, 750, False
+    monitor = monitors.get_item(0)
+    geometry = monitor.get_geometry()
+    scale = max(1, monitor.get_scale_factor())
+    logical_width = geometry.width // scale
+    logical_height = geometry.height // scale
+    portrait = logical_height > logical_width
+    width = min(1100, max(480, logical_width - 40))
+    height = min(750, max(600, logical_height - 80))
+    compact = (
+        os.environ.get("VELLUM_SAFE_MODE") == "1"
+        or portrait
+        or logical_width < 900
+    )
+    return width, height, compact
 
 
 class VellumWindow(Adw.ApplicationWindow):
@@ -30,7 +56,9 @@ class VellumWindow(Adw.ApplicationWindow):
         self.stores = list(stores or [])
 
         self.set_title("Vellum")
-        self.set_default_size(1100, 750)
+        width, height, compact = _initial_window_size()
+        self._compact = compact
+        self.set_default_size(width, height)
 
         # Toast overlay wraps everything so notifications show over any page.
         self.toast_overlay = Adw.ToastOverlay()
@@ -54,12 +82,18 @@ class VellumWindow(Adw.ApplicationWindow):
 
         self.stack = Adw.ViewStack()
         switcher = Adw.ViewSwitcher(
-            stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE
+            stack=self.stack,
+            policy=(
+                Adw.ViewSwitcherPolicy.NARROW
+                if self._compact
+                else Adw.ViewSwitcherPolicy.WIDE
+            ),
         )
         header.pack_start(switcher)
 
         self.search_entry = Gtk.SearchEntry(
-            placeholder_text="Search library…", width_chars=36
+            placeholder_text="Search library…",
+            width_chars=16 if self._compact else 36,
         )
         header.set_title_widget(self.search_entry)
 

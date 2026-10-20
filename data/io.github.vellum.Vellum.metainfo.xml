@@ -23,6 +23,14 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.14" date="2026-10-19">
+      <description>
+        <p>Portrait-mode startup hardening: clamp the initial window to
+        the monitor, use a compact header on narrow screens, write
+        uncaught tracebacks/fatal signals to crash.log, and add
+        VELLUM_SAFE_MODE=1 to bypass thumbnail decoding.</p>
+      </description>
+    </release>
     <release version="0.1.13" date="2026-10-19">
       <description>
         <p>Add Inventaire as a high-quality English metadata source,

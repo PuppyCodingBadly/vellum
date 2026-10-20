@@ -44,6 +44,7 @@ class LibraryView(Gtk.ScrolledWindow):
         super().__init__(hexpand=True, vexpand=True)
         self._on_activate = on_activate
         self._data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
+        self._safe_mode = os.environ.get("VELLUM_SAFE_MODE") == "1"
 
         self._store = Gio.ListStore(item_type=BookObject)
         self._selection = Gtk.SingleSelection(model=self._store)
@@ -65,8 +66,9 @@ class LibraryView(Gtk.ScrolledWindow):
         self._thumb_pending: set[tuple[int, str]] = set()
         self._thumb_lock = threading.Lock()
         self._thumb_items: dict[tuple[int, str], weakref.ref] = {}
-        worker = threading.Thread(target=self._thumb_worker, daemon=True)
-        worker.start()
+        if not self._safe_mode:
+            worker = threading.Thread(target=self._thumb_worker, daemon=True)
+            worker.start()
 
     # -- public API ---------------------------------------------------------
 
@@ -165,7 +167,7 @@ class LibraryView(Gtk.ScrolledWindow):
             card.add_css_class("hidden-book")
         else:
             card.remove_css_class("hidden-book")
-        if book.cover_path and os.path.isfile(book.cover_path):
+        if book.cover_path and os.path.isfile(book.cover_path) and not self._safe_mode:
             if book.id is not None:
                 self._thumb_items[(book.id, book.cover_path)] = weakref.ref(item)
             thumb = thumb_cache_path(
