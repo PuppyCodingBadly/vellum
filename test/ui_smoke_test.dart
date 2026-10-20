@@ -50,7 +50,7 @@ String _buildEpub(String path) {
     'unique-identifier="bookid">'
     '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
     '<dc:title>The Smoke Test Book</dc:title>'
-    '<dc:creator>Jade Kovacs</dc:creator>'
+    '<dc:creator>Test Author</dc:creator>'
     '<dc:identifier id="bookid">urn:isbn:9780441013593</dc:identifier>'
     '<dc:language>en</dc:language></metadata>'
     '<manifest>'
@@ -202,7 +202,7 @@ void main() {
     addTearDown(library.close);
     library.addBook(Book(
       title: 'The Smoke Test Book',
-      authors: const ['Jade Kovacs'],
+      authors: const ['Test Author'],
       formats: const ['epub'],
       path: _buildEpub('${dir.path}/smoke.epub'),
       description: 'A tiny three-chapter book.',
@@ -239,7 +239,7 @@ void main() {
     await tester.tap(find.byType(BookCard).first);
     await tester.pumpAndSettle();
     expect(find.text('Fetch Metadata'), findsOneWidget);
-    expect(find.text('Jade Kovacs'), findsOneWidget);
+    expect(find.text('Test Author'), findsOneWidget);
 
     await tester.tap(find.text('Read'));
     await tester.pumpAndSettle();
