@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import os
+import queue
+import threading
+import weakref
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GObject, Gtk, Pango  # noqa: F401  (Adw: css classes)
+from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: F401  (Adw: css classes)
 
+from vellum.core.covers import thumb_path
 from vellum.core.models import Book
 
 COVER_WIDTH = 160
@@ -39,6 +43,7 @@ class LibraryView(Gtk.ScrolledWindow):
     def __init__(self, on_activate=None):
         super().__init__(hexpand=True, vexpand=True)
         self._on_activate = on_activate
+        self._data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
 
         self._store = Gio.ListStore(item_type=BookObject)
         self._selection = Gtk.SingleSelection(model=self._store)
@@ -55,9 +60,18 @@ class LibraryView(Gtk.ScrolledWindow):
         self._grid.connect("activate", self._on_grid_activate)
         self.set_child(self._grid)
 
+        # Lazy thumbnail generation on a single daemon worker thread.
+        self._thumb_queue: queue.Queue = queue.Queue()
+        self._thumb_pending: set[int] = set()
+        self._thumb_lock = threading.Lock()
+        self._thumb_cards: dict[int, weakref.ref] = {}
+        worker = threading.Thread(target=self._thumb_worker, daemon=True)
+        worker.start()
+
     # -- public API ---------------------------------------------------------
 
     def set_books(self, books: list[Book]) -> None:
+        self._thumb_cards.clear()
         self._store.remove_all()
         for book in books:
             self._store.append(BookObject(book))
@@ -142,12 +156,57 @@ class LibraryView(Gtk.ScrolledWindow):
         )
 
         if book.cover_path and os.path.isfile(book.cover_path):
-            card._picture.set_filename(book.cover_path)
-            card._cover_stack.set_visible_child_name("cover")
+            card._book_id = book.id
+            if book.id is not None:
+                self._thumb_cards[book.id] = weakref.ref(card)
+            thumb = os.path.join(
+                self._data_dir, "covers", "thumbs", f"{book.id}.png"
+            )
+            if os.path.isfile(thumb) and os.path.getmtime(
+                thumb
+            ) >= os.path.getmtime(book.cover_path):
+                card._picture.set_filename(thumb)
+                card._cover_stack.set_visible_child_name("cover")
+            else:
+                card._picture.set_filename(None)
+                card._placeholder.set_label(_initials(book.title))
+                card._cover_stack.set_visible_child_name("placeholder")
+                self._request_thumb(book)
         else:
+            card._book_id = None
             card._picture.set_filename(None)
             card._placeholder.set_label(_initials(book.title))
             card._cover_stack.set_visible_child_name("placeholder")
+
+    # -- thumbnail worker ---------------------------------------------------
+
+    def _request_thumb(self, book: Book) -> None:
+        if book.id is None:
+            return
+        with self._thumb_lock:
+            if book.id in self._thumb_pending:
+                return
+            self._thumb_pending.add(book.id)
+        self._thumb_queue.put((book.id, book.cover_path))
+
+    def _thumb_worker(self) -> None:
+        while True:
+            book_id, cover_path = self._thumb_queue.get()
+            try:
+                thumb = thumb_path(self._data_dir, book_id, cover_path)
+                if thumb != cover_path:
+                    GLib.idle_add(self._apply_thumb, book_id, thumb)
+            finally:
+                with self._thumb_lock:
+                    self._thumb_pending.discard(book_id)
+
+    def _apply_thumb(self, book_id: int, thumb: str) -> bool:
+        ref = self._thumb_cards.get(book_id)
+        card = ref() if ref is not None else None
+        if card is not None and getattr(card, "_book_id", None) == book_id:
+            card._picture.set_filename(thumb)
+            card._cover_stack.set_visible_child_name("cover")
+        return False
 
     # -- activation ---------------------------------------------------------
 

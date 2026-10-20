@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 
 import gi
@@ -167,6 +168,8 @@ _SCROLL_TO_JS = (
 
 _ANIMATION_DURATION_MS = 200
 _SELECTION_DEBOUNCE_MS = 350
+_SCROLL_SAVE_MIN_INTERVAL = 1.0
+_PDF_CACHE_SIZE = 3
 _MIN_ZOOM = 1.0
 _MAX_ZOOM = 3.0
 _ZOOM_STEP = 0.25
@@ -219,6 +222,16 @@ class ReaderPage(Gtk.Box):
         self._scale = _BASE_PDF_SCALE
         self._content_serial = 0
         self._webview: WebKit.WebView | None = None
+        # Pool of recycled webviews (epub/mobi), capped at two; created
+        # lazily by _pool_webview(). self._webview is the visible one.
+        self._webviews: list[WebKit.WebView] = []
+        # PDF render cache {index: png_bytes}, LRU, capped at
+        # _PDF_CACHE_SIZE. Mutated only on the main thread.
+        self._pdf_cache: dict[int, bytes] = {}
+        self._pdf_lock = threading.Lock()
+        self._pdf_render_serial = 0
+        self._pdf_displayed_paintable: Gdk.Paintable | None = None
+        self._last_position_write = 0.0
         self._pending_selection: dict | None = None
         self._selection_popover: Gtk.Popover | None = None
         self._selection_source = 0
@@ -504,6 +517,8 @@ class ReaderPage(Gtk.Box):
 
     def _apply_style(self) -> None:
         if self._kind == "pdf":
+            # font_scale feeds the render scale; cached pages are stale.
+            self._pdf_cache.clear()
             self._show_item(self._index, 0)
         elif self._webview is not None:
             self._eval(_INJECT_CSS_JS % json.dumps(self._reader_css()))
@@ -665,29 +680,55 @@ class ReaderPage(Gtk.Box):
 
     # -- content builders -------------------------------------------------------
 
-    def _new_webview(self, inject_css: bool) -> WebKit.WebView:
+    def _new_webview(self) -> WebKit.WebView:
         webview = WebKit.WebView(vexpand=True, hexpand=True)
         ucm = webview.get_user_content_manager()
         ucm.register_script_message_handler("vellum")
         ucm.connect("script-message-received::vellum",
                     self._on_script_message)
-        if inject_css:
-            webview.connect("load-changed", self._on_load_changed)
-        self._webview = webview
+        webview.connect("load-changed", self._on_load_changed)
+        # Item index the in-flight (or last) load belongs to; lets
+        # load-changed tell stale loads apart from the current one.
+        webview._vellum_pending_index = None
+        self._webviews.append(webview)
         return webview
+
+    def _pool_webview(self) -> WebKit.WebView:
+        """Return the pool's other webview, creating it if needed.
+
+        Never grows the pool past two instances.
+        """
+        for webview in self._webviews:
+            if webview is not self._webview:
+                # Rapid navigation can outrun the transition's deferred
+                # cleanup, leaving the pooled webview still parented to
+                # the stack. Detach it before loading the next chapter,
+                # otherwise GtkWidget refuses the reparent.
+                parent = webview.get_parent()
+                if parent is not None:
+                    if isinstance(parent, Gtk.Stack):
+                        parent.remove(webview)
+                    else:
+                        webview.unparent()
+                return webview
+        if len(self._webviews) < 2:
+            return self._new_webview()
+        return self._webviews[0]
 
     def _build_content(self, index: int) -> Gtk.Widget:
         if self._kind == "pdf":
             self._webview = None
-            data = self._pdf.render_page(index,
-                                         self._scale * self._font_scale)
-            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-            picture = Gtk.Picture.new_for_paintable(texture)
-            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
-            picture.set_can_shrink(True)
-            picture.set_vexpand(True)
-            picture.set_hexpand(True)
-            return picture
+            data = self._pdf_cache_get(index)
+            if data is not None:
+                picture = self._pdf_picture(data)
+                self._pdf_displayed_paintable = picture.get_paintable()
+                return picture
+            # Cache miss: never render on the main thread. Show the
+            # previous page (or a spinner on first open) and swap in the
+            # real page from _on_pdf_rendered once the worker finishes.
+            placeholder = self._pdf_placeholder()
+            self._start_pdf_render(index)
+            return placeholder
         if self._kind in ("mobi", "azw3"):
             html = self._mobi.section_html(index)
             section_path = os.path.join(
@@ -695,13 +736,105 @@ class ReaderPage(Gtk.Box):
             )
             with open(section_path, "w", encoding="utf-8") as fh:
                 fh.write(html)
-            webview = self._new_webview(inject_css=True)
+            webview = self._pool_webview()
+            webview._vellum_pending_index = index
+            self._webview = webview
             webview.load_uri(Path(section_path).as_uri())
             return webview
-        webview = self._new_webview(inject_css=True)
+        webview = self._pool_webview()
+        webview._vellum_pending_index = index
+        self._webview = webview
         chapter_path = Path(self._epub.chapter_file(self._cache_dir, index))
         webview.load_uri(chapter_path.as_uri())
         return webview
+
+    # -- pdf rendering (off the main thread) ------------------------------------
+
+    def _pdf_effective_scale(self) -> float:
+        return self._scale * self._font_scale
+
+    @staticmethod
+    def _pdf_picture(data: bytes) -> Gtk.Picture:
+        texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+        picture = Gtk.Picture.new_for_paintable(texture)
+        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        picture.set_can_shrink(True)
+        picture.set_vexpand(True)
+        picture.set_hexpand(True)
+        return picture
+
+    def _pdf_placeholder(self) -> Gtk.Widget:
+        paintable = self._pdf_displayed_paintable
+        if paintable is not None:
+            picture = Gtk.Picture.new_for_paintable(paintable)
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            picture.set_can_shrink(True)
+            picture.set_vexpand(True)
+            picture.set_hexpand(True)
+            return picture
+        return Gtk.Spinner(
+            spinning=True, width_request=48, height_request=48,
+            halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
+            vexpand=True, hexpand=True,
+        )
+
+    def _pdf_cache_get(self, index: int) -> bytes | None:
+        try:
+            data = self._pdf_cache.pop(index)
+        except KeyError:
+            return None
+        self._pdf_cache[index] = data  # reinsert: mark most-recently-used
+        return data
+
+    def _pdf_cache_put(self, index: int, data: bytes) -> None:
+        self._pdf_cache.pop(index, None)
+        while len(self._pdf_cache) >= _PDF_CACHE_SIZE:
+            self._pdf_cache.pop(next(iter(self._pdf_cache)))  # evict LRU
+        self._pdf_cache[index] = data
+
+    def _start_pdf_render(self, index: int) -> None:
+        scale = self._pdf_effective_scale()
+        self._pdf_render_serial += 1
+        serial = self._pdf_render_serial
+
+        def _worker() -> None:
+            results: dict[int, bytes] = {}
+            targets = [index]
+            for neighbor in (index - 1, index + 1):
+                if 0 <= neighbor < len(self._items):
+                    targets.append(neighbor)
+            for target in targets:
+                if serial != self._pdf_render_serial:
+                    return  # superseded by a newer nav/zoom
+                if target in self._pdf_cache:
+                    continue
+                with self._pdf_lock:
+                    try:
+                        data = self._pdf.render_page(target, scale)
+                    except Exception as exc:
+                        logger.warning(
+                            "pdf render failed for page %s: %s", target, exc
+                        )
+                        continue
+                results[target] = data
+            if results:
+                GLib.idle_add(
+                    self._on_pdf_rendered, serial, index, scale, results
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_pdf_rendered(self, serial: int, index: int, scale: float,
+                         results: dict[int, bytes]) -> bool:
+        if scale != self._pdf_effective_scale():
+            return False  # zoomed/font-scaled since: stale pixels, drop
+        for target, data in results.items():
+            self._pdf_cache_put(target, data)
+        if index in results and self._index == index:
+            picture = self._pdf_picture(results[index])
+            self._pdf_displayed_paintable = picture.get_paintable()
+            self._swap_content(picture, 0)
+        return False
 
     # -- navigation -------------------------------------------------------------
 
@@ -718,6 +851,7 @@ class ReaderPage(Gtk.Box):
 
     def _swap_content(self, widget: Gtk.Widget, direction: int) -> None:
         old = self._stack.get_visible_child()
+        old_name = self._stack.get_visible_child_name()
         if self._animation_enabled():
             if direction > 0:
                 transition = Gtk.StackTransitionType.SLIDE_LEFT
@@ -735,7 +869,9 @@ class ReaderPage(Gtk.Box):
         self._stack.set_visible_child_name(name)
         if old is not None and old is not widget:
             def _drop_old() -> bool:
-                if old.get_parent() is not None:
+                # Only remove the exact page we replaced: fast navigation
+                # may have reused this widget already under a new name.
+                if self._stack.get_child_by_name(old_name) is old:
                     self._stack.remove(old)
                 return False
             GLib.timeout_add(_ANIMATION_DURATION_MS + 50, _drop_old)
@@ -793,6 +929,7 @@ class ReaderPage(Gtk.Box):
         return index, max(0.0, min(1.0, fraction))
 
     def _save_position(self, fraction: float) -> None:
+        self._last_position_write = time.monotonic()
         if self._library is None or self._book.id is None:
             return
         fraction = max(0.0, min(1.0, float(fraction)))
@@ -814,12 +951,15 @@ class ReaderPage(Gtk.Box):
             return
         if webview is not self._webview:
             return
+        index = getattr(webview, "_vellum_pending_index", None)
+        if index is None or index != self._index:
+            return  # stale load from a pooled webview's previous item
         webview.evaluate_javascript(
             _INJECT_CSS_JS % json.dumps(self._reader_css()),
             -1, None, None, None,
         )
         webview.evaluate_javascript(_BRIDGE_JS, -1, None, None, None)
-        self._reapply_highlights()
+        self._reapply_highlights(index)
         if self._pending_jump is not None:
             start = self._pending_jump
             self._pending_jump = None
@@ -831,13 +971,13 @@ class ReaderPage(Gtk.Box):
             self._pending_scroll = None
             self._eval(_SCROLL_TO_JS % max(0.0, min(1.0, fraction)))
 
-    def _reapply_highlights(self) -> None:
+    def _reapply_highlights(self, index: int) -> None:
         for hl in self._list_highlights():
             try:
                 pos = json.loads(hl.get("position") or "{}")
             except (ValueError, TypeError):
                 continue
-            if pos.get("chapter") != self._index:
+            if pos.get("chapter") != index:
                 continue
             try:
                 start = int(pos["start"])
@@ -892,7 +1032,13 @@ class ReaderPage(Gtk.Box):
             except (TypeError, ValueError):
                 return
             self._last_fraction = max(0.0, min(1.0, fraction))
-            self._save_position(self._last_fraction)
+            # Coalesce DB writes: the JS throttle should already limit
+            # us to ~1 message/sec, but never write more often than
+            # _SCROLL_SAVE_MIN_INTERVAL; _show_item persists the latest
+            # fraction on navigation.
+            now = time.monotonic()
+            if now - self._last_position_write >= _SCROLL_SAVE_MIN_INTERVAL:
+                self._save_position(self._last_fraction)
 
     def _cancel_selection_timeout(self) -> None:
         if self._selection_source:
@@ -1138,5 +1284,6 @@ class ReaderPage(Gtk.Box):
         if new_scale == self._scale:
             return True
         self._scale = new_scale
+        self._pdf_cache.clear()  # cached pages were rendered at old scale
         self._show_item(self._index, 0)
         return True

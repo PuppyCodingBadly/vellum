@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Adw, Gdk, Gio, Gtk
 
 from vellum.app import ACCENTS
 
@@ -38,6 +40,17 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         page = Adw.PreferencesPage()
         self.add(page)
+
+        library_group = Adw.PreferencesGroup(title="Library")
+        page.add(library_group)
+
+        self._library_row = Adw.ActionRow(title="Library directory")
+        self._library_row.set_subtitle(self._current_library_dir())
+        choose_button = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        choose_button.connect("clicked", self._on_choose_library)
+        self._library_row.add_suffix(choose_button)
+        self._library_row.set_activatable_widget(choose_button)
+        library_group.add(self._library_row)
 
         group = Adw.PreferencesGroup(title="Appearance")
         page.add(group)
@@ -112,6 +125,32 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._sync_accent_ui()
 
     # -- helpers -----------------------------------------------------------------
+
+    def _current_library_dir(self) -> str:
+        return os.path.dirname(self.app.config["library_path"])
+
+    def _on_choose_library(self, _button) -> None:
+        dialog = Gtk.FileDialog(modal=True, title="Choose Library Directory")
+        try:
+            dialog.set_initial_folder(
+                Gio.File.new_for_path(self._current_library_dir())
+            )
+        except Exception:
+            pass
+        dialog.select_folder(self.get_root(), None, self._on_folder_chosen, dialog)
+
+    def _on_folder_chosen(self, dialog, result, _data) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except Exception:
+            return  # cancelled or failed; subtitle stays unchanged
+        if folder is None:
+            return
+        path = folder.get_path()
+        if path is None:
+            return
+        if self.app.set_library_directory(path):
+            self._library_row.set_subtitle(path)
 
     @staticmethod
     def _palette_css() -> str:

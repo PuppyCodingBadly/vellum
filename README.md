@@ -18,6 +18,8 @@ online sources such as Google Books and OpenLibrary.
   - Automatic reading-position resume per book
   - Chapter list (TOC) for quick navigation, adjustable font size, and Light/Sepia/Dark reader themes (or follow the app scheme)
   - Fullscreen reading (F11) and a bottom progress bar
+- Switchable library directory from Preferences (calibre-style; the app
+  reopens the library at the chosen folder)
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
 

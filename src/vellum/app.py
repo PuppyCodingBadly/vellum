@@ -319,6 +319,58 @@ class VellumApplication(Adw.Application):
         except OSError as exc:
             logger.warning("Could not write config %s: %s", self.config_path, exc)
 
+    def set_library_directory(self, dir_path: str) -> bool:
+        """Switch the active library to ``<dir_path>/library.db``.
+
+        Returns True on success, False if the directory is unusable or the
+        new database cannot be opened. On any failure the previous library
+        stays open and the config is left unchanged; the app state never
+        ends up with a closed library.
+        """
+        window = self.get_active_window()
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+        except OSError:
+            if window is not None:
+                window.show_toast("Cannot use that directory")
+            return False
+        if not os.path.isdir(dir_path) or not os.access(dir_path, os.W_OK):
+            if window is not None:
+                window.show_toast("Cannot use that directory")
+            return False
+
+        new_db = os.path.join(dir_path, "library.db")
+        if os.path.realpath(new_db) == os.path.realpath(self.library.path):
+            return True
+
+        old_library = self.library
+        old_library.close()
+        self.library = Library(new_db)
+        try:
+            self.library.open()
+        except Exception:
+            # Roll back: never leave the app without an open library.
+            self.library = old_library
+            try:
+                self.library.open()
+            except Exception as exc:
+                logger.error("Failed to reopen old library: %s", exc)
+            if window is not None:
+                window.show_toast("Cannot use that directory")
+            return False
+
+        self.config["library_path"] = new_db
+        self.save_config()
+
+        if window is not None:
+            window.library = self.library
+            # StoreView captured the library at construction; keep it in sync.
+            if getattr(window, "store_view", None) is not None:
+                window.store_view._library = self.library
+            window.refresh_library()
+            window.show_toast(f"Library location changed to {dir_path}")
+        return True
+
     def apply_appearance(self) -> None:
         scheme = self.config.get("color_scheme", "system")
         style_manager = Adw.StyleManager.get_default()
