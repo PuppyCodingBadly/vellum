@@ -184,6 +184,41 @@ def test_engine_fetch_cover_unknown_source():
     assert engine.fetch_cover(Metadata(source_id="nope")) is None
 
 
+def test_engine_fetch_cover_matches_by_source_name():
+    source = MagicMock(spec=MetadataSource)
+    source.id = "stub-src"
+    source.name = "Stub Source"
+    source.download_cover.return_value = b"img"
+    engine = MetadataEngine()
+    engine.register_source(source)
+
+    meta = Metadata(
+        title="Book",
+        cover_url="http://x/cover.jpg",
+        source_id="book-key-1",
+        source_name="Stub Source",
+    )
+    assert engine.fetch_cover(meta) == b"img"
+    source.download_cover.assert_called_once_with(meta)
+
+
+def test_engine_fetch_cover_no_match_returns_none():
+    source = MagicMock(spec=MetadataSource)
+    source.id = "stub-src"
+    source.name = "Stub Source"
+    engine = MetadataEngine()
+    engine.register_source(source)
+
+    meta = Metadata(
+        title="Book",
+        cover_url="http://x/cover.jpg",
+        source_id="other-key",
+        source_name="Other Source",
+    )
+    assert engine.fetch_cover(meta) is None
+    source.download_cover.assert_not_called()
+
+
 def test_download_cover_google_books():
     meta = Metadata(cover_url="http://x/cover.jpg")
     with patch(

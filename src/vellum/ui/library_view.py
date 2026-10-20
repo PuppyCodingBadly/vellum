@@ -13,7 +13,7 @@ from gi.repository import Adw, Gio, GObject, Gtk, Pango  # noqa: F401  (Adw: css
 from vellum.core.models import Book
 
 COVER_WIDTH = 160
-COVER_HEIGHT = 220
+COVER_HEIGHT = 240
 
 
 class BookObject(GObject.Object):

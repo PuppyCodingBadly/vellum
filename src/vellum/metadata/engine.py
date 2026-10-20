@@ -44,7 +44,7 @@ class MetadataEngine:
 
     def fetch_cover(self, meta: Metadata) -> bytes | None:
         for source in self._sources:
-            if source.id == meta.source_id:
+            if source.id == meta.source_id or source.name == meta.source_name:
                 try:
                     return source.download_cover(meta)
                 except Exception as exc:

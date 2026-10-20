@@ -14,8 +14,8 @@ from vellum.core.models import Book
 
 from vellum.ui.library_view import _initials
 
-DETAIL_COVER_WIDTH = 180
-DETAIL_COVER_HEIGHT = 260
+DETAIL_COVER_WIDTH = 220
+DETAIL_COVER_HEIGHT = 330
 
 _DETAIL_FIELDS = (
     ("publisher", "Publisher"),
@@ -217,8 +217,11 @@ class BookDetails(Gtk.Box):
     def _on_read_clicked(self, _button: Gtk.Button) -> None:
         from vellum.ui.reader_view import ReaderPage
 
+        tv = Adw.ToolbarView()
+        tv.add_top_bar(Adw.HeaderBar())
+        tv.set_content(ReaderPage(self._book, self._data_dir))
         page = Adw.NavigationPage(
-            child=ReaderPage(self._book, self._data_dir),
+            child=tv,
             title=self._book.title or "Reader",
         )
         self._window.nav.push(page)

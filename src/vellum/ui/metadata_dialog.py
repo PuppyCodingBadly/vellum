@@ -96,7 +96,10 @@ class MetadataDialog(_Base):
         self._stack.add_named(self._status_page, "empty")
 
         toolbar.set_content(self._stack)
-        self.set_content(toolbar)
+        if _HAS_ADW_DIALOG:
+            self.set_child(toolbar)
+        else:
+            self.set_content(toolbar)
         self._stack.set_visible_child_name("busy")
 
     # -- public API ---------------------------------------------------------

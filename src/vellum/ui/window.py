@@ -53,6 +53,7 @@ class VellumWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
         menu.append("About Vellum", "app.about")
+        menu.append("Close Window", "window.close")
         menu.append("Quit", "app.quit")
         menu_button = Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu
@@ -104,8 +105,11 @@ class VellumWindow(Adw.ApplicationWindow):
             window=self,
             on_changed=self.refresh_library,
         )
+        tv = Adw.ToolbarView()
+        tv.add_top_bar(Adw.HeaderBar())
+        tv.set_content(details)
         page = Adw.NavigationPage(
-            child=details, title=book.title or "Book Details"
+            child=tv, title=book.title or "Book Details"
         )
         self.nav.push(page)
 
