@@ -11,7 +11,7 @@ import html as html_lib
 import json
 import logging
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -42,7 +42,7 @@ class UniversalGrabber(MetadataSource):
     def grab(self, url: str, timeout: float = 20.0) -> Metadata | None:
         url = normalize_url(url)
         if not url:
-            return None
+            raise ValueError("enter a valid http(s) URL")
         try:
             html, final_url = _fetch_html(url, timeout)
         except Exception as exc:
@@ -67,11 +67,31 @@ class UniversalGrabber(MetadataSource):
 
 
 def normalize_url(url: str) -> str:
+    """Return a validated http(s) URL, or "" for a search string/invalid input.
+
+    Free-form metadata searches are often pasted into the URL field by
+    mistake; rejecting whitespace and host-less strings here lets the UI
+    route them to fuzzy search instead of raising requests' opaque
+    "invalid character" errors.
+    """
     url = (url or "").strip()
-    if not url:
+    if not url or any(char.isspace() for char in url):
         return ""
     if not re.match(r"^https?://", url, re.IGNORECASE):
         url = "https://" + url
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return ""
+    if any(char.isspace() for char in parts.netloc):
+        return ""
+    if "." not in host and host != "localhost":
+        return ""
+    if "://" not in url:
+        return ""
     return url
 
 

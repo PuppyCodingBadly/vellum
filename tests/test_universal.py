@@ -111,3 +111,19 @@ def test_engine_merge_results():
     assert merged.cover_url == "https://example.com/cover.jpg"
     assert merged.rating == 4.0
     assert merged.source_name == "Merged sources"
+
+
+def test_search_string_is_not_a_url():
+    assert normalize_url("Dune Frank Herbert") == ""
+    assert normalize_url("dune") == ""
+    assert normalize_url("https://example.com/a book") == ""
+    assert normalize_url("") == ""
+
+
+def test_grab_rejects_search_strings():
+    import pytest
+
+    from vellum.metadata.universal import UniversalGrabber
+
+    with pytest.raises(ValueError):
+        UniversalGrabber().grab("Dune Frank Herbert")

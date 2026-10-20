@@ -46,6 +46,7 @@ class VellumWindow(Adw.ApplicationWindow):
         )
         self.toast_overlay.set_child(self.pages)
         self._page_names: list[str] = []
+        self._hidden_pages: list[str] = []
         self._page_seq = 0
 
         toolbar_view = Adw.ToolbarView()
@@ -195,18 +196,13 @@ class VellumWindow(Adw.ApplicationWindow):
             return False
         current = self._page_names.pop()
         self.pages.set_visible_child_name(self._page_names[-1])
-        # Never destroy a page (and its WebKit views) inside the back
-        # button's event dispatch; tearing down surfaces synchronously on
-        # a touch tap is what triggered compositor crashes on some
-        # devices. Show the previous page now, remove the old one on idle.
-        GLib.idle_add(self._remove_page, current)
+        # Deliberately keep the old page (and its WebKit surfaces) alive
+        # for the rest of the session. Destroying GTK/WebKit surfaces on
+        # a back action is the one operation that reliably crashed the
+        # shell on touchscreen devices. Hidden stack children are not
+        # rendered; the OS reclaims them when the process exits.
+        self._hidden_pages.append(current)
         return True
-
-    def _remove_page(self, name: str) -> bool:
-        child = self.pages.get_child_by_name(name)
-        if child is not None:
-            self.pages.remove(child)
-        return GLib.SOURCE_REMOVE
 
     def _on_back_clicked(self, *_args) -> None:
         self.pop_page()

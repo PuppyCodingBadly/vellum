@@ -23,6 +23,7 @@ from vellum.metadata.sorting import (
     RESULT_SORT_OPTIONS,
     sort_metadata,
 )
+from vellum.metadata.universal import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -248,9 +249,16 @@ class MetadataDialog(_Base):
         return self._request_id
 
     def _on_grab_url(self, *_args) -> None:
-        url = self._url_entry.get_text().strip()
-        if not url:
+        text = self._url_entry.get_text().strip()
+        if not text:
             self._toast("Paste a book page URL first")
+            return
+        url = normalize_url(text)
+        if not url:
+            # A title/author string was pasted into the URL field; run the
+            # fuzzy metadata search instead of raising an invalid-URL error.
+            self._query_entry.set_text(text)
+            self._on_query_search()
             return
         request_id = self._begin_request("Reading book page…")
         self._grab_button.set_sensitive(False)

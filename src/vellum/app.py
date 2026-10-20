@@ -13,13 +13,21 @@ import sys
 import threading
 
 # WebKitGTK's DMA-BUF renderer and GPU compositing have crashed the
-# compositor on some Intel GPUs (notably Surface Go 2-class hardware).
-# Use WebKit's software/Cairo path instead; EPUB/MOBI pages still render.
+# compositor on some GPUs. Use WebKit's software/Cairo path instead;
+# EPUB/MOBI pages still render.
 os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 # GTK's GL renderer is another driver-facing path. Cairo rendering is
 # slower but cannot take down the session via a GPU driver bug.
 os.environ.setdefault("GSK_RENDERER", "cairo")
+# Keep Mesa entirely in software as a belt-and-braces measure for
+# driver bugs, and prefer Xwayland over direct Wayland surfaces. A
+# misbehaving X11 client is isolated behind Xwayland; a Wayland client
+# shares the compositor's surface lifecycle.
+os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
+if os.environ.get("DISPLAY"):
+    os.environ.setdefault("GDK_BACKEND", "x11")
 
 if __package__ in (None, ""):
     sys.path.insert(
@@ -41,7 +49,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.9"
+    __version__ = "0.1.10"
 
 logger = logging.getLogger(__name__)
 
