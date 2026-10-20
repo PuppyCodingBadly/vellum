@@ -32,8 +32,8 @@ Updates: `flatpak update io.github.vellum.Vellum`.
 - SQLite-backed book library (authors, tags, formats, ratings, covers)
 - Fast full-text-ish search across titles, authors, ISBNs, and tags
 - Online metadata lookup from Google Books, Open Library, Internet
-  Archive, Library of Congress, and Crossref, with cover previews and
-  per-source result merging
+  Archive, Library of Congress, and Inventaire, restricted to English
+  results, with cover previews and per-source merging
 - Built-in reader for EPUB, PDF, and MOBI with a page-turn animation (toggleable in Preferences)
   - Text highlights (yellow/green/pink) with a highlights panel to review, jump to, and delete them (EPUB/MOBI only; PDF pages are image-rendered, so highlighting is not available there)
   - In-reader dictionary lookup for any selected word
@@ -97,7 +97,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.12` build is published at
+The signed `v0.1.13` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh

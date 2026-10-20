@@ -27,6 +27,7 @@ class OpenLibrary(MetadataSource):
     ) -> list[Metadata]:
         params: dict = {
             "limit": 20,
+            "language": "eng",
             # Without an explicit fields list the search API omits ISBNs.
             "fields": (
                 "key,title,author_name,first_publish_year,publisher,"
@@ -71,6 +72,7 @@ class OpenLibrary(MetadataSource):
         params = {
             "q": query,
             "limit": 20,
+            "language": "eng",
             "fields": (
                 "key,title,author_name,first_publish_year,publisher,"
                 "language,subject,cover_i,isbn"

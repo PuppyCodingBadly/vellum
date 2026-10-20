@@ -46,7 +46,12 @@ class LibraryOfCongress(MetadataSource):
         try:
             resp = requests.get(
                 API_URL,
-                params={"q": query, "fo": "json", "c": 20},
+                params={
+                    "q": query,
+                    "fo": "json",
+                    "c": 20,
+                    "fa": "language:english",
+                },
                 timeout=timeout,
             )
             resp.raise_for_status()

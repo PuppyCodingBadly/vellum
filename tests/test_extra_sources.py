@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from vellum.metadata.sources.crossref import Crossref
 from vellum.metadata.sources.internet_archive import InternetArchive
 from vellum.metadata.sources.library_of_congress import LibraryOfCongress
 
@@ -54,23 +53,6 @@ LOC_PAYLOAD = {
     ]
 }
 
-CROSSREF_PAYLOAD = {
-    "message": {
-        "items": [
-            {
-                "DOI": "10.1234/dune",
-                "title": ["Dune"],
-                "author": [{"given": "Frank", "family": "Herbert"}],
-                "publisher": "Chilton",
-                "published": {"date-parts": [[1965]]},
-                "ISBN": ["9780441013593"],
-                "subject": ["Science fiction"],
-                "abstract": "<jats:p>Spice must flow.</jats:p>",
-            }
-        ]
-    }
-}
-
 
 def test_internet_archive_mapping():
     with patch(
@@ -100,6 +82,7 @@ def test_internet_archive_free_text_query():
         InternetArchive().search_free_text("dune herbert")
     assert get.call_args.kwargs["params"]["q"] == (
         "(dune herbert) AND mediatype:texts"
+        " AND language:(eng OR English)"
     )
 
 
@@ -121,23 +104,6 @@ def test_library_of_congress_mapping():
     assert meta.source_id.startswith("loc:")
 
 
-def test_crossref_mapping():
-    with patch(
-        "vellum.metadata.sources.crossref.requests.get",
-        return_value=_response(CROSSREF_PAYLOAD),
-    ) as get:
-        results = Crossref().search(title="Dune")
-    assert len(results) == 1
-    meta = results[0]
-    assert meta.title == "Dune"
-    assert meta.authors == ["Frank Herbert"]
-    assert meta.isbn == "9780441013593"
-    assert meta.publisher == "Chilton"
-    assert meta.pubdate == "1965"
-    assert meta.description == "Spice must flow."
-    assert meta.source_id == "10.1234/dune"
-    assert get.call_args.kwargs["params"]["query.bibliographic"] == "Dune"
-
 
 def test_extra_sources_swallow_network_errors():
     with patch(
@@ -150,8 +116,91 @@ def test_extra_sources_swallow_network_errors():
         side_effect=RuntimeError("down"),
     ):
         assert LibraryOfCongress().search(title="x") == []
+
+
+INVENTAIRE_SEARCH = {
+    "results": [
+        {
+            "id": "Q190192",
+            "uri": "wd:Q190192",
+            "image": "/img/entities/hash",
+        }
+    ]
+}
+
+INVENTAIRE_ENTITIES = {
+    "entities": {
+        "wd:Q190192": {
+            "uri": "wd:Q190192",
+            "wdId": "Q190192",
+            "labels": {"en": "Dune"},
+            "descriptions": {"en": "1965 science fiction novel"},
+            "claims": {
+                "wdt:P50": ["wd:Q7934"],
+                "wdt:P136": ["wd:Q1"],
+                "wdt:P577": ["1965"],
+                "wdt:P407": ["wd:Q1860"],
+            },
+        },
+        "wd:Q7934": {"labels": {"en": "Frank Herbert"}},
+        "wd:Q1": {"labels": {"en": "Science fiction"}},
+        "wd:Q1860": {"labels": {"en": "English"}},
+    }
+}
+
+
+def test_inventaire_mapping():
+    from vellum.metadata.sources.inventaire import Inventaire
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs.get("params") or {})
+        if "entities" in url:
+            return _response(INVENTAIRE_ENTITIES)
+        return _response(INVENTAIRE_SEARCH)
+
     with patch(
-        "vellum.metadata.sources.crossref.requests.get",
-        side_effect=RuntimeError("down"),
+        "vellum.metadata.sources.inventaire.requests.get",
+        side_effect=fake_get,
     ):
-        assert Crossref().search(title="x") == []
+        results = Inventaire().search(title="Dune")
+    assert len(results) == 1
+    meta = results[0]
+    assert meta.title == "Dune"
+    assert meta.authors == ["Frank Herbert"]
+    assert meta.publisher == ""
+    assert meta.pubdate == "1965"
+    assert meta.language == "English"
+    assert meta.description == "1965 science fiction novel"
+    assert meta.tags == ["Science fiction"]
+    assert meta.cover_url == "https://inventaire.io/img/entities/hash"
+    assert meta.source_id == "inventaire:Q190192"
+    assert calls[0]["types"] == "works"
+
+
+def test_inventaire_skips_non_english_works():
+    from vellum.metadata.sources.inventaire import Inventaire
+
+    search = {"results": [{"uri": "wd:Q2", "image": ""}]}
+    entities = {
+        "entities": {
+            "wd:Q2": {
+                "wdId": "Q2",
+                "labels": {"fr": "Livre"},
+                "descriptions": {"fr": "Un livre"},
+                "claims": {},
+            }
+        }
+    }
+
+    def fake_get(url, **kwargs):
+        if "entities" in url:
+            return _response(entities)
+        return _response(search)
+
+    with patch(
+        "vellum.metadata.sources.inventaire.requests.get",
+        side_effect=fake_get,
+    ):
+        assert Inventaire().search(title="Livre") == []

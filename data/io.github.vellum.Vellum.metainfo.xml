@@ -23,6 +23,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.13" date="2026-10-19">
+      <description>
+        <p>Add Inventaire as a high-quality English metadata source,
+        remove Crossref, and restrict all metadata searches to English
+        results.</p>
+      </description>
+    </release>
     <release version="0.1.12" date="2026-10-19">
       <description>
         <p>Add Internet Archive, Library of Congress, and Crossref

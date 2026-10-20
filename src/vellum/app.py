@@ -47,7 +47,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.12"
+    __version__ = "0.1.13"
 
 logger = logging.getLogger(__name__)
 
@@ -319,9 +319,9 @@ class VellumApplication(Adw.Application):
     def _register_builtin_sources(self) -> None:
         try:
             from vellum.metadata.sources import (
-                Crossref,
                 GoogleBooks,
                 InternetArchive,
+                Inventaire,
                 LibraryOfCongress,
                 OpenLibrary,
             )
@@ -331,7 +331,7 @@ class VellumApplication(Adw.Application):
                 OpenLibrary(),
                 InternetArchive(),
                 LibraryOfCongress(),
-                Crossref(),
+                Inventaire(),
             ):
                 self.engine.register_source(source)
         except Exception as exc:

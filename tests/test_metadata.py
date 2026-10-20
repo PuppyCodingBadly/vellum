@@ -297,3 +297,17 @@ def test_engine_find_query_ranks_closest_title_first():
 def test_engine_find_query_empty_returns_empty():
     engine = MetadataEngine()
     assert engine.find_query("   ") == []
+
+
+def test_engine_filters_non_english_results():
+    english = Metadata(title="Dune", language="en", source_id="en")
+    french = Metadata(title="Le Dune", language="fre", source_id="fr")
+    source = MagicMock(spec=MetadataSource)
+    source.id = "stub"
+    source.name = "Stub"
+    source.search.return_value = [french, english]
+    engine = MetadataEngine()
+    engine.register_source(source)
+
+    results = engine.find(title="Dune")
+    assert [meta.source_id for meta in results] == ["en"]

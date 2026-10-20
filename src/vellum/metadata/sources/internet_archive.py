@@ -44,7 +44,9 @@ class InternetArchive(MetadataSource):
         if not clauses:
             return []
         return self._query(
-            " AND ".join(clauses) + " AND mediatype:texts", timeout
+            " AND ".join(clauses)
+            + " AND mediatype:texts AND language:(eng OR English)",
+            timeout,
         )
 
     def search_free_text(
@@ -53,7 +55,10 @@ class InternetArchive(MetadataSource):
         query = (query or "").strip()
         if not query:
             return []
-        return self._query(f"({query}) AND mediatype:texts", timeout)
+        return self._query(
+            f"({query}) AND mediatype:texts AND language:(eng OR English)",
+            timeout,
+        )
 
     def _query(self, query: str, timeout: float) -> list[Metadata]:
         try:

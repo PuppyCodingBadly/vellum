@@ -47,7 +47,9 @@ class MetadataEngine:
                 )
             except Exception as exc:
                 log.warning("Metadata source %s failed: %s", source.id, exc)
-        return self._dedupe(results)
+        return [
+            meta for meta in self._dedupe(results) if _is_english(meta)
+        ]
 
     def grab_url(self, url: str, timeout: float = 20.0) -> Metadata | None:
         """Extract metadata from an arbitrary book page URL."""
@@ -87,7 +89,11 @@ class MetadataEngine:
                     log.warning(
                         "Metadata source %s failed: %s", source.id, exc
                     )
-            results = self._dedupe(results)
+            results = [
+                meta
+                for meta in self._dedupe(results)
+                if _is_english(meta)
+            ]
             results.sort(
                 key=lambda meta: (-_fuzzy_score(query, meta), -meta.rating)
             )
@@ -234,6 +240,13 @@ class MetadataEngine:
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
+
+
+def _is_english(meta: Metadata) -> bool:
+    language = (meta.language or "").strip().lower()
+    if not language:
+        return True  # sources often omit it; don't discard the result
+    return language.startswith("en") or language in ("english", "eng")
 
 
 def _query_isbn(query: str) -> str:

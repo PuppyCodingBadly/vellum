@@ -37,7 +37,11 @@ class GoogleBooks(MetadataSource):
         try:
             resp = requests.get(
                 API_URL,
-                params={"q": "+".join(parts), "maxResults": 20},
+                params={
+                    "q": "+".join(parts),
+                    "maxResults": 20,
+                    "langRestrict": "en",
+                },
                 timeout=timeout,
             )
             resp.raise_for_status()
@@ -67,7 +71,11 @@ class GoogleBooks(MetadataSource):
         try:
             resp = requests.get(
                 API_URL,
-                params={"q": query, "maxResults": 20},
+                params={
+                    "q": query,
+                    "maxResults": 20,
+                    "langRestrict": "en",
+                },
                 timeout=timeout,
             )
             resp.raise_for_status()
