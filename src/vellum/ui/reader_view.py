@@ -47,8 +47,14 @@ _BRIDGE_JS = r"""
 if (window.__vellumInstalled) return;
 window.__vellumInstalled = true;
 
+function bodyEl() {
+  return document.body
+      || document.getElementsByTagName('body')[0]
+      || document.documentElement;
+}
+
 function offsetsOf(range) {
-  var walker = document.createTreeWalker(document.body,
+  var walker = document.createTreeWalker(bodyEl(),
       NodeFilter.SHOW_TEXT, null);
   var node, pos = 0, start = -1, end = -1;
   while ((node = walker.nextNode())) {
@@ -94,7 +100,7 @@ window.addEventListener('scroll', function(){
 var colors = {yellow: '#f2d94e', green: '#a8e6a3', pink: '#f7b6d2'};
 
 window.__vellumHighlight = function(start, end, color, hlId){
-  var walker = document.createTreeWalker(document.body,
+  var walker = document.createTreeWalker(bodyEl(),
       NodeFilter.SHOW_TEXT, null);
   var node, pos = 0, sNode = null, sOff = 0, eNode = null, eOff = 0;
   while ((node = walker.nextNode())) {
@@ -133,7 +139,7 @@ window.__vellumUnhighlight = function(hlId){
 };
 
 window.__vellumJump = function(start){
-  var walker = document.createTreeWalker(document.body,
+  var walker = document.createTreeWalker(bodyEl(),
       NodeFilter.SHOW_TEXT, null);
   var node, pos = 0;
   while ((node = walker.nextNode())) {
@@ -160,7 +166,9 @@ _INJECT_CSS_JS = (
     "(function(){"
     "var s = document.getElementById('vellum-reader-css');"
     "if (!s) { s = document.createElement('style');"
-    "s.id = 'vellum-reader-css'; document.head.appendChild(s); }"
+    "s.id = 'vellum-reader-css';"
+    "var h = document.head || document.documentElement;"
+    "if (h) { h.appendChild(s); } }"
     "s.textContent = %s;"
     "})();"
 )
@@ -408,19 +416,19 @@ class ReaderPage(Gtk.Box):
         self._counter_label.add_css_class("dim-label")
         header.append(self._counter_label)
 
-        font_down = Gtk.Button(icon_name="zoom-out-symbolic")
-        font_down.set_tooltip_text("Decrease font size")
-        font_down.connect(
+        self._font_down = Gtk.Button(icon_name="zoom-out-symbolic")
+        self._font_down.set_tooltip_text("Decrease font size")
+        self._font_down.connect(
             "clicked", lambda _b: self._change_font_scale(-_FONT_SCALE_STEP)
         )
-        header.append(font_down)
+        header.append(self._font_down)
 
-        font_up = Gtk.Button(icon_name="zoom-in-symbolic")
-        font_up.set_tooltip_text("Increase font size")
-        font_up.connect(
+        self._font_up = Gtk.Button(icon_name="zoom-in-symbolic")
+        self._font_up.set_tooltip_text("Increase font size")
+        self._font_up.connect(
             "clicked", lambda _b: self._change_font_scale(_FONT_SCALE_STEP)
         )
-        header.append(font_up)
+        header.append(self._font_up)
 
         toc_popover = Gtk.Popover()
         toc_popover.connect("show", lambda _p: self._refresh_toc())
