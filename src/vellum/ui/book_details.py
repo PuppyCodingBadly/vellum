@@ -53,10 +53,19 @@ class BookDetails(Gtk.Box):
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
         content.append(top)
 
+        aspect = Gtk.AspectFrame(
+            ratio=DETAIL_COVER_WIDTH / DETAIL_COVER_HEIGHT,
+            obey_child=False,
+            xalign=0.5,
+            yalign=0.0,
+        )
+        aspect.set_size_request(DETAIL_COVER_WIDTH, -1)
+        aspect.set_halign(Gtk.Align.CENTER)
+        aspect.set_hexpand(False)
+        aspect.set_valign(Gtk.Align.START)
+
         frame = Gtk.Frame(css_classes=["cover-frame"])
-        frame.set_size_request(DETAIL_COVER_WIDTH, DETAIL_COVER_HEIGHT)
-        frame.set_valign(Gtk.Align.START)
-        self._cover_stack = Gtk.Stack()
+        self._cover_stack = Gtk.Stack(hexpand=True, vexpand=True)
         self._picture = Gtk.Picture(
             content_fit=Gtk.ContentFit.COVER, can_shrink=True
         )
@@ -67,7 +76,8 @@ class BookDetails(Gtk.Box):
         self._cover_stack.add_named(self._picture, "cover")
         self._cover_stack.add_named(self._placeholder, "placeholder")
         frame.set_child(self._cover_stack)
-        top.append(frame)
+        aspect.set_child(frame)
+        top.append(aspect)
 
         right = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,

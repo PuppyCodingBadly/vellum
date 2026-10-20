@@ -66,18 +66,16 @@ class LibraryView(Gtk.ScrolledWindow):
 
     def _build_card(self) -> Gtk.Box:
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        card.set_size_request(COVER_WIDTH, -1)
+        card.set_size_request(COVER_WIDTH, 300)
         card.set_margin_top(6)
         card.set_margin_bottom(6)
         card.set_margin_start(6)
         card.set_margin_end(6)
 
         frame = Gtk.Frame(css_classes=["cover-frame"])
-        frame.set_size_request(COVER_WIDTH, COVER_HEIGHT)
 
-        cover_stack = Gtk.Stack()
+        cover_stack = Gtk.Stack(hexpand=True, vexpand=True)
         picture = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
-        picture.set_size_request(COVER_WIDTH, COVER_HEIGHT)
         placeholder = Gtk.Label(
             css_classes=["cover-placeholder"], hexpand=True, vexpand=True
         )
@@ -85,19 +83,36 @@ class LibraryView(Gtk.ScrolledWindow):
         cover_stack.add_named(placeholder, "placeholder")
         cover_stack.set_visible_child_name("placeholder")
         frame.set_child(cover_stack)
-        card.append(frame)
+        aspect = Gtk.AspectFrame(
+            ratio=2.0 / 3.0,
+            obey_child=False,
+            xalign=0.5,
+            yalign=0.5,
+        )
+        aspect.set_child(frame)
+        aspect.set_size_request(COVER_WIDTH, -1)
+        center_box = Gtk.CenterBox(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            hexpand=True,
+            vexpand=False,
+            valign=Gtk.Align.START,
+        )
+        center_box.set_center_widget(aspect)
+        card.append(center_box)
 
         title = Gtk.Label(
-            wrap=True,
-            lines=2,
+            wrap=False,
             ellipsize=Pango.EllipsizeMode.END,
             max_width_chars=18,
+            xalign=0.0,
             justify=Gtk.Justification.CENTER,
             css_classes=["caption-heading"],
         )
         authors = Gtk.Label(
+            wrap=False,
             ellipsize=Pango.EllipsizeMode.END,
-            max_width_chars=22,
+            max_width_chars=18,
+            xalign=0.0,
             justify=Gtk.Justification.CENTER,
             css_classes=["dim-label", "caption"],
         )
