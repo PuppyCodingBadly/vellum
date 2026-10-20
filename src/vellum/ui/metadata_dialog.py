@@ -57,11 +57,24 @@ class MetadataDialog(_Base):
             self.set_modal(True)
 
         toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
+        header = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            css_classes=["vellum-header"],
+        )
+        title_label = Gtk.Label(
+            label="Fetch Metadata", hexpand=True, xalign=0.0
+        )
+        title_label.add_css_class("heading")
+        header.append(title_label)
         self._apply_button = Gtk.Button(label="Apply", sensitive=False)
         self._apply_button.add_css_class("suggested-action")
         self._apply_button.connect("clicked", self._on_apply_clicked)
-        header.pack_end(self._apply_button)
+        header.append(self._apply_button)
+        close_button = Gtk.Button(icon_name="window-close-symbolic")
+        close_button.set_tooltip_text("Close")
+        close_button.connect("clicked", lambda *_args: self.close())
+        header.append(close_button)
         toolbar.add_top_bar(header)
 
         self._stack = Gtk.Stack(

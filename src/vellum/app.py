@@ -101,7 +101,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.19"
+    __version__ = "0.1.20"
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,12 @@ CSS = """
 .metadata-cover {
     border-radius: 6px;
     background: alpha(@accent_bg_color, 0.15);
+}
+.vellum-header {
+    min-height: 47px;
+    padding: 0 6px;
+    background: @headerbar_bg_color;
+    color: @headerbar_fg_color;
 }
 """
 

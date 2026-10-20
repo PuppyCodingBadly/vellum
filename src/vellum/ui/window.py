@@ -9,7 +9,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from vellum.core.models import Book
 from vellum.core.sorting import SORT_KEYS, SORT_OPTIONS, sort_books
@@ -97,7 +97,10 @@ class VellumWindow(Adw.ApplicationWindow):
         self._page_seq = 0
 
         toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
+        # Plain Gtk widgets, not Adw.HeaderBar: dragging an Adw titlebar
+        # issues xdg_toplevel_move, which hits a Mutter 50.5 touch-grab
+        # NULL dereference on this hardware.
+        header = Gtk.CenterBox(css_classes=["vellum-header"])
 
         self.stack = Adw.ViewStack()
         switcher = Adw.ViewSwitcher(
@@ -108,13 +111,15 @@ class VellumWindow(Adw.ApplicationWindow):
                 else Adw.ViewSwitcherPolicy.WIDE
             ),
         )
-        header.pack_start(switcher)
+        start_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        start_box.append(switcher)
+        header.set_start_widget(start_box)
 
         self.search_entry = Gtk.SearchEntry(
             placeholder_text="Search library…",
             width_chars=16 if self._compact else 36,
         )
-        header.set_title_widget(self.search_entry)
+        header.set_center_widget(self.search_entry)
 
         self.sort_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new(
@@ -126,7 +131,6 @@ class VellumWindow(Adw.ApplicationWindow):
         current_sort = self._current_sort_key()
         self.sort_dropdown.set_selected(SORT_KEYS.index(current_sort))
         self.sort_dropdown.connect("notify::selected", self._on_sort_changed)
-        header.pack_end(self.sort_dropdown)
 
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
@@ -139,7 +143,11 @@ class VellumWindow(Adw.ApplicationWindow):
         menu_button = Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu
         )
-        header.pack_end(menu_button)
+        end_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        end_box.append(self.sort_dropdown)
+        end_box.append(menu_button)
+        end_box.append(Gtk.WindowControls(side=Gtk.PackType.END))
+        header.set_end_widget(end_box)
 
         toolbar_view.add_top_bar(header)
 
@@ -240,12 +248,23 @@ class VellumWindow(Adw.ApplicationWindow):
     def push_page(self, content: Gtk.Widget, title: str) -> None:
         """Show *content* as a new page with an explicit back button."""
         toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
+        header = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            css_classes=["vellum-header"],
+        )
         back = Gtk.Button(icon_name="go-previous-symbolic")
         back.set_tooltip_text("Back")
         back.connect("clicked", self._on_back_clicked)
-        header.pack_start(back)
-        header.set_title_widget(Adw.WindowTitle(title=title))
+        header.append(back)
+        title_label = Gtk.Label(
+            label=title,
+            hexpand=True,
+            xalign=0.5,
+            ellipsize=Pango.EllipsizeMode.END,
+        )
+        title_label.add_css_class("heading")
+        header.append(title_label)
         toolbar_view.add_top_bar(header)
         toolbar_view.set_content(content)
 
