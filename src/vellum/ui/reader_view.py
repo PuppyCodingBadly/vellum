@@ -586,6 +586,10 @@ class ReaderPage(Gtk.Box):
         root = self.get_root()
         if not isinstance(root, Gtk.Window):
             return
+        app = root.get_application()
+        if app is not None:
+            app.activate_action("toggle-fullscreen", None)
+            return
         if root.is_fullscreen():
             root.unfullscreen()
         else:
@@ -1339,9 +1343,6 @@ class ReaderPage(Gtk.Box):
 
     def _on_key_pressed(self, _controller, keyval: int, _keycode: int,
                         state: Gdk.ModifierType) -> bool:
-        if keyval == Gdk.KEY_F11:
-            self._toggle_fullscreen()
-            return True
         if keyval == Gdk.KEY_Left:
             self.prev_chapter()
             return True

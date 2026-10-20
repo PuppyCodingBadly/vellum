@@ -97,7 +97,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.18` build is published at
+The signed `v0.1.19` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh

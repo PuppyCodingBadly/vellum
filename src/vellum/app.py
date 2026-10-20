@@ -101,7 +101,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.18"
+    __version__ = "0.1.19"
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,11 @@ class VellumApplication(Adw.Application):
                 stores=self.stores,
             )
         window.present()
+        if getattr(window, "_compact", False) and not window.is_fullscreen():
+            # A too-small window triggers a Mutter crash on this hardware.
+            # Compact/portrait layouts start fullscreen so the window can
+            # never shrink into that state.
+            window.fullscreen()
         self._crash_marker("main window presented")
         if self.startup_warning:
             window.show_toast(self.startup_warning)
@@ -303,6 +308,11 @@ class VellumApplication(Adw.Application):
         import_calibre = Gio.SimpleAction(name="import-calibre")
         import_calibre.connect("activate", self._on_import_calibre)
         self.add_action(import_calibre)
+
+        fullscreen = Gio.SimpleAction(name="toggle-fullscreen")
+        fullscreen.connect("activate", self._on_toggle_fullscreen)
+        self.add_action(fullscreen)
+        self.set_accels_for_action("app.toggle-fullscreen", ["F11"])
 
     def _setup_backend(self) -> None:
         self._crash_marker("backend setup start")
@@ -559,6 +569,20 @@ class VellumApplication(Adw.Application):
 
     def _on_show_hidden(self, action, _param) -> None:
         self.set_show_hidden(not action.get_state().get_boolean())
+
+    def _on_toggle_fullscreen(self, *_args) -> None:
+        window = self.get_active_window()
+        if window is None:
+            return
+        if window.is_fullscreen():
+            if getattr(window, "_force_fullscreen", False):
+                window.show_toast(
+                    "Window stays fullscreen on this display size"
+                )
+                return
+            window.unfullscreen()
+        else:
+            window.fullscreen()
 
     def _on_import_calibre(self, *_args) -> None:
         dialog = Gtk.FileDialog(

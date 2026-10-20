@@ -69,6 +69,9 @@ class VellumWindow(Adw.ApplicationWindow):
         self.set_title("Vellum")
         width, height, compact = _initial_window_size()
         self._compact = compact
+        self._force_fullscreen = (
+            compact and os.environ.get("VELLUM_WINDOWED") != "1"
+        )
         application = self.get_application()
         if hasattr(application, "_crash_marker"):
             application._crash_marker(
@@ -129,6 +132,7 @@ class VellumWindow(Adw.ApplicationWindow):
         menu.append("Preferences", "app.preferences")
         menu.append("Import Calibre Library…", "app.import-calibre")
         menu.append("Show Hidden Books", "app.show-hidden")
+        menu.append("Fullscreen (F11)", "app.toggle-fullscreen")
         menu.append("About Vellum", "app.about")
         menu.append("Close Window", "window.close")
         menu.append("Quit", "app.quit")
