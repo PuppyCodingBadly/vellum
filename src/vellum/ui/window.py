@@ -147,6 +147,14 @@ class VellumWindow(Adw.ApplicationWindow):
         self._page_names.append("root")
         self.pages.set_visible_child_name("root")
 
+        if os.environ.get("VELLUM_DISABLE_TOUCH") == "1":
+            # Diagnostic/workaround: swallow touchscreen events before
+            # any widget or gesture sees them. Mouse/touchpad still work.
+            touch_guard = Gtk.EventControllerLegacy()
+            touch_guard.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            touch_guard.connect("event", self._ignore_touch)
+            self.add_controller(touch_guard)
+
         # Debounced search.
         self._search_source = 0
         self.search_entry.connect("search-changed", self._on_search_changed)
@@ -248,6 +256,17 @@ class VellumWindow(Adw.ApplicationWindow):
 
     def _on_back_clicked(self, *_args) -> None:
         self.pop_page()
+
+    @staticmethod
+    def _ignore_touch(_controller, event=None) -> bool:
+        if event is None:
+            return False
+        return event.get_event_type() in (
+            Gdk.EventType.TOUCH_BEGIN,
+            Gdk.EventType.TOUCH_UPDATE,
+            Gdk.EventType.TOUCH_END,
+            Gdk.EventType.TOUCH_CANCEL,
+        )
 
     def _on_back_shortcut(self, *_args) -> bool:
         return self.pop_page()

@@ -99,7 +99,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.15"
+    __version__ = "0.1.16"
 
 logger = logging.getLogger(__name__)
 

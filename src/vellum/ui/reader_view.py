@@ -494,13 +494,14 @@ class ReaderPage(Gtk.Box):
         self.append(self._stack)
 
         # Touch page turning. Attached only to the content stack, never
-        # the window or navigation, so it cannot interact with shell
-        # gestures. Horizontal swipes turn a page/chapter; vertical
-        # scrolling is left to the content widget.
-        self._swipe = Gtk.GestureSwipe()
-        self._swipe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        self._swipe.connect("swipe", self._on_swipe)
-        self._stack.add_controller(self._swipe)
+        # the window or navigation. BUBBLE phase lets the content widget
+        # handle scrolling/selection first; VELLUM_DISABLE_TOUCH removes
+        # the gesture entirely.
+        if os.environ.get("VELLUM_DISABLE_TOUCH") != "1":
+            self._swipe = Gtk.GestureSwipe()
+            self._swipe.set_propagation_phase(Gtk.PropagationPhase.BUBBLE)
+            self._swipe.connect("swipe", self._on_swipe)
+            self._stack.add_controller(self._swipe)
 
         self._progress = Gtk.ProgressBar(show_text=False)
         self._progress.add_css_class("vellum-progress")
