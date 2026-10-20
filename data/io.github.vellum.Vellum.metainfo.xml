@@ -24,6 +24,16 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.1" date="2026-10-20">
+      <description>
+        <p>Fix loading of real calibre plugin archives: metadata-source
+        plugins are now imported as calibre_plugins packages, with the
+        calibre shim extended for the helpers they use.</p>
+        <p>The Flatpak bundles the Python libraries those plugins import
+        (lxml, six, beautifulsoup4, html5lib, requests), so installed
+        metadata and store plugins are recognized again.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-20">
       <description>
         <p>Vellum is now a Flutter/Dart application.</p>
