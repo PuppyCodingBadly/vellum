@@ -23,6 +23,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.7" date="2026-10-19">
+      <description>
+        <p>Defer destruction of the previous page and its WebKit surfaces
+        to an idle callback when the back button is used, so touch-triggered
+        teardown cannot race the compositor.</p>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-10-19">
       <description>
         <p>Replace Adw.NavigationView's automatic back button and touch

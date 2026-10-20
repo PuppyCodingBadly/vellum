@@ -166,10 +166,18 @@ class VellumWindow(Adw.ApplicationWindow):
             return False
         current = self._page_names.pop()
         self.pages.set_visible_child_name(self._page_names[-1])
-        child = self.pages.get_child_by_name(current)
+        # Never destroy a page (and its WebKit views) inside the back
+        # button's event dispatch; tearing down surfaces synchronously on
+        # a touch tap is what triggered compositor crashes on some
+        # devices. Show the previous page now, remove the old one on idle.
+        GLib.idle_add(self._remove_page, current)
+        return True
+
+    def _remove_page(self, name: str) -> bool:
+        child = self.pages.get_child_by_name(name)
         if child is not None:
             self.pages.remove(child)
-        return True
+        return GLib.SOURCE_REMOVE
 
     def _on_back_clicked(self, *_args) -> None:
         self.pop_page()
