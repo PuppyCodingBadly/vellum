@@ -192,3 +192,73 @@ def test_garbage_zip_errors_and_process_survives(sidecar, tmp_path):
     # Process is still alive and responsive.
     resp = sidecar.call("ping")
     assert resp.get("result") == "pong"
+
+
+REAL_LAYOUT_INIT = '''
+from calibre import as_unicode
+from calibre.constants import numeric_version
+from calibre.ebooks.metadata.sources.base import Source, fixauthors
+from calibre.utils.cleantext import clean_ascii_chars
+
+from calibre_plugins.real_layout.worker import build_metadata
+
+
+class RealLayoutSource(Source):
+    name = "Real Layout Source"
+    id = "real_layout"
+    version = (2, 1, 0)
+    description = "Plugin using calibre's real package layout."
+    capabilities = frozenset({"identify"})
+
+    def identify(self, log, result_queue, abort, title=None, authors=None,
+                 identifiers=None, timeout=30):
+        assert numeric_version >= (5, 0, 0)
+        assert as_unicode(b"ok") == "ok"
+        assert clean_ascii_chars("a\\x00b") == "ab"
+        result_queue.put(build_metadata(fixauthors(["Herbert, Frank"])))
+'''
+
+REAL_LAYOUT_WORKER = '''
+from calibre.ebooks.metadata.book.base import Metadata
+
+
+def build_metadata(authors):
+    mi = Metadata("Dune", authors)
+    mi.set_identifier("isbn", "9780441013593")
+    mi.language = "eng"
+    mi.publisher = "Chilton"
+    mi.comments = "A desert planet."
+    mi.tags = ["science fiction"]
+    mi.rating = 4.5
+    return mi
+'''
+
+
+def _build_real_layout_zip(path):
+    """Root-level modules and an empty marker, exactly like calibre zips."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("plugin-import-name-real_layout.txt", "")
+        zf.writestr("__init__.py", REAL_LAYOUT_INIT)
+        zf.writestr("worker.py", REAL_LAYOUT_WORKER)
+
+
+def test_real_calibre_layout_loads_and_searches(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "real-layout.zip")
+    _build_real_layout_zip(zip_path)
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    result = resp["result"]
+    assert result["kind"] == "metadata"
+    assert result["name"] == "Real Layout Source"
+
+    resp = sidecar.call("metadata_search", title="Dune", authors=["Frank Herbert"],
+                        isbn="", timeout=15.0)
+    results = resp["result"]
+    assert len(results) == 1
+    book = results[0]
+    assert book["title"] == "Dune"
+    assert book["authors"] == ["Frank Herbert"]
+    assert book["isbn"] == "9780441013593"
+    assert book["language"] == "eng"
+    assert book["source_name"] == "Real Layout Source"

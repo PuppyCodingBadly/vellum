@@ -27,6 +27,44 @@ finish-args:
   - --env=PDFIUM_PATH=/app/lib/libpdfium.so
 
 modules:
+  # Calibre plugins import third-party libraries that the GNOME runtime does
+  # not ship.  These wheels are unpacked into /app/lib/python3.13/site-packages
+  # so the sidecar can load real calibre metadata-source and store plugins.
+  - name: python3-calibre-plugin-deps
+    buildsystem: simple
+    build-commands:
+      - >-
+        pip install --prefix=/app --ignore-installed --no-index --find-links=.
+        lxml==6.0.2 six==1.17.0 beautifulsoup4==4.15.0 soupsieve==3.0.3
+        typing_extensions==4.16.0 html5lib==1.1 webencodings==0.5.1
+        requests==2.33.1 certifi==2026.10.19 idna==3.20 urllib3==2.8.0
+        charset_normalizer==3.5.2
+    sources:
+      - type: file
+        path: wheels/lxml-6.0.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - type: file
+        path: wheels/six-1.17.0-py2.py3-none-any.whl
+      - type: file
+        path: wheels/beautifulsoup4-4.15.0-py3-none-any.whl
+      - type: file
+        path: wheels/soupsieve-3.0.3-py3-none-any.whl
+      - type: file
+        path: wheels/typing_extensions-4.16.0-py3-none-any.whl
+      - type: file
+        path: wheels/html5lib-1.1-py2.py3-none-any.whl
+      - type: file
+        path: wheels/webencodings-0.5.1-py2.py3-none-any.whl
+      - type: file
+        path: wheels/requests-2.33.1-py3-none-any.whl
+      - type: file
+        path: wheels/certifi-2026.10.19-py3-none-any.whl
+      - type: file
+        path: wheels/idna-3.20-py3-none-any.whl
+      - type: file
+        path: wheels/urllib3-2.8.0-py3-none-any.whl
+      - type: file
+        path: wheels/charset_normalizer-3.5.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+
   - name: vellum
     buildsystem: simple
     build-commands:

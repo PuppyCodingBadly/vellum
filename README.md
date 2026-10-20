@@ -128,7 +128,8 @@ scaling for EPUB, MOBI, and PDF.
 Metadata-source and store plugins are calibre `.zip` archives loaded by a
 local Python sidecar (`sidecar/main.py`) and exposed to Dart over JSON-RPC on
 stdio. Install them from the Plugins page. Calibre GUI action plugins are not
-supported.
+supported. The Flatpak bundles the libraries common metadata and store plugins
+import (`lxml`, `six`, `beautifulsoup4`, `html5lib`, `requests`).
 
 ## Project layout
 
