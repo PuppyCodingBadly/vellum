@@ -97,7 +97,7 @@ vendored as wheels under `flatpak/wheels/`, so builds need no network.
 
 ### Install and update from the Vellum repository
 
-The signed `v0.1.14` build is published at
+The signed `v0.1.15` build is published at
 `https://puppycodingbadly.github.io/vellum/`:
 
 ```sh
@@ -107,6 +107,22 @@ flatpak update io.github.vellum.Vellum
 
 The `.flatpakref` and `.flatpakrepo` files are also checked in at the
 repository root.
+
+## Crash reports
+
+Vellum writes uncaught tracebacks, thread exceptions, and fatal-signal
+stacks to
+`~/.var/app/io.github.vellum.Vellum/data/vellum/crash.log` (Flatpak) or
+`~/.local/share/vellum/crash.log` (source).
+
+To collect the app log plus GNOME Shell/Mutter, sensor, and coredump
+information in one file:
+
+```sh
+./scripts/collect-crash-report.sh
+```
+
+It writes `~/vellum-crash-report-<timestamp>.txt`.
 
 ## Plugins
 

@@ -58,6 +58,11 @@ class VellumWindow(Adw.ApplicationWindow):
         self.set_title("Vellum")
         width, height, compact = _initial_window_size()
         self._compact = compact
+        application = self.get_application()
+        if hasattr(application, "_crash_marker"):
+            application._crash_marker(
+                f"window init size={width}x{height} compact={compact}"
+            )
         self.set_default_size(width, height)
 
         # Toast overlay wraps everything so notifications show over any page.
@@ -163,6 +168,9 @@ class VellumWindow(Adw.ApplicationWindow):
         self.add_controller(shortcuts)
 
         self.refresh_library()
+        application = self.get_application()
+        if hasattr(application, "_crash_marker"):
+            application._crash_marker("window ready")
 
     # -- public API -----------------------------------------------------------
 

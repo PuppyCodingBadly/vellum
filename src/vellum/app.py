@@ -30,6 +30,55 @@ os.environ.setdefault("GSK_RENDERER", "cairo")
 os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
 
+_CRASH_HANDLE = None
+
+
+def _crash_log_path() -> str:
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser(
+        "~/.local/share"
+    )
+    return os.path.join(base, "vellum", "crash.log")
+
+
+def _init_crash_logging():
+    """Start crash logging before GTK/Adw are imported."""
+    global _CRASH_HANDLE
+    if _CRASH_HANDLE is not None:
+        return _CRASH_HANDLE
+    try:
+        path = _crash_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
+    _CRASH_HANDLE = handle
+    handle.write(
+        f"\n--- Vellum start {datetime.now(timezone.utc).isoformat()} ---\n"
+    )
+    print(f"Vellum crash log: {path}", file=sys.stderr)
+    faulthandler.enable(file=handle, all_threads=True)
+
+    def excepthook(exc_type, exc, tb) -> None:
+        traceback.print_exception(exc_type, exc, tb, file=handle)
+        handle.flush()
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def thread_hook(args) -> None:
+        traceback.print_exception(
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback,
+            file=handle,
+        )
+        handle.flush()
+
+    sys.excepthook = excepthook
+    threading.excepthook = thread_hook
+    return handle
+
+
+_init_crash_logging()
+
 if __package__ in (None, ""):
     sys.path.insert(
         0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -50,7 +99,7 @@ from vellum.ui.window import VellumWindow
 try:
     from vellum import __version__
 except Exception:  # package metadata not available (bare source tree)
-    __version__ = "0.1.14"
+    __version__ = "0.1.15"
 
 logger = logging.getLogger(__name__)
 
@@ -167,43 +216,40 @@ class VellumApplication(Adw.Application):
         self.apply_appearance()
 
     def _setup_crash_logging(self) -> None:
-        """Capture Python tracebacks and fatal signals in a user-readable log."""
-        try:
-            data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
-            os.makedirs(data_dir, exist_ok=True)
-            handle = open(
-                os.path.join(data_dir, "crash.log"),
-                "a",
-                encoding="utf-8",
-                buffering=1,
-            )
-        except OSError:
+        self._crash_log = _init_crash_logging()
+
+    def _crash_marker(self, message: str) -> None:
+        handle = _CRASH_HANDLE or getattr(self, "_crash_log", None)
+        if handle is None:
             return
-        self._crash_log = handle
-        handle.write(
-            f"\n--- Vellum {__version__} start "
-            f"{datetime.now(timezone.utc).isoformat()} ---\n"
-        )
-        faulthandler.enable(file=handle, all_threads=True)
-
-        def excepthook(exc_type, exc, tb) -> None:
-            traceback.print_exception(exc_type, exc, tb, file=handle)
-            handle.flush()
-            sys.__excepthook__(exc_type, exc, tb)
-
-        def thread_hook(args) -> None:
-            traceback.print_exception(
-                args.exc_type,
-                args.exc_value,
-                args.exc_traceback,
-                file=handle,
+        try:
+            handle.write(
+                f"[{datetime.now(timezone.utc).isoformat()}] {message}\n"
             )
             handle.flush()
-
-        sys.excepthook = excepthook
-        threading.excepthook = thread_hook
+        except OSError:
+            pass
 
     def do_activate(self):
+        self._crash_marker("do_activate")
+        if os.environ.get("VELLUM_MINIMAL") == "1":
+            window = Adw.ApplicationWindow(application=self)
+            window.set_title("Vellum minimal mode")
+            window.set_default_size(420, 320)
+            window.set_content(
+                Adw.StatusPage(
+                    title="Vellum minimal mode",
+                    description=(
+                        "GTK, the window, and portrait layout are working. "
+                        "If this opens but the normal UI does not, the "
+                        "crash is in the library view or its covers."
+                    ),
+                    icon_name="dialog-information-symbolic",
+                )
+            )
+            window.present()
+            self._crash_marker("minimal window presented")
+            return
         window = self.get_active_window()
         if window is None:
             window = VellumWindow(
@@ -215,6 +261,7 @@ class VellumApplication(Adw.Application):
                 stores=self.stores,
             )
         window.present()
+        self._crash_marker("main window presented")
         if self.startup_warning:
             window.show_toast(self.startup_warning)
             self.startup_warning = ""
@@ -256,6 +303,7 @@ class VellumApplication(Adw.Application):
         self.add_action(import_calibre)
 
     def _setup_backend(self) -> None:
+        self._crash_marker("backend setup start")
         self.data_dir = os.path.join(GLib.get_user_data_dir(), "vellum")
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(os.path.join(self.data_dir, "covers"), exist_ok=True)
@@ -357,6 +405,7 @@ class VellumApplication(Adw.Application):
             show_hidden_action.set_state(
                 GLib.Variant("b", bool(self.config.get("show_hidden", False)))
             )
+        self._crash_marker("backend setup done")
 
     def _register_builtin_sources(self) -> None:
         try:
@@ -622,6 +671,7 @@ class VellumApplication(Adw.Application):
 
 
 def main(argv=None) -> int:
+    _init_crash_logging()
     logging.basicConfig(level=logging.INFO)
     app = VellumApplication()
     return app.run(sys.argv if argv is None else list(argv))
