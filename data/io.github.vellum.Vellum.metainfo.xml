@@ -24,6 +24,13 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.2" date="2026-10-20">
+      <description>
+        <p>Resolve download links from calibre store plugins such as
+        Library Genesis: the browser shim now preserves POST request
+        bodies, so JSON decrypt endpoints are queried correctly.</p>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-10-20">
       <description>
         <p>Fix loading of real calibre plugin archives: metadata-source
