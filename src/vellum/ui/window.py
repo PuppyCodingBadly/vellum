@@ -35,8 +35,17 @@ class VellumWindow(Adw.ApplicationWindow):
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
 
-        self.nav = Adw.NavigationView()
-        self.toast_overlay.set_child(self.nav)
+        # A plain Gtk.Stack avoids Adw.NavigationView's touch back gesture
+        # and automatic header back button. Those have crashed the shell
+        # on touchscreen devices; this stack uses explicit buttons instead.
+        self.pages = Gtk.Stack(
+            transition_type=Gtk.StackTransitionType.NONE,
+            hexpand=True,
+            vexpand=True,
+        )
+        self.toast_overlay.set_child(self.pages)
+        self._page_names: list[str] = []
+        self._page_seq = 0
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -81,8 +90,9 @@ class VellumWindow(Adw.ApplicationWindow):
 
         toolbar_view.set_content(self.stack)
 
-        root_page = Adw.NavigationPage(child=toolbar_view, title="Vellum")
-        self.nav.add(root_page)
+        self.pages.add_named(toolbar_view, "root")
+        self._page_names.append("root")
+        self.pages.set_visible_child_name("root")
 
         # Debounced search.
         self._search_source = 0
@@ -94,6 +104,12 @@ class VellumWindow(Adw.ApplicationWindow):
             Gtk.Shortcut(
                 trigger=Gtk.ShortcutTrigger.parse_string("<Control>f"),
                 action=Gtk.CallbackAction.new(self._focus_search),
+            )
+        )
+        shortcuts.add_shortcut(
+            Gtk.Shortcut(
+                trigger=Gtk.ShortcutTrigger.parse_string("<Alt>Left"),
+                action=Gtk.CallbackAction.new(self._on_back_shortcut),
             )
         )
         self.add_controller(shortcuts)
@@ -124,13 +140,42 @@ class VellumWindow(Adw.ApplicationWindow):
             window=self,
             on_changed=self.refresh_library,
         )
-        tv = Adw.ToolbarView()
-        tv.add_top_bar(Adw.HeaderBar())
-        tv.set_content(details)
-        page = Adw.NavigationPage(
-            child=tv, title=book.title or "Book Details"
-        )
-        self.nav.push(page)
+        self.push_page(details, book.title or "Book Details")
+
+    def push_page(self, content: Gtk.Widget, title: str) -> None:
+        """Show *content* as a new page with an explicit back button."""
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        back = Gtk.Button(icon_name="go-previous-symbolic")
+        back.set_tooltip_text("Back")
+        back.connect("clicked", self._on_back_clicked)
+        header.pack_start(back)
+        header.set_title_widget(Adw.WindowTitle(title=title))
+        toolbar_view.add_top_bar(header)
+        toolbar_view.set_content(content)
+
+        self._page_seq += 1
+        name = f"page-{self._page_seq}"
+        self.pages.add_named(toolbar_view, name)
+        self._page_names.append(name)
+        self.pages.set_visible_child_name(name)
+
+    def pop_page(self) -> bool:
+        """Return to the previous page. Returns False at the root."""
+        if len(self._page_names) <= 1:
+            return False
+        current = self._page_names.pop()
+        self.pages.set_visible_child_name(self._page_names[-1])
+        child = self.pages.get_child_by_name(current)
+        if child is not None:
+            self.pages.remove(child)
+        return True
+
+    def _on_back_clicked(self, *_args) -> None:
+        self.pop_page()
+
+    def _on_back_shortcut(self, *_args) -> bool:
+        return self.pop_page()
 
     def show_toast(self, message: str) -> None:
         self.toast_overlay.add_toast(Adw.Toast(title=message, timeout=3))

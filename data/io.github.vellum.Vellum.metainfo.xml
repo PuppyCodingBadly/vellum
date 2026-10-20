@@ -23,6 +23,14 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.6" date="2026-10-19">
+      <description>
+        <p>Replace Adw.NavigationView's automatic back button and touch
+        back gesture with a plain page stack and explicit back buttons.
+        This removes the navigation gesture path that crashed GNOME Shell
+        on Surface Go touchscreens.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-10-19">
       <description>
         <p>Stability hardening for low-memory and Intel-GPU systems:
