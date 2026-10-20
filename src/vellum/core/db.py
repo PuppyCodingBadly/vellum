@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS formats (
     path TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (book_id, format)
 );
+CREATE TABLE IF NOT EXISTS highlights (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    position TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT 'yellow',
+    text TEXT NOT NULL,
+    created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reading_positions (
+    book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    locator TEXT NOT NULL,
+    updated TEXT NOT NULL
+);
 """
 
 
@@ -246,6 +259,60 @@ class Library:
     def delete_book(self, book_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+
+    # -- highlights ---------------------------------------------------------
+
+    def add_highlight(self, book_id: int, position: str, color: str, text: str) -> int:
+        created = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO highlights (book_id, position, color, text, created)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (book_id, position, color, text, created),
+            )
+            return cur.lastrowid
+
+    def list_highlights(self, book_id: int) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, book_id, position, color, text, created"
+                " FROM highlights WHERE book_id = ? ORDER BY created, id",
+                (book_id,),
+            ).fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "book_id": row[1],
+                    "position": row[2],
+                    "color": row[3],
+                    "text": row[4],
+                    "created": row[5],
+                }
+                for row in rows
+            ]
+
+    def delete_highlight(self, highlight_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
+
+    # -- reading position ---------------------------------------------------
+
+    def set_reading_position(self, book_id: int, locator: str) -> None:
+        updated = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO reading_positions (book_id, locator, updated)"
+                " VALUES (?, ?, ?)",
+                (book_id, locator, updated),
+            )
+
+    def get_reading_position(self, book_id: int) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT locator FROM reading_positions WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            return row[0] if row else None
 
     # Convenience for importer: directory holding covers etc.
     @property

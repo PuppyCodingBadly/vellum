@@ -13,18 +13,20 @@ from vellum.core.models import Book
 from vellum.ui.book_details import BookDetails
 from vellum.ui.library_view import LibraryView
 from vellum.ui.plugins_view import PluginsView
+from vellum.ui.store_view import StoreView
 
 SEARCH_DEBOUNCE_MS = 300
 
 
 class VellumWindow(Adw.ApplicationWindow):
     def __init__(self, application, library, engine, plugin_manager,
-                 data_dir: str, **kwargs):
+                 data_dir: str, stores=None, **kwargs):
         super().__init__(application=application, **kwargs)
         self.library = library
         self.engine = engine
         self.plugin_manager = plugin_manager
         self.data_dir = data_dir
+        self.stores = list(stores or [])
 
         self.set_title("Vellum")
         self.set_default_size(1100, 750)
@@ -64,7 +66,9 @@ class VellumWindow(Adw.ApplicationWindow):
 
         self.library_view = LibraryView(on_activate=self.show_book_details)
         self.plugins_view = PluginsView(plugin_manager, window=self)
+        self.store_view = StoreView(self.stores, library=self.library, window=self)
         self.stack.add_titled(self.library_view, "library", "Library")
+        self.stack.add_titled(self.store_view, "store", "Get Books")
         self.stack.add_titled(self.plugins_view, "plugins", "Plugins")
 
         toolbar_view.set_content(self.stack)

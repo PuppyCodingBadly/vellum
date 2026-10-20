@@ -229,7 +229,8 @@ class BookDetails(Gtk.Box):
 
         tv = Adw.ToolbarView()
         tv.add_top_bar(Adw.HeaderBar())
-        tv.set_content(ReaderPage(self._book, self._data_dir))
+        tv.set_content(ReaderPage(self._book, self._data_dir,
+                                  library=self._library))
         page = Adw.NavigationPage(
             child=tv,
             title=self._book.title or "Reader",

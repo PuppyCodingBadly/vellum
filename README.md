@@ -13,6 +13,11 @@ online sources such as Google Books and OpenLibrary.
 - Fast full-text-ish search across titles, authors, ISBNs, and tags
 - Online metadata lookup with per-source result merging and cover downloads
 - Built-in reader for EPUB, PDF, MOBI, and AZW3 with a page-turn animation (toggleable in Preferences)
+  - Text highlights (yellow/green/pink) with a highlights panel to review, jump to, and delete them (EPUB/MOBI only; PDF pages are image-rendered, so highlighting is not available there)
+  - In-reader dictionary lookup for any selected word
+  - Automatic reading-position resume per book
+  - Chapter list (TOC) for quick navigation, adjustable font size, and Light/Sepia/Dark reader themes (or follow the app scheme)
+  - Fullscreen reading (F11) and a bottom progress bar
 - Compatibility with calibre metadata-source plugins (drop in the `.zip`)
 - Import books from your Documents folder when running as a Flatpak
 

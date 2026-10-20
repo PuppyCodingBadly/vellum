@@ -21,15 +21,25 @@ class PluginManager:
         self._zip_paths: dict[str, str] = {}
 
     def load_all(self):
+        from vellum.core.store import is_store_plugin
+
         for entry in sorted(os.listdir(self._plugin_dir)):
             if entry.endswith(".zip"):
                 path = os.path.join(self._plugin_dir, entry)
+                if is_store_plugin(path):
+                    # Store plugins are loaded via core.store, not as
+                    # metadata sources.
+                    continue
                 try:
                     self._load_path(path, copy=False)
                 except Exception:
                     log.exception("failed to load plugin %s", path)
 
     def load(self, zip_path: str) -> str:
+        from vellum.core.store import is_store_plugin
+
+        if is_store_plugin(zip_path):
+            raise ValueError(f"{zip_path} is a store plugin, not a metadata source")
         return self._load_path(zip_path, copy=True)
 
     def _load_path(self, zip_path: str, copy: bool) -> str:

@@ -180,7 +180,7 @@ def install():
                           ispy3=True, iswindows=False, islinux=True, isosx=False))
     calibre.__path__ = []
 
-    customize = put(_module("calibre.customize", Plugin=Plugin))
+    customize = put(_module("calibre.customize", Plugin=Plugin, StoreBase=StoreBase))
     customize.__path__ = []
     builtins = put(_module("calibre.customize.builtins"))
     builtins.__path__ = []
@@ -206,3 +206,132 @@ def install():
     put(_module("calibre.utils.localization", canonicalize_lang=_canonicalize_lang))
     put(_module("calibre.utils.cleantitle", clean_title=_clean_title))
     put(_module("calibre.utils.config", JSONConfig=dict))
+
+    _install_store_shims(put, calibre)
+
+
+class _Dummy:
+    """Permissive stand-in for Qt / calibre GUI classes.
+
+    Accepts any constructor arguments, returns dummy callables for any
+    attribute access, and can be subclassed by plugin code.
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name):
+        return _dummy_callable
+
+    def __call__(self, *args, **kwargs):
+        return _Dummy()
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self):
+        return False
+
+
+def _dummy_callable(*args, **kwargs):
+    return _Dummy()
+
+
+def _dummy_module_getattr(name):
+    return _Dummy
+
+
+class SearchResult:
+    """Stand-in for ``calibre.gui2.store.search_result.SearchResult``."""
+
+    DRM_UNLOCKED = 0
+    DRM_UNKNOWN = 1
+    DRM_LOCKED = 2
+
+    def __init__(self):
+        self.title = ""
+        self.author = ""
+        self.price = ""
+        self.detail_item = ""
+        self.cover_url = ""
+        self.formats = ""
+        self.drm = self.DRM_UNKNOWN
+        self.downloads = {}
+
+    def __getattr__(self, name):
+        # Permissive: unknown attributes read as empty string rather than
+        # raising, mirroring calibre's loosely-initialized result objects.
+        return ""
+
+
+class StorePlugin(Plugin):
+    """Stand-in for ``calibre.gui2.store.StorePlugin``."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name):
+        return _dummy_callable
+
+
+class StoreBase(Plugin):
+    """Stand-in for ``calibre.customize.stores``-style store base class."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class BasicStoreConfig:
+    """Permissive stand-in for calibre's BasicStoreConfig."""
+
+    def __init__(self, *args, **kwargs):
+        self.options = {}
+
+    def get(self, key, default=None):
+        return default
+
+    def __getattr__(self, name):
+        return _dummy_callable
+
+
+class _WebStoreDialog(_Dummy):
+    pass
+
+
+def _open_url(url):
+    import webbrowser
+    webbrowser.open(str(url))
+
+
+def _url_slash_cleaner(url):
+    while url.endswith("/"):
+        url = url[:-1]
+    return url
+
+
+def _install_store_shims(put, calibre):
+    """Install PyQt5 / calibre.gui2 stubs needed by calibre store plugins."""
+
+    pyqt5 = put(_module("PyQt5"))
+    pyqt5.__path__ = []
+    pyqt5.__getattr__ = _dummy_module_getattr
+    qt = put(_module("PyQt5.Qt"))
+    qt.__getattr__ = _dummy_module_getattr
+    pyqt5.Qt = qt
+
+    calibre.url_slash_cleaner = _url_slash_cleaner
+
+    gui2 = put(_module("calibre.gui2", open_url=_open_url))
+    gui2.__path__ = []
+    gui2.__getattr__ = _dummy_module_getattr
+
+    store = put(_module("calibre.gui2.store", StorePlugin=StorePlugin))
+    store.__path__ = []
+    gui2.store = store
+
+    put(_module("calibre.gui2.store.basic_config",
+                BasicStoreConfig=BasicStoreConfig,
+                BasicStoreConfigWidget=_Dummy))
+    put(_module("calibre.gui2.store.search_result", SearchResult=SearchResult))
+    put(_module("calibre.gui2.store.web_store_dialog",
+                WebStoreDialog=_WebStoreDialog))

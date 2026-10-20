@@ -165,6 +165,7 @@ class VellumApplication(Adw.Application):
         self.library: Library | None = None
         self.engine: MetadataEngine | None = None
         self.plugin_manager: PluginManager | None = None
+        self.stores: list = []
 
     # -- GApplication hooks ----------------------------------------------------
 
@@ -190,6 +191,7 @@ class VellumApplication(Adw.Application):
                 engine=self.engine,
                 plugin_manager=self.plugin_manager,
                 data_dir=self.data_dir,
+                stores=self.stores,
             )
         window.present()
 
@@ -264,6 +266,30 @@ class VellumApplication(Adw.Application):
             self.plugin_manager.load_all()
         except Exception as exc:
             logger.warning("Plugin loading failed: %s", exc)
+
+        # Store plugins (calibre store zips) are loaded separately from
+        # metadata plugins; a broken store must never break startup.
+        self.stores = []
+        plugin_dir = os.path.join(self.data_dir, "plugins")
+        try:
+            from vellum.core.store import is_store_plugin, load_store_plugin
+
+            for entry in sorted(os.listdir(plugin_dir)):
+                if not entry.endswith(".zip"):
+                    continue
+                zip_path = os.path.join(plugin_dir, entry)
+                try:
+                    if not is_store_plugin(zip_path):
+                        continue
+                    adapter = load_store_plugin(zip_path)
+                    if adapter is not None:
+                        self.stores.append(adapter)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load store plugin %s: %s", zip_path, exc
+                    )
+        except Exception as exc:
+            logger.warning("Store plugin setup failed: %s", exc)
 
         if not self.library.all_books():
             self._seed_demo_books()
