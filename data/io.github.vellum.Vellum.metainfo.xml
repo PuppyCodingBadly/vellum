@@ -7,14 +7,15 @@
   <project_license>GPL-3.0-or-later</project_license>
   <description>
     <p>
-      Vellum is a calibre-inspired ebook library manager with a modern
-      GTK4/Libadwaita user interface. Organize your ebook collection, edit
-      metadata, and keep your library tidy.
+      Vellum is a calibre-inspired ebook library manager. Organize your
+      ebook collection, edit metadata, read EPUB, MOBI, and PDF books, and
+      keep your library tidy.
     </p>
     <p>
-      Vellum supports calibre metadata-source plugins, so the rich ecosystem
-      of community plugins works out of the box, and it can fetch metadata
-      and covers online from sources such as Google Books and OpenLibrary.
+      Vellum supports calibre metadata-source and store plugins, can fetch
+      metadata and covers online from sources such as Google Books and
+      OpenLibrary, and adds shelves, reading statistics, and full-text
+      search across book contents.
     </p>
   </description>
   <launchable type="desktop-id">io.github.vellum.Vellum.desktop</launchable>
@@ -23,6 +24,18 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-10-20">
+      <description>
+        <p>Vellum is now a Flutter/Dart application.</p>
+        <p>Reader for EPUB, MOBI, and PDF with adjustable font size,
+        highlights, dictionary lookup, themes, table of contents, and
+        automatic position resume.</p>
+        <p>New shelves, reading statistics, and full-text search across
+        book contents. Calibre metadata and store plugins continue to work
+        through the bundled Python plugin sidecar.</p>
+        <p>The window title bar follows the app's light or dark theme.</p>
+      </description>
+    </release>
     <release version="0.1.20" date="2026-10-19">
       <description>
         <p>Replace draggable Adw.HeaderBar titlebars with plain GTK

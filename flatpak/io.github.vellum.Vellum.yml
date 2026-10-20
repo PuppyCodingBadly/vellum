@@ -1,11 +1,12 @@
 # Vellum Flatpak manifest.
 #
-# Build with (run from the repository root):
-#   flatpak-builder --user --install --force-clean build flatpak/io.github.vellum.Vellum.yml
+# This packages the prebuilt Flutter Linux release bundle. Stage the sources
+# and export a repository with:
 #
-# Note: flatpak-builder resolves relative module source paths against the
-# directory containing this manifest (flatpak/), hence the ".." source
-# path and the "data/..." paths inside the build directory.
+#   ./tool/build-flatpak.sh
+#
+# Set REPO_DIR to export into an existing repository (for publishing) and
+# FLATPAK_GPG_KEY / FLATPAK_GPG_HOME to sign its summaries.
 
 app-id: io.github.vellum.Vellum
 runtime: org.gnome.Platform
@@ -19,78 +20,25 @@ finish-args:
   - --socket=wayland
   - --device=dri
   - --share=network
-  # Needed so users can import books from their Documents folder.
+  # Calibre libraries and folder pickers.
   - --filesystem=xdg-documents
-  # Calibre libraries commonly live directly in the home directory
-  # (e.g. ~/Calibre Library); reading them requires more than Documents.
   - --filesystem=home:ro
+  # PDFium is bundled; the Dart loader honors this path first.
+  - --env=PDFIUM_PATH=/app/lib/libpdfium.so
 
 modules:
-  # The GNOME runtime ships WebKitGTK but not Poppler, which Vellum needs
-  # for its PDF reader. Build only the GLib/GObject-introspection wrapper.
-  - name: poppler
-    buildsystem: cmake-ninja
-    config-opts:
-      - -DCMAKE_BUILD_TYPE=Release
-      - -DCMAKE_INSTALL_LIBDIR=lib
-      - -DENABLE_GLIB=ON
-      - -DENABLE_GOBJECT_INTROSPECTION=ON
-      - -DENABLE_CPP=OFF
-      - -DENABLE_QT5=OFF
-      - -DENABLE_QT6=OFF
-      - -DENABLE_UTILS=OFF
-      - -DENABLE_LIBTIFF=OFF
-      - -DENABLE_NSS3=OFF
-      - -DENABLE_GPGME=OFF
-      - -DENABLE_LIBCURL=OFF
-      - -DENABLE_BOOST=OFF
-      - -DBUILD_GTK_TESTS=OFF
-      - -DBUILD_QT5_TESTS=OFF
-      - -DBUILD_QT6_TESTS=OFF
-      - -DBUILD_CPP_TESTS=OFF
-      - -DBUILD_MANUAL_TESTS=OFF
-    sources:
-      - type: archive
-        url: https://poppler.freedesktop.org/poppler-25.10.0.tar.xz
-        sha256: 6b5e9bb64dabb15787a14db1675291c7afaf9387438cc93a4fb7f6aec4ee6fe0
-
-  - name: python3-requests
-    buildsystem: simple
-    build-commands:
-      - pip install --prefix=/app --no-index --find-links=. "requests==2.33.1" "beautifulsoup4==4.15.0"
-    sources:
-      - type: file
-        path: wheels/requests-2.33.1-py3-none-any.whl
-      - type: file
-        path: wheels/charset_normalizer-3.5.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      - type: file
-        path: wheels/idna-3.20-py3-none-any.whl
-      - type: file
-        path: wheels/urllib3-2.8.0-py3-none-any.whl
-      - type: file
-        path: wheels/certifi-2026.10.19-py3-none-any.whl
-      - type: file
-        path: wheels/beautifulsoup4-4.15.0-py3-none-any.whl
-      - type: file
-        path: wheels/soupsieve-3.0.3-py3-none-any.whl
-      - type: file
-        path: wheels/typing_extensions-4.16.0-py3-none-any.whl
-
   - name: vellum
     buildsystem: simple
     build-commands:
-      # Installs the src-layout package and the `vellum` entry point
-      # defined in pyproject.toml at the repository root.
-      - pip install --prefix=/app --no-build-isolation --no-deps .
-      # The source directory is the repository root.
-      - install -Dm644 data/io.github.vellum.Vellum.desktop ${FLATPAK_DEST}/share/applications/io.github.vellum.Vellum.desktop
-      - install -Dm644 data/io.github.vellum.Vellum.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.vellum.Vellum.metainfo.xml
-      - install -d ${FLATPAK_DEST}/share/icons
-      - cp -r data/icons/hicolor ${FLATPAK_DEST}/share/icons/
+      - mkdir -p /app/vellum /app/bin /app/lib /app/share/applications /app/share/metainfo /app/share/icons /app/share/licenses/io.github.vellum.Vellum
+      - cp -a bundle/. /app/vellum/
+      - cp -a sidecar /app/vellum/sidecar
+      - install -Dm755 vellum.sh /app/bin/vellum
+      - install -Dm755 libpdfium.so /app/lib/libpdfium.so
+      - install -Dm644 data/io.github.vellum.Vellum.desktop /app/share/applications/io.github.vellum.Vellum.desktop
+      - install -Dm644 data/io.github.vellum.Vellum.metainfo.xml /app/share/metainfo/io.github.vellum.Vellum.metainfo.xml
+      - cp -a data/icons/hicolor/. /app/share/icons/hicolor/
+      - install -Dm644 PDFIUM-LICENSE /app/share/licenses/io.github.vellum.Vellum/PDFIUM-LICENSE
     sources:
       - type: dir
-        path: ..
-        skip:
-          - .git
-          - .pytest_cache
-          - build
+        path: .

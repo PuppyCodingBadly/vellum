@@ -1,10 +1,9 @@
 # Vellum
 
-Vellum is a calibre-inspired ebook library manager with a modern
-GTK4/Libadwaita interface. It organizes your ebook collection in a local
-SQLite library, supports calibre metadata-source plugins out of the box,
-and can look up book metadata (title, authors, covers, descriptions) from
-online sources such as Google Books and OpenLibrary.
+Vellum is a calibre-inspired ebook library manager, ported from the original
+GTK4/Libadwaita application to Flutter for Linux desktop. It keeps the
+catalogue in a local SQLite database, reads EPUB, MOBI, and PDF books, and
+looks up metadata and covers from several online sources.
 
 ## Install
 
@@ -15,147 +14,143 @@ flatpak run io.github.vellum.Vellum
 
 Updates: `flatpak update io.github.vellum.Vellum`.
 
-<img src="docs/screenshots/library.png" alt="Vellum library" width="900">
-
-| Book details | Reader |
-|---|---|
-| <img src="docs/screenshots/details.png" alt="Book details" width="440"> | <img src="docs/screenshots/reader.png" alt="Reader" width="440"> |
-
-| Get Books | Plugins |
-|---|---|
-| <img src="docs/screenshots/get-books.png" alt="Get Books" width="440"> | <img src="docs/screenshots/plugins.png" alt="Plugins" width="440"> |
+The Flatpak uses the existing `io.github.vellum.Vellum` app ID, so it
+upgrades an older GTK installation in place and keeps the same library,
+config, covers, and plugins.
 
 ## Features
 
-- Modern GTK4/Libadwaita user interface
-- Library grid with exact 2:3 cover-poster tiles (title/author overlaid)
-- SQLite-backed book library (authors, tags, formats, ratings, covers)
-- Fast full-text-ish search across titles, authors, ISBNs, and tags
-- Online metadata lookup from Google Books, Open Library, Internet
-  Archive, Library of Congress, and Inventaire, restricted to English
-  results, with cover previews and per-source merging
-- Built-in reader for EPUB, PDF, and MOBI with a page-turn animation (toggleable in Preferences)
-  - Text highlights (yellow/green/pink) with a highlights panel to review, jump to, and delete them (EPUB/MOBI only; PDF pages are image-rendered, so highlighting is not available there)
-  - In-reader dictionary lookup for any selected word
-  - Automatic reading-position resume per book
-  - Chapter list (TOC) for quick navigation, adjustable font size, and Light/Sepia/Dark reader themes (or follow the app scheme)
-  - Fullscreen reading (F11) and a bottom progress bar
-- Switchable library directory from Preferences (calibre-style; the app
-  reopens the library at the chosen folder)
-- Import an existing calibre library folder (`metadata.db`), keeping books
-  linked to the files already in that folder
-- Universal metadata grabber: paste a book page URL and pull JSON-LD,
-  OpenGraph, or microdata; optionally merge every source into one record
-- Fuzzy metadata search from a free-form title/author/ISBN string
-- Sort the library by title, author, rating, or recently added, and sort
-  metadata results by relevance, title, author, rating, or newest
-- Swipe left/right in the reader to turn pages/chapters
-- Hide books from the library grid, with a "Show hidden books" toggle
-- Compatibility with calibre metadata-source plugins (drop in the `.zip`)
-- Import books from your Documents folder when running as a Flatpak
+- Library grid with 2:3 cover tiles, search, and sorting by title, author,
+  rating, or recently added
+- Library metadata search (title, authors, tags, ISBN) plus full-text search
+  across book contents, with chapter-level results
+- SQLite catalogue: books, authors, tags, formats, ratings, covers,
+  highlights, reading positions, shelves, and reading sessions
+- Metadata lookup from Google Books, Open Library, Internet Archive, Library
+  of Congress, and Inventaire, with result merging, fuzzy query ranking, and
+  cover fetch
+- Universal metadata grabber for pasted book-page URLs (JSON-LD, OpenGraph,
+  and microdata)
+- EPUB/MOBI/PDF reader with:
+  - adjustable font size for EPUB and MOBI, and font-scaled PDF page rendering
+  - Light, Sepia, and Dark themes (or follow the system scheme)
+  - table of contents, page/chapter turns, swipe gestures, and fullscreen
+  - text highlights with a highlights panel (EPUB/MOBI)
+  - in-reader dictionary lookup
+  - automatic reading-position resume
+  - reading-session tracking
+- Shelves/collections with searchable book picker
+- Reading statistics (total time, books read, sessions, per-book totals)
+- Preferences for library directory, accent color, color scheme, hidden
+  books, and reader animation
+- Calibre library import from a `metadata.db` folder
+- Calibre metadata-source and store plugins through a bundled Python sidecar
+- "Get Books" store search and download into the current library
+- Show/hide books, standard window shortcuts (Ctrl+F, Alt+Left, F11, Ctrl+Q),
+  and a title bar that follows the app's light/dark theme
 
-## Quick start (development)
+## Requirements
 
-Vellum needs PyGObject, GTK4/Libadwaita, WebKitGTK 6, Poppler's GI bindings,
-and pycairo. Install them via your distro, e.g.:
+- Flutter 3.35+ with Linux desktop support (Dart 3.9+)
+- `clang`, `cmake`, `ninja`, `pkg-config`, and GTK 3 development headers
+- Python 3 for the plugin sidecar
+- PDFium (optional; see below)
 
-- Fedora: `sudo dnf install python3-gobject gtk4 libadwaita webkitgtk6.0 poppler-glib python3-cairo`
-- Debian/Ubuntu: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-webkit-6.0 gir1.2-poppler-0.18 python3-cairo`
-
-Without Poppler the rest of the app still runs, but PDF books show an
-error instead of opening.
-
-Then, from the repository root:
+## Run
 
 ```sh
-pip install -e .
-python -m vellum.app
+flutter pub get
+flutter run -d linux
 ```
 
-(`pip install -e .` installs the `src/`-layout package and the `vellum`
-console script; `python -m vellum.app` runs the app entry point directly.)
-
-## Flatpak
-
-Build and install locally:
+For a build:
 
 ```sh
-flatpak-builder --user --install --force-clean build flatpak/io.github.vellum.Vellum.yml
-flatpak run io.github.vellum.Vellum
+flutter build linux --release
+./build/linux/x64/release/bundle/vellum
 ```
 
-Or build with the Flathub Builder app without installing flatpak-builder:
+### PDF support
+
+PDF pages are rendered with PDFium through `package:pdfium_dart`. The loader
+looks for a shared library in this order:
+
+1. `$PDFIUM_PATH`
+2. `$HOME/.local/share/vellum-flutter/pdfium/lib/libpdfium.so`
+3. `libpdfium.so` on the system library path
+
+A Linux x64 build can be placed at the second path with:
 
 ```sh
-flatpak run org.flatpak.Builder --user --install --force-clean build flatpak/io.github.vellum.Vellum.yml
-flatpak run io.github.vellum.Vellum
+mkdir -p ~/.local/share/vellum-flutter/pdfium
+curl -sSL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz \
+  | tar -xz -C ~/.local/share/vellum-flutter/pdfium
 ```
 
-The manifest targets the GNOME 49 runtime; it builds Poppler from source
-because the GNOME runtime does not ship Poppler. Python dependencies are
-vendored as wheels under `flatpak/wheels/`, so builds need no network.
+### Flatpak
 
-### Install and update from the Vellum repository
-
-The signed `v0.1.20` build is published at
-`https://puppycodingbadly.github.io/vellum/`:
+The Flatpak packages a prebuilt Linux release bundle, so the Flatpak build
+itself does not need the Flutter SDK or network access:
 
 ```sh
-flatpak install --user https://puppycodingbadly.github.io/vellum/io.github.vellum.Vellum.flatpakref
-flatpak update io.github.vellum.Vellum
+./tool/build-flatpak.sh
 ```
 
-The `.flatpakref` and `.flatpakrepo` files are also checked in at the
-repository root.
+This runs `flutter build linux --release`, stages `build/`, `sidecar/`, and
+`data/` into `flatpak/`, and exports a signed local repository under
+`build/flatpak-repo`. Set `FLATPAK_GPG_KEY` and `FLATPAK_GPG_HOME` to sign a
+repository for publishing.
 
-## Crash reports
-
-Vellum writes uncaught tracebacks, thread exceptions, and fatal-signal
-stacks to
-`~/.var/app/io.github.vellum.Vellum/data/vellum/crash.log` (Flatpak) or
-`~/.local/share/vellum/crash.log` (source).
-
-To collect the app log plus GNOME Shell/Mutter, sensor, and coredump
-information in one file:
+## Tests
 
 ```sh
-./scripts/collect-crash-report.sh
+PDFIUM_PATH=$HOME/.local/share/vellum-flutter/pdfium/lib/libpdfium.so \
+  flutter test
+flutter analyze
+python3 -m pytest sidecar/tests -q
 ```
 
-It writes `~/vellum-crash-report-<timestamp>.txt`.
+The UI smoke tests cover navigation, library/content search, details, the
+reader, shelves, plugins/store empty states, live reading statistics, and font
+scaling for EPUB, MOBI, and PDF.
+
+## Data locations
+
+- Config and library: `$XDG_DATA_HOME/vellum` (default
+  `~/.local/share/vellum`), with `config.json` and `library.db`
+- Covers and thumbnails: `<data>/covers`
+- Plugins: `<data>/plugins`
+- Reader cache: `$XDG_CACHE_HOME/vellum/reader/...` (default
+  `~/.cache/vellum/reader`)
 
 ## Plugins
 
-Vellum can load calibre metadata-source plugins and store plugins. On the
-**Plugins** page in the app, drop a calibre plugin `.zip`: metadata-source
-plugins are registered as metadata sources, and store plugins appear under
-**Get Books** immediately. Loaded metadata plugins can be removed from the
-same page.
-
-Calibre **GUI action plugins** (the Qt toolbar/dialog plugins) are not
-supported, because Vellum is not a calibre GUI host. Store plugins and
-metadata-source plugins are the supported extension points.
+Metadata-source and store plugins are calibre `.zip` archives loaded by a
+local Python sidecar (`sidecar/main.py`) and exposed to Dart over JSON-RPC on
+stdio. Install them from the Plugins page. Calibre GUI action plugins are not
+supported.
 
 ## Project layout
 
 ```
-vellum/
-├── data/                     # desktop entry + AppStream metainfo
-├── flatpak/                  # Flatpak manifest
-├── src/vellum/
-│   ├── app.py                # application entry point (main)
-│   ├── core/                 # Book/Author models, SQLite library
-│   ├── metadata/             # metadata engine + online sources
-│   │   └── sources/
-│   ├── plugins/              # calibre plugin compatibility + manager
-│   └── ui/                   # GTK4/Libadwaita user interface
-└── tests/
+lib/
+├── main.dart                 application bootstrap and window setup
+├── app_state.dart            shared library/theme/reader state
+├── core/                     models, SQLite library, config, covers, sorting
+├── formats/                  EPUB, MOBI, PDF, dictionary, HTML text extraction
+├── import/                   file and calibre-library import
+├── metadata/                 metadata engine, sources, URL grabber, sorting
+├── plugins/                  Python sidecar client and plugin controller
+├── store/                    store downloads
+├── fts/                      full-text indexer
+├── stats/                    reading-session tracking
+├── reader/                   reader controller and document model
+└── ui/                       pages, dialogs, and shared widgets
+linux/runner/                 GTK runner, including title-bar theme channel
+sidecar/                      Python calibre plugin compatibility layer
+test/                         Dart tests, including UI smoke tests
+data/                         desktop entry, AppStream metadata, icons
+flatpak/                      Flatpak manifest, bundled PDFium, staging script
+tool/                         release and Flatpak build scripts
+docs/inventory/               porting contracts from the original application
 ```
-
-## Roadmap
-
-- OPDS / device sync support
-- Ebook format conversion pipeline
-- Full-text search over book contents
-- Reading statistics and shelves/collections
-- Publish on Flathub (with a proper app icon)

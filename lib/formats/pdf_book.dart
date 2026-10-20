@@ -1,0 +1,176 @@
+/// PDF reading via PDFium — port of vellum/core/pdfbook.py.
+library;
+
+import 'dart:ffi' as ffi;
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:ffi/ffi.dart';
+import 'package:image/image.dart' as img;
+import 'package:pdfium_dart/pdfium_dart.dart';
+
+/// Default rasterization scale (1.0 = PDF points at 72 dpi).
+const defaultScale = 1.75;
+
+/// Reads a PDF document and rasterizes pages to PNG with PDFium.
+///
+/// The document is opened synchronously; use [renderPage] for pixels and
+/// [pageCount] / [titleAt] for navigation metadata.
+class PdfBook {
+  /// Open a PDF and render pages to PNG bytes.
+  ///
+  /// Validates the `%PDF-` header and loads the document through PDFium.
+  /// Throws [FormatException] when [path] is unreadable or not a PDF.
+  PdfBook(String path) : _path = path {
+    final List<int> head;
+    RandomAccessFile? file;
+    try {
+      file = File(path).openSync();
+      head = file.readSync(5);
+    } on FileSystemException catch (e) {
+      throw FormatException('not a readable PDF: $path', e);
+    } finally {
+      file?.closeSync();
+    }
+    const magic = [0x25, 0x50, 0x44, 0x46, 0x2D]; // %PDF-
+    if (head.length < magic.length) {
+      throw FormatException('not a readable PDF: $path');
+    }
+    for (var i = 0; i < magic.length; i++) {
+      if (head[i] != magic[i]) {
+        throw FormatException('not a readable PDF: $path');
+      }
+    }
+    _doc = _loadDocument(_library, path);
+  }
+
+  final String _path;
+  late final FPDF_DOCUMENT _doc;
+
+  static PDFium? _pdfiumCache;
+
+  /// Load and initialize PDFium once per process.
+  ///
+  /// Honors `PDFIUM_PATH` when set and existing, then a bundled copy under
+  /// `$HOME/.local/share/vellum-flutter/pdfium/lib/libpdfium.so`, and finally
+  /// falls back to the system search path (`libpdfium.so`).
+  static PDFium get _library {
+    final cached = _pdfiumCache;
+    if (cached != null) return cached;
+    final pdfium = PDFium(ffi.DynamicLibrary.open(_resolveLibraryPath()));
+    pdfium.FPDF_InitLibrary();
+    return _pdfiumCache = pdfium;
+  }
+
+  static String _resolveLibraryPath() {
+    final envPath = Platform.environment['PDFIUM_PATH'];
+    if (envPath != null && envPath.isNotEmpty && File(envPath).existsSync()) {
+      return envPath;
+    }
+    final home = Platform.environment['HOME'];
+    if (home != null && home.isNotEmpty) {
+      final bundled =
+          '$home/.local/share/vellum-flutter/pdfium/lib/libpdfium.so';
+      if (File(bundled).existsSync()) return bundled;
+    }
+    return 'libpdfium.so';
+  }
+
+  static FPDF_DOCUMENT _loadDocument(PDFium pdfium, String path) {
+    final pathPtr = path.toNativeUtf8().cast<ffi.Char>();
+    try {
+      final doc = pdfium.FPDF_LoadDocument(pathPtr, ffi.nullptr);
+      if (doc == ffi.nullptr) {
+        throw FormatException('not a readable PDF: $path');
+      }
+      return doc;
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  /// Total number of pages in the document.
+  int pageCount() => _library.FPDF_GetPageCount(_doc);
+
+  /// Page label for [index], falling back to `Page ${index + 1}`.
+  ///
+  /// Throws [RangeError] when [index] is out of bounds.
+  String titleAt(int index) {
+    final count = pageCount();
+    if (index < 0 || index >= count) {
+      throw RangeError.range(index, 0, count - 1, 'index');
+    }
+    // FPDF_GetPageLabel reports the required buffer size in bytes, including
+    // the two-byte UTF-16 terminator.
+    final needed =
+        _library.FPDF_GetPageLabel(_doc, index, ffi.nullptr, 0);
+    if (needed > 2) {
+      final buffer = calloc<ffi.Uint16>(needed ~/ 2);
+      try {
+        final written = _library.FPDF_GetPageLabel(
+          _doc,
+          index,
+          buffer.cast<ffi.Void>(),
+          needed,
+        );
+        if (written > 2) {
+          final units = written ~/ 2;
+          // Drop the trailing NUL terminator.
+          final label = String.fromCharCodes(buffer.asTypedList(units - 1));
+          if (label.isNotEmpty) return label;
+        }
+      } finally {
+        calloc.free(buffer);
+      }
+    }
+    return 'Page ${index + 1}';
+  }
+
+  /// Render [index] to PNG bytes at [scale] (1.0 = PDF points).
+  ///
+  /// Throws [RangeError] when [index] is out of bounds and
+  /// [FormatException] when PDFium cannot render the page.
+  Future<Uint8List> renderPage(int index, {double scale = defaultScale}) async {
+    final count = pageCount();
+    if (index < 0 || index >= count) {
+      throw RangeError.range(index, 0, count - 1, 'index');
+    }
+    final page = _library.FPDF_LoadPage(_doc, index);
+    if (page == ffi.nullptr) {
+      throw FormatException('failed to render page $index: $_path');
+    }
+    FPDF_BITMAP bitmap = ffi.nullptr;
+    try {
+      final width =
+          (_library.FPDF_GetPageWidthF(page) * scale).round().clamp(1, 1 << 30);
+      final height = (_library.FPDF_GetPageHeightF(page) * scale)
+          .round()
+          .clamp(1, 1 << 30);
+      bitmap = _library.FPDFBitmap_Create(width, height, 1);
+      if (bitmap == ffi.nullptr) {
+        throw FormatException('failed to render page $index: $_path');
+      }
+      _library.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
+      _library.FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, 0);
+      final buffer = _library.FPDFBitmap_GetBuffer(bitmap);
+      final stride = _library.FPDFBitmap_GetStride(bitmap);
+      if (buffer == ffi.nullptr || stride <= 0) {
+        throw FormatException('failed to render page $index: $_path');
+      }
+      // PDFium's default bitmap format is BGRA8888.
+      final image = img.Image.fromBytes(
+        width: width,
+        height: height,
+        bytes: buffer.cast<ffi.Uint8>().asTypedList(stride * height).buffer,
+        rowStride: stride,
+        order: img.ChannelOrder.bgra,
+      );
+      return img.encodePng(image);
+    } finally {
+      if (bitmap != ffi.nullptr) {
+        _library.FPDFBitmap_Destroy(bitmap);
+      }
+      _library.FPDF_ClosePage(page);
+    }
+  }
+}
