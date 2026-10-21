@@ -49,35 +49,50 @@ class FtsIndexer {
     };
   }
 
+  /// Per-book extraction directory under `<baseDir>/.fts-extract`.
+  Directory _extractDir(int bookId) => Directory(
+      '${_library.baseDir}${Platform.pathSeparator}.fts-extract${Platform.pathSeparator}$bookId');
+
   /// Indexes a single book, replacing any previous FTS rows for it.
   ///
-  /// Parse failures are logged and the book is skipped.
-  Future<void> indexBook(int bookId) async {
+  /// Parse failures are logged and the book is skipped. Returns true when
+  /// the book was (re-)indexed, false when it was skipped.
+  Future<bool> indexBook(int bookId) async {
     final book = _library.getBook(bookId);
-    if (book == null) return;
+    if (book == null) return false;
     final rows = <Map<String, Object>>[];
     final formats = book.formats.map((e) => e.toLowerCase()).toList();
 
     if (formats.contains('epub')) {
+      // Extract per book so concurrent/sequential books never share stale
+      // content, and clean up afterwards to avoid disk accumulation.
+      final extractDir = _extractDir(bookId);
+      if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
       try {
         final epub = EpubBook(book.path);
         final chapters = epub.chapters();
-        final destDir = epub.extractTo(
-            '${_library.baseDir}${Platform.pathSeparator}.fts-extract');
+        epub.extractTo(extractDir.path);
         for (var i = 0; i < chapters.length; i++) {
           final (_, title) = chapters[i];
-          final file = epub.chapterFile(destDir, i);
+          final file = epub.chapterFile(extractDir.path, i);
           final html = await File(file).readAsString();
           rows.add({'chapter': i, 'title': title, 'content': htmlToText(html)});
         }
       } catch (e) {
         stderr.writeln('FtsIndexer: failed to index epub $bookId: $e');
-        return;
+        return false;
+      } finally {
+        if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
       }
     } else if (formats.contains('mobi')) {
+      // MOBI sectionHtml() extracts images into a fresh system-temp dir
+      // that is never removed; route it into a per-book dir we clean up.
+      final extractDir = _extractDir(bookId);
+      if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
       try {
         final mobi = MobiBook(book.path);
         final sections = mobi.sections();
+        mobi.extractTo(extractDir.path);
         for (var i = 0; i < sections.length; i++) {
           rows.add({
             'chapter': i,
@@ -87,7 +102,9 @@ class FtsIndexer {
         }
       } catch (e) {
         stderr.writeln('FtsIndexer: failed to index mobi $bookId: $e');
-        return;
+        return false;
+      } finally {
+        if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
       }
     }
     // PDF and other formats: zero rows (image-rendered content).
@@ -102,6 +119,7 @@ class FtsIndexer {
       state.remove(bookId.toString());
     }
     _saveState(state);
+    return true;
   }
 
   /// Indexes every book in the library. Books whose source file is unchanged
@@ -123,13 +141,10 @@ class FtsIndexer {
           continue; // unchanged
         }
       }
-      final before = indexed;
       try {
-        await indexBook(id);
-        indexed++;
+        if (await indexBook(id)) indexed++;
       } catch (e) {
         stderr.writeln('FtsIndexer: skipping book $id: $e');
-        indexed = before;
       }
     }
     return indexed;

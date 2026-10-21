@@ -75,6 +75,40 @@ void main() {
     expect(sortBooks(books, key: 'nope').map((x) => x.title), ['a', 'b']);
   });
 
+  test('added sort: equal dates tie-break by title descending', () {
+    final books = [
+      b('Alpha', added: '2026-01-01T00:00:00Z'),
+      b('Zulu', added: '2026-01-01T00:00:00Z'),
+    ];
+    final sorted = sortBooks(books, key: 'added');
+    expect(sorted.map((x) => x.title), ['Zulu', 'Alpha']);
+  });
+
+  test("author sort: authors [''] joins to empty and sorts last", () {
+    final books = [
+      b('EmptyAuthor', authors: ['']),
+      b('A', authors: ['Amy']),
+    ];
+    final sorted = sortBooks(books, key: 'author');
+    expect(sorted.map((x) => x.title), ['A', 'EmptyAuthor']);
+  });
+
+  test('casefold: ß sorts as ss', () {
+    final books = [b('Straße'), b('Stass'), b('Strand')];
+    final sorted = sortBooks(books);
+    expect(sorted.map((x) => x.title), ['Stass', 'Strand', 'Straße']);
+  });
+
+  test('sort is stable for equal keys', () {
+    final books = [
+      b('Same', rating: 1.0),
+      b('Same', rating: 2.0),
+      b('Same', rating: 3.0),
+    ];
+    final sorted = sortBooks(books);
+    expect(sorted.map((x) => x.rating), [1.0, 2.0, 3.0]);
+  });
+
   test('returns a new list, input unmodified', () {
     final books = [b('b'), b('a')];
     final sorted = sortBooks(books);

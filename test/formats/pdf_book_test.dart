@@ -86,4 +86,15 @@ void main() {
       ..writeAsBytesSync('this is not a pdf at all'.codeUnits);
     expect(() => PdfBook(bad.path), throwsFormatException);
   });
+
+  test('zero-page PDF throws FormatException', () {
+    expect(() => PdfBook(_makePdf('${tmp.path}/empty.pdf', [])),
+        throwsFormatException);
+  });
+
+  test('close is idempotent', () {
+    final pdf = PdfBook(_makePdf('${tmp.path}/book.pdf'));
+    pdf.close();
+    expect(() => pdf.close(), returnsNormally); // safe to call twice
+  });
 }

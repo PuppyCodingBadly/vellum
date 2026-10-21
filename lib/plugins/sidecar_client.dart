@@ -158,6 +158,12 @@ class SidecarClient {
       _effectiveCommand().first,
       _effectiveCommand().sublist(1),
     ).then((proc) {
+      if (_disposed) {
+        // dispose() ran while the spawn was in flight: kill the late
+        // process instead of leaking it, and fail the waiter.
+        proc.kill();
+        throw SidecarException('sidecar disposed');
+      }
       _process = proc;
       _starting = null;
       _stdoutSub = proc.stdout
@@ -226,6 +232,7 @@ class SidecarClient {
   Future<void> _retry(_Pending p) async {
     try {
       await _ensureProcess();
+      if (_disposed) throw SidecarException('sidecar disposed');
       _send(p.method, p.params, p.timeout, p);
     } catch (e) {
       p.completer.completeError(
@@ -249,7 +256,17 @@ class SidecarClient {
             TimeoutException('sidecar request $method timed out', timeout));
       }
     });
-    proc.stdin.writeln(jsonEncode({'id': id, 'method': method, 'params': params}));
+    try {
+      proc.stdin
+          .writeln(jsonEncode({'id': id, 'method': method, 'params': params}));
+    } catch (e) {
+      // Write failed (process died between _ensureProcess and _send):
+      // roll back the pending entry and its timer so nothing orphaned
+      // completes the completer later.
+      _pending.remove(id);
+      pending.timer?.cancel();
+      rethrow;
+    }
     return id;
   }
 
@@ -261,6 +278,7 @@ class SidecarClient {
   }) async {
     if (_disposed) throw SidecarException('sidecar client disposed');
     await _ensureProcess();
+    if (_disposed) throw SidecarException('sidecar client disposed');
     final pending = _Pending(
       method: method,
       params: params,

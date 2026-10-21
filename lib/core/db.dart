@@ -60,8 +60,13 @@ class Library {
     return File(path).absolute.parent.path;
   }
 
-  /// Closes the connection. Only meaningful for `:memory:` databases.
-  void close() => _db.dispose();
+  /// Closes the connection. Only meaningful for `:memory:` databases;
+  /// for file-backed libraries the persistent connection is kept and this
+  /// is a no-op (matching the Python contract "close only matters for
+  /// `:memory:`").
+  void close() {
+    if (path == ':memory:') _db.dispose();
+  }
 
   static const _schema = '''
 CREATE TABLE IF NOT EXISTS books (
@@ -407,6 +412,8 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Deletes a book; children rows cascade.
   void deleteBook(int id) {
     _write(() {
+      // book_fts (FTS5 virtual table) has no FK cascade; clean it explicitly.
+      _db.execute('DELETE FROM book_fts WHERE book_id = ?', [id]);
       _db.execute('DELETE FROM books WHERE id = ?', [id]);
     });
   }
@@ -418,11 +425,18 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     return _write(() {
       var total = 0;
       for (final title in titles) {
-        _db.execute(
-            "DELETE FROM books WHERE path='' AND title = ? "
-            'AND NOT EXISTS (SELECT 1 FROM formats f WHERE f.book_id=books.id)',
-            [title]);
-        total += _db.updatedRows;
+        // book_fts (FTS5 virtual table) has no FK cascade; clean it explicitly.
+        final ids = _db
+            .select("SELECT id FROM books WHERE path='' AND title = ? "
+                'AND NOT EXISTS (SELECT 1 FROM formats f WHERE f.book_id=books.id)',
+                [title])
+            .map((r) => r['id'] as int)
+            .toList();
+        for (final id in ids) {
+          _db.execute('DELETE FROM book_fts WHERE book_id = ?', [id]);
+          _db.execute('DELETE FROM books WHERE id = ?', [id]);
+        }
+        total += ids.length;
       }
       return total;
     });
@@ -662,12 +676,18 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
               })
           .toList();
     }
-    // Fallback: plain LIKE over the regular table.
-    final pattern = '%$trimmed%';
+    // Fallback: plain LIKE over the regular table. Escape LIKE wildcards so
+    // user-typed '%' and '_' are matched literally.
+    final escaped = trimmed
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    final pattern = '%$escaped%';
     return _db
         .select(
             'SELECT book_id, chapter, title, content FROM book_fts '
-            'WHERE content LIKE ? OR title LIKE ? ORDER BY book_id, chapter',
+            r"WHERE content LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' "
+            'ORDER BY book_id, chapter',
             [pattern, pattern])
         .map((r) => {
               'book_id': r['book_id'],

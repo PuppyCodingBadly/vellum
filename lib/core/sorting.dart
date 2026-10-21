@@ -19,43 +19,59 @@ const List<(String, String)> SORT_OPTIONS = [
 /// Valid sort keys.
 final List<String> SORT_KEYS = [for (final (k, _) in SORT_OPTIONS) k];
 
-String _titleKey(Book b) =>
-    (b.title.isEmpty ? 'Untitled' : b.title).toLowerCase();
+/// Partial Python `str.casefold()`: handles the cases where casefold differs
+/// from a plain lowercase mapping — 'ß' (→ 'ss') and final sigma 'ς' (→ 'σ').
+String _casefold(String s) =>
+    s.replaceAll('ß', 'ss').replaceAll('ς', 'σ').toLowerCase();
 
-String _authorKey(Book b) =>
-    (b.authors.isEmpty ? '￿' : b.authors.join(', ')).toLowerCase();
+String _titleKey(Book b) =>
+    _casefold(b.title.isEmpty ? 'Untitled' : b.title);
+
+String _authorKey(Book b) {
+  final joined = b.authors.join(', ');
+  return _casefold(joined.isEmpty ? '￿' : joined);
+}
 
 /// Returns a new, stably-sorted list of [books] according to [key].
 ///
 /// Unknown keys sort by title.
 List<Book> sortBooks(List<Book> books, {String key = 'title'}) {
-  final result = List<Book>.of(books);
+  // Decorate-sort-undecorate: List.sort is unstable, so carry the original
+  // index as the final tiebreak to guarantee stability.
+  final indexed = [for (var i = 0; i < books.length; i++) (i, books[i])];
+  int stableCompare((int, Book) x, (int, Book) y, int Function(Book, Book) cmp) {
+    final c = cmp(x.$2, y.$2);
+    return c != 0 ? c : x.$1.compareTo(y.$1);
+  }
+
+  int byTitle(Book a, Book b) => _titleKey(a).compareTo(_titleKey(b));
+
   switch (key) {
     case 'author':
-      result.sort((a, b) {
-        var c = _authorKey(a).compareTo(_authorKey(b));
-        if (c != 0) return c;
-        return _titleKey(a).compareTo(_titleKey(b));
-      });
+      indexed.sort((x, y) => stableCompare(x, y, (a, b) {
+            var c = _authorKey(a).compareTo(_authorKey(b));
+            if (c != 0) return c;
+            return byTitle(a, b);
+          }));
     case 'rating':
-      result.sort((a, b) {
-        var c = b.rating.compareTo(a.rating);
-        if (c != 0) return c;
-        return _titleKey(a).compareTo(_titleKey(b));
-      });
+      indexed.sort((x, y) => stableCompare(x, y, (a, b) {
+            var c = b.rating.compareTo(a.rating);
+            if (c != 0) return c;
+            return byTitle(a, b);
+          }));
     case 'added':
-      final dated =
-          result.where((b) => b.added.isNotEmpty).toList();
-      final undated = result.where((b) => b.added.isEmpty).toList();
-      dated.sort((a, b) {
-        var c = b.added.compareTo(a.added);
-        if (c != 0) return c;
-        return _titleKey(a).compareTo(_titleKey(b));
-      });
-      undated.sort((a, b) => _titleKey(a).compareTo(_titleKey(b)));
-      return [...dated, ...undated];
+      final dated = indexed.where((e) => e.$2.added.isNotEmpty).toList();
+      final undated = indexed.where((e) => e.$2.added.isEmpty).toList();
+      dated.sort((x, y) => stableCompare(x, y, (a, b) {
+            var c = b.added.compareTo(a.added);
+            if (c != 0) return c;
+            // (added, title_key) REVERSED: title tie-breaks descending too.
+            return byTitle(b, a);
+          }));
+      undated.sort((x, y) => stableCompare(x, y, byTitle));
+      return [for (final e in [...dated, ...undated]) e.$2];
     default:
-      result.sort((a, b) => _titleKey(a).compareTo(_titleKey(b)));
+      indexed.sort((x, y) => stableCompare(x, y, byTitle));
   }
-  return result;
+  return [for (final e in indexed) e.$2];
 }

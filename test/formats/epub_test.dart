@@ -7,7 +7,8 @@ import 'package:archive/archive.dart';
 import 'package:test/test.dart';
 import 'package:vellum/formats/epub.dart';
 
-String _makeEpub(String path, {bool withNcx = true}) {
+String _makeEpub(String path,
+    {bool withNcx = true, Map<String, String> extraFiles = const {}}) {
   const container = '''<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -53,6 +54,9 @@ String _makeEpub(String path, {bool withNcx = true}) {
   }
   archive.addFile(ArchiveFile('OEBPS/cover.png', 8,
       [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+  extraFiles.forEach((name, content) {
+    archive.addFile(ArchiveFile.string(name, content));
+  });
   File(path).writeAsBytesSync(ZipEncoder().encode(archive));
   return path;
 }
@@ -92,6 +96,24 @@ void main() {
     File('$opfDir/content.opf').deleteSync();
     expect(epub.extractTo(dest), opfDir);
     expect(File('$opfDir/content.opf').existsSync(), isFalse);
+  });
+
+  test('extractTo skips zip-slip entries', () {
+    final epub = EpubBook(_makeEpub('${tmp.path}/book.epub', extraFiles: {
+      '../../evil.txt': 'pwned',
+      '/abs/evil.txt': 'pwned',
+      'OEBPS/../../evil2.txt': 'pwned',
+    }));
+    final dest = '${tmp.path}/extract';
+
+    final opfDir = epub.extractTo(dest);
+    // Legit entries are still extracted and the marker is written.
+    expect(File('$opfDir/content.opf').existsSync(), isTrue);
+    expect(File('$dest/.extracted').existsSync(), isTrue);
+    // Hostile entries never escape the destination directory.
+    expect(File('${tmp.path}/evil.txt').existsSync(), isFalse);
+    expect(File('${tmp.path}/evil2.txt').existsSync(), isFalse);
+    expect(File('$dest/abs/evil.txt').existsSync(), isFalse);
   });
 
   test('chapterFile returns existing path', () {

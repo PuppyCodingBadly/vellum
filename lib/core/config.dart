@@ -60,9 +60,25 @@ class VellumConfig {
     return _defaults[key];
   }
 
-  String getString(String key) => get(key) as String;
-  bool getBool(String key) => get(key) as bool;
-  double getDouble(String key) => (get(key) as num).toDouble();
+  /// Typed getters fall back to the default when the stored value has the
+  /// wrong type (corrupt config should never throw).
+  String getString(String key) {
+    final v = get(key);
+    if (v is String) return v;
+    return _defaults[key] as String;
+  }
+
+  bool getBool(String key) {
+    final v = get(key);
+    if (v is bool) return v;
+    return _defaults[key] as bool;
+  }
+
+  double getDouble(String key) {
+    final v = get(key);
+    if (v is num) return v.toDouble();
+    return (_defaults[key] as num).toDouble();
+  }
 
   /// Sets [key] to [value] and saves immediately.
   void set(String key, Object? value) {

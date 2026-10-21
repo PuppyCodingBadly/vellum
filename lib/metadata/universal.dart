@@ -28,15 +28,18 @@ class UniversalGrabber extends MetadataSource {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async =>
       [];
 
-  Future<Metadata?> grab(String url, {http.Client? client}) async {
+  Future<Metadata?> grab(String url,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 20)}) async {
     final normalized = normalizeUrl(url);
     if (normalized.isEmpty) {
       throw FormatException('enter a valid http(s) URL');
     }
-    final (html, finalUrl) = await _fetchHtml(normalized, client);
+    final (html, finalUrl) = await _fetchHtml(normalized, client, timeout);
     final meta = parseBookPage(html, finalUrl);
     if (meta == null) return null;
     meta.sourceId = 'universal:$finalUrl';
@@ -47,10 +50,12 @@ class UniversalGrabber extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     if (meta.coverUrl.isEmpty) return null;
     try {
-      return await _fetchCover(meta.coverUrl, client);
+      return await _fetchCover(meta.coverUrl, client, timeout);
     } catch (_) {
       return null;
     }
@@ -79,12 +84,13 @@ String normalizeUrl(String url) {
   return url;
 }
 
-Future<(String, String)> _fetchHtml(String url, http.Client? client) async {
+Future<(String, String)> _fetchHtml(String url, http.Client? client,
+    [Duration timeout = const Duration(seconds: 20)]) async {
   final httpClient = client ?? http.Client();
   try {
     final request = http.Request('GET', Uri.parse(url))
       ..headers['User-Agent'] = userAgent;
-    final resp = await httpClient.send(request);
+    final resp = await httpClient.send(request).timeout(timeout);
     if (resp.statusCode < 200 || resp.statusCode >= 400) {
       throw http.ClientException('HTTP ${resp.statusCode}', request.url);
     }
@@ -102,20 +108,37 @@ Future<(String, String)> _fetchHtml(String url, http.Client? client) async {
       builder.add(chunk);
     }
     final body = builder.takeBytes();
-    return (utf8.decode(body, allowMalformed: true),
+    return (_decodeBody(body, contentType),
         resp.request?.url.toString() ?? url);
   } finally {
     if (client == null) httpClient.close();
   }
 }
 
-Future<Uint8List?> _fetchCover(String url, http.Client? client) async {
+/// Decode resp.encoding or utf-8, errors=replace.
+String _decodeBody(List<int> body, String contentType) {
+  final match = RegExp(r'charset=([\w-]+)').firstMatch(contentType);
+  final charset = match?.group(1)?.toLowerCase() ?? '';
+  if (charset == 'latin1' ||
+      charset == 'iso-8859-1' ||
+      charset == 'windows-1252') {
+    return latin1.decode(body);
+  }
+  // No declared charset: like requests, text/* defaults to ISO-8859-1.
+  if (charset.isEmpty && contentType.startsWith('text/')) {
+    return latin1.decode(body);
+  }
+  return utf8.decode(body, allowMalformed: true);
+}
+
+Future<Uint8List?> _fetchCover(String url, http.Client? client,
+    [Duration timeout = const Duration(seconds: 15)]) async {
   if (!RegExp('^https?://', caseSensitive: false).hasMatch(url)) return null;
   final httpClient = client ?? http.Client();
   try {
     final request = http.Request('GET', Uri.parse(url))
       ..headers['User-Agent'] = userAgent;
-    final resp = await httpClient.send(request);
+    final resp = await httpClient.send(request).timeout(timeout);
     if (resp.statusCode < 200 || resp.statusCode >= 400) return null;
     final contentType = (resp.headers['content-type'] ?? '').toLowerCase();
     if (contentType.isNotEmpty && !contentType.startsWith('image/')) {
@@ -188,13 +211,29 @@ List<Map<String, Object?>> _jsonldObjects(Document document) {
   return objects;
 }
 
-String _unescapeHtml(String value) => value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&apos;', "'");
+String _unescapeHtml(String value) {
+  final named = value
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&apos;', "'");
+  return named.replaceAllMapped(RegExp(r'&#(x[0-9a-fA-F]+|\d+);'), (match) {
+    final raw = match.group(1)!;
+    final code = raw.startsWith('x') || raw.startsWith('X')
+        ? int.tryParse(raw.substring(1), radix: 16)
+        : int.tryParse(raw);
+    if (code == null ||
+        code < 0 ||
+        code > 0x10FFFF ||
+        (code >= 0xD800 && code <= 0xDFFF)) {
+      // Out of range or surrogate: U+FFFD replacement character.
+      return String.fromCharCode(0xFFFD);
+    }
+    return String.fromCharCode(code);
+  });
+}
 
 List<Map<String, Object?>> _flattenJsonld(Object? data) {
   if (data is List) {
@@ -203,7 +242,7 @@ List<Map<String, Object?>> _flattenJsonld(Object? data) {
   if (data is! Map) return [];
   final map = data.cast<String, Object?>();
   final graph = map['@graph'];
-  if (graph is List) return _flattenJsonld(graph);
+  if (graph is List) return [map, ..._flattenJsonld(graph)];
   return [map];
 }
 
@@ -238,7 +277,7 @@ Map<String, Object> _fieldsFromJsonld(
   put('description', _clean(_asText(obj['description'])));
   put('cover_url', _firstUrl(obj['image'] ?? obj['thumbnailUrl'], baseUrl));
   put('rating', _jsonldRating(obj['aggregateRating']));
-  put('tags', _splitTags(obj['genre'] ?? obj['keywords']));
+  put('tags', _splitTagsComma(obj['genre'] ?? obj['keywords']));
   return fields;
 }
 
@@ -280,8 +319,9 @@ double _jsonldRating(Object? rating) {
   if (rating is! Map) return 0.0;
   final map = rating.cast<String, Object?>();
   final value = double.tryParse(map['ratingValue']?.toString() ?? '');
-  final best = double.tryParse(map['bestRating']?.toString() ?? '') ?? 5;
-  if (value == null || best <= 0) return 0.0;
+  var best = double.tryParse(map['bestRating']?.toString() ?? '') ?? 5;
+  if (best <= 0) best = 5.0;
+  if (value == null) return 0.0;
   return _clampRating(value * 5.0 / best);
 }
 
@@ -418,11 +458,16 @@ List<String> _names(Object? value) {
   return names;
 }
 
-List<String> _splitTags(Object? value) {
+List<String> _splitTags(Object? value) => _splitTagsOn(value, RegExp(r'[,;]'));
+
+/// JSON-LD genre/keywords split on commas only.
+List<String> _splitTagsComma(Object? value) => _splitTagsOn(value, ',');
+
+List<String> _splitTagsOn(Object? value, Pattern separator) {
   final values = value is List ? value : [value];
   final tags = <String>[];
   for (final item in values) {
-    for (var tag in (item?.toString() ?? '').split(RegExp(r'[,;]'))) {
+    for (var tag in (item?.toString() ?? '').split(separator)) {
       tag = _clean(tag);
       if (tag.isNotEmpty && !tags.contains(tag)) tags.add(tag);
     }

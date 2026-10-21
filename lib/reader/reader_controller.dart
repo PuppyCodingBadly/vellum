@@ -361,7 +361,10 @@ class ReaderController extends ChangeNotifier {
   }) async {
     final bookId = book.id;
     if (bookId == null || end <= start) return false;
-    final quote = text.length > 200 ? text.substring(0, 200) : text;
+    // Truncate on rune boundaries so a surrogate pair is never split
+    // (an unpaired surrogate would make the position JSON invalid).
+    final quote =
+        text.length > 200 ? String.fromCharCodes(text.runes.take(200)) : text;
     final position = jsonEncode(<String, Object?>{
       'chapter': _index,
       'start': start,
@@ -595,18 +598,21 @@ class ReaderController extends ChangeNotifier {
     _lastFraction = 0;
     _pendingScrollFraction = null;
     _pdfSerial++;
+    var loaded = true;
     if (isPdf) {
       _touchPdfCache(_index);
       _pdfPageLoading = !_pdfCache.containsKey(_index);
     } else {
       try {
         _loadCurrentDocument();
+        _error = null;
       } catch (_) {
         _document = null;
         _error = 'Cannot Open Book';
+        loaded = false;
       }
     }
-    _savePosition();
+    if (loaded) _savePosition();
     notifyListeners();
     if (isPdf) _renderPdf();
   }
@@ -801,6 +807,9 @@ class _PdfWorker {
           final bytes = await pdf!.renderPage(index, scale: scale);
           replyPort.send(<Object?>[id, bytes, null]);
         } catch (error) {
+          // Release native FPDF handles; the next request reopens the file.
+          pdf?.close();
+          pdf = null;
           replyPort.send(<Object?>[id, null, error.toString()]);
         }
       });

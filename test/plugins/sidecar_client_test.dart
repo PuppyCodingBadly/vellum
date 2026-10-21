@@ -95,6 +95,20 @@ void main() {
       expect(await client.ping(), 'pong');
     });
 
+    test('dispose while the process is spawning fails the call', () async {
+      final client = makeClient();
+      addTearDown(client.dispose);
+      // call() kicks off Process.start and yields; dispose() runs before
+      // the spawn completes, so the late process must be killed and the
+      // waiting call failed instead of leaked.
+      final future = client.call('ping', const {});
+      await client.dispose();
+      await expectLater(future, throwsA(isA<SidecarException>()));
+      // No process was adopted: the client stays disposed and spawns nothing.
+      await expectLater(
+          client.call('ping', const {}), throwsA(isA<SidecarException>()));
+    });
+
     test('stderr is captured into the log buffer', () async {
       final client = makeClient();
       addTearDown(client.dispose);

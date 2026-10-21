@@ -629,7 +629,10 @@ List<_Fragment> _normalize(List<_RawFragment> raw, {bool pre = false}) {
 
   for (final fragment in raw) {
     if (fragment is _RawText) {
-      if (pre) {
+      // A <pre> nested inside an inline container (blockquote/li/td) is
+      // recorded on the run style; honor it even when the container called
+      // _normalize with pre: false.
+      if (pre || fragment.style.pre) {
         append(
           fragment.text.replaceAll('\r\n', '\n').replaceAll('\r', '\n'),
           fragment.style,

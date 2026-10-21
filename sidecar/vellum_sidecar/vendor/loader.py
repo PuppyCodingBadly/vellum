@@ -27,7 +27,7 @@ class CalibrePluginAdapter(MetadataSource):
 
     def __init__(self, plugin):
         self._plugin = plugin
-        self.id = str(getattr(plugin, "id", "") or getattr(plugin, "name", "calibre-plugin"))
+        self.id = str(getattr(plugin, "id", "") or getattr(plugin, "name", "") or "calibre-plugin")
         self.name = str(getattr(plugin, "name", self.id))
         self.version = str(getattr(plugin, "version", ""))
         self.description = str(getattr(plugin, "description", ""))
@@ -129,7 +129,7 @@ class CalibrePluginAdapter(MetadataSource):
         return Metadata(
             title=str(getattr(m, "title", "") or ""),
             authors=[str(a) for a in (getattr(m, "authors", None) or [])],
-            isbn=str(identifiers.get("isbn", getattr(m, "isbn", "") or "")),
+            isbn=str(identifiers.get("isbn") or getattr(m, "isbn", "") or ""),
             publisher=str(getattr(m, "publisher", "") or ""),
             pubdate=str(pubdate) if pubdate else "",
             language=str(languages[0]) if languages else "",
@@ -386,4 +386,19 @@ def load_plugin_zip(zip_path: str) -> MetadataSource:
         if name.startswith(pkg.__name__ + ".") and mod is not None
     ]
     plugin = _find_plugin_instance(pkg, modules)
-    return CalibrePluginAdapter(plugin)
+    adapter = CalibrePluginAdapter(plugin)
+    adapter.import_name = import_name
+    return adapter
+
+
+def unload_plugin(import_name: str) -> None:
+    """Remove a loaded plugin's modules and archive registration.
+
+    After this, ``import calibre_plugins.<import_name>`` raises
+    ModuleNotFoundError (until the archive is registered again).
+    """
+    prefix = f"{_IMPORT_ROOT}.{import_name}"
+    for name in [n for n in sys.modules
+                 if n == prefix or n.startswith(prefix + ".")]:
+        del sys.modules[name]
+    _finder.archives.pop(import_name, None)

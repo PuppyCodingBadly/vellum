@@ -148,9 +148,13 @@ class EpubBook {
     Directory(destDir).createSync(recursive: true);
     final marker = '$destDir/$_marker';
     if (!File(marker).existsSync()) {
+      final destRoot = Directory(destDir).absolute.path;
       for (final file in _archive.files) {
         if (!file.isFile) continue;
-        final out = File('$destDir/${file.name}');
+        final rel = _safeEntryPath(file.name);
+        if (rel == null) continue; // skip unsafe entries (zip-slip)
+        final out = File('$destDir/$rel');
+        if (!out.absolute.path.startsWith('$destRoot/')) continue;
         out.parent.createSync(recursive: true);
         out.writeAsBytesSync(file.content as List<int>);
       }
@@ -168,6 +172,23 @@ class EpubBook {
   }
 
   // -- internals -------------------------------------------------------------
+
+  /// Normalize a zip entry name posix-style; returns null when the entry is
+  /// unsafe to extract (absolute, empty, or containing `..` segments).
+  static String? _safeEntryPath(String name) {
+    final posix = name.replaceAll('\\', '/');
+    if (posix.startsWith('/') || RegExp(r'^[a-zA-Z]:/').hasMatch(posix)) {
+      return null;
+    }
+    final segments = <String>[];
+    for (final seg in posix.split('/')) {
+      if (seg.isEmpty || seg == '.') continue;
+      if (seg == '..') return null;
+      segments.add(seg);
+    }
+    if (segments.isEmpty) return null;
+    return segments.join('/');
+  }
 
   String? _readEntry(String name) {
     for (final file in _archive.files) {

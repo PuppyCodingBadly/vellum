@@ -23,6 +23,7 @@ class LibraryOfCongress extends MetadataSource {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final query = isbn.isNotEmpty
         ? isbn
@@ -31,18 +32,20 @@ class LibraryOfCongress extends MetadataSource {
             ...(authors ?? const <String>[]).take(1),
           ].join(' ');
     if (query.isEmpty) return [];
-    return _query(query, client);
+    return _query(query, client, timeout);
   }
 
   @override
   Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client}) async {
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim();
     if (query.isEmpty) return [];
-    return _query(query, client);
+    return _query(query, client, timeout);
   }
 
-  Future<List<Metadata>> _query(String query, http.Client? client) async {
+  Future<List<Metadata>> _query(
+      String query, http.Client? client, Duration timeout) async {
     final httpClient = client ?? http.Client();
     try {
       final uri = Uri.parse(_apiUrl).replace(queryParameters: {
@@ -51,7 +54,7 @@ class LibraryOfCongress extends MetadataSource {
         'c': '20',
         'fa': 'language:english',
       });
-      final resp = await httpClient.get(uri);
+      final resp = await httpClient.get(uri).timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final results = (data['results'] as List?) ?? [];
@@ -67,12 +70,15 @@ class LibraryOfCongress extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     if (meta.coverUrl.isEmpty) return null;
     final httpClient = client ?? http.Client();
     try {
-      final resp =
-          await httpClient.send(http.Request('GET', Uri.parse(meta.coverUrl)));
+      final resp = await httpClient
+          .send(http.Request('GET', Uri.parse(meta.coverUrl)))
+          .timeout(timeout);
       // No Content-Type check, per the Python source.
       final builder = BytesBuilder();
       var size = 0;
@@ -147,10 +153,26 @@ String _clean(String value) {
   return _unescape(text).replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
-String _unescape(String value) => value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&apos;', "'");
+String _unescape(String value) {
+  final named = value
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&apos;', "'");
+  return named.replaceAllMapped(RegExp(r'&#(x[0-9a-fA-F]+|\d+);'), (match) {
+    final raw = match.group(1)!;
+    final code = raw.startsWith('x') || raw.startsWith('X')
+        ? int.tryParse(raw.substring(1), radix: 16)
+        : int.tryParse(raw);
+    if (code == null ||
+        code < 0 ||
+        code > 0x10FFFF ||
+        (code >= 0xD800 && code <= 0xDFFF)) {
+      // Out of range or surrogate: U+FFFD replacement character.
+      return String.fromCharCode(0xFFFD);
+    }
+    return String.fromCharCode(code);
+  });
+}

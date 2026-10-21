@@ -230,11 +230,13 @@ class _ReaderPageState extends State<ReaderPage> {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowLeft) {
+    // Bare arrows only: Alt+Left/Right belong to app navigation.
+    final bareArrows = !HardwareKeyboard.instance.isAltPressed;
+    if (bareArrows && key == LogicalKeyboardKey.arrowLeft) {
       _previous();
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.arrowRight) {
+    if (bareArrows && key == LogicalKeyboardKey.arrowRight) {
       _next();
       return KeyEventResult.handled;
     }

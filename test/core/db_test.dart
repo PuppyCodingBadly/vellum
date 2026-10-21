@@ -120,6 +120,17 @@ void main() {
       lib.close();
       tmp.deleteSync(recursive: true);
     });
+
+    test('close on a file-backed library is a no-op', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-close');
+      final lib = Library('${tmp.path}/library.db');
+      lib.addBook(Book(title: 'T'));
+      lib.close();
+      // Persistent connection stays usable (Python contract: close only
+      // matters for :memory:).
+      expect(lib.allBooks(), hasLength(1));
+      tmp.deleteSync(recursive: true);
+    });
   });
 
   group('Library search', () {
@@ -401,6 +412,18 @@ CREATE TABLE books (
       lib.close();
     });
 
+    test('deleteBook removes rows from book_fts', () {
+      final lib = Library(':memory:');
+      final b = lib.addBook(Book(title: 'Novel'));
+      lib.replaceBookFts(b, [
+        {'chapter': 0, 'title': 'Ch', 'content': 'zorkmid treasure'}
+      ]);
+      expect(lib.searchBookContent('zorkmid'), hasLength(1));
+      lib.deleteBook(b);
+      expect(lib.searchBookContent('zorkmid'), isEmpty);
+      lib.close();
+    });
+
     test('fallback LIKE path when book_fts is a plain table', () {
       final tmp = Directory.systemTemp.createTempSync('vellum-fts');
       final path = '${tmp.path}/library.db';
@@ -429,6 +452,18 @@ CREATE TABLE books (
       expect(snippet, contains('needle phrase'));
       expect(snippet, contains('…'));
       expect(lib.searchBookContent('absent'), isEmpty);
+
+      // LIKE wildcards in the query are matched literally.
+      lib.replaceBookFts(b, [
+        {
+          'chapter': 3,
+          'title': 'Pct',
+          'content': 'Discount is 100% real_thing today.'
+        }
+      ]);
+      expect(lib.searchBookContent('100%'), hasLength(1));
+      expect(lib.searchBookContent('real_thing'), hasLength(1));
+      expect(lib.searchBookContent('%%%'), isEmpty);
       lib.close();
       tmp.deleteSync(recursive: true);
     });

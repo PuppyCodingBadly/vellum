@@ -24,10 +24,10 @@ class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<HomePage> createState() => HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class HomePageState extends State<HomePage> {
   static const int _libraryTab = 0;
 
   int _tabIndex = _libraryTab;
@@ -55,6 +55,11 @@ class _HomePageState extends State<HomePage> {
     if (index == _tabIndex) return;
     setState(() => _tabIndex = index);
   }
+
+  /// Switches to the Library tab and focuses the search field.
+  ///
+  /// Called from the app-level Ctrl+F shortcut in `main.dart`.
+  void focusLibrarySearch() => _focusLibrarySearch();
 
   void _focusLibrarySearch() {
     if (_tabIndex != _libraryTab) {
@@ -113,7 +118,7 @@ class _HomePageState extends State<HomePage> {
       context: context,
       builder: (context) => const AboutDialog(
         applicationName: 'Vellum',
-        applicationVersion: '0.2.0',
+        applicationVersion: '0.2.2',
         applicationLegalese: 'GPL-3.0',
         children: [
           Text('A calibre-like ebook library manager.'),
@@ -249,10 +254,7 @@ class _HomePageState extends State<HomePage> {
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            _focusLibrarySearch,
-        const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): () =>
-            Navigator.maybePop(context),
+        // Ctrl+F and Alt+Left are handled app-wide in main.dart's builder.
         const SingleActivator(LogicalKeyboardKey.f11): () =>
             unawaited(_toggleFullscreen()),
         const SingleActivator(LogicalKeyboardKey.keyQ, control: true): () =>

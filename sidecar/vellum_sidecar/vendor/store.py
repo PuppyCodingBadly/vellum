@@ -172,11 +172,12 @@ class StoreAdapter:
                 if url:
                     break
             if not url and downloads:
-                # Last resort: take the plugin's first download but keep
+                # Last resort: take the first non-empty download but keep
                 # the extension consistent with the URL's format key.
-                key, value = next(iter(downloads.items()))
-                if value:
-                    chosen, url = key, value
+                for key, value in downloads.items():
+                    if value:
+                        chosen, url = key, value
+                        break
             if not url:
                 return None
             result.download_url = str(url)
