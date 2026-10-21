@@ -28,9 +28,25 @@ class BookCover extends StatelessWidget {
   final double borderRadius;
 
   /// Resolved thumbnail paths, keyed by
-  /// `id:coverPath:mtimeMs:size` so stale entries never win.
+  /// `id:coverPath:mtimeMs:size` so stale entries never win. Insertion order
+  /// is tracked so the cache stays bounded; older mtime/size variants of the
+  /// same book cover are evicted on insert.
   static final Map<String, Future<String>> _thumbCache =
       <String, Future<String>>{};
+
+  /// Maximum retained thumbnails before the oldest entries are evicted.
+  static const int _thumbCacheLimit = 500;
+
+  static void _evictThumbnail(String key, String prefix) {
+    // Dart maps preserve insertion order; drop entries for the same
+    // `id:coverPath` prefix, then trim to [_thumbCacheLimit].
+    _thumbCache.removeWhere(
+      (k, _) => k != key && k.startsWith(prefix),
+    );
+    while (_thumbCache.length >= _thumbCacheLimit) {
+      _thumbCache.remove(_thumbCache.keys.first);
+    }
+  }
 
   static Future<String> _thumbnailFor(
     String dataDir,
@@ -49,6 +65,9 @@ class BookCover extends StatelessWidget {
       // image loader will show the placeholder.
     }
     final key = '$bookId:$coverPath:$mtime:$size';
+    if (!_thumbCache.containsKey(key)) {
+      _evictThumbnail(key, '$bookId:$coverPath:');
+    }
     return _thumbCache.putIfAbsent(
       key,
       () => Future<String>(() => thumbPath(dataDir, bookId, coverPath)),

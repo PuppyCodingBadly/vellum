@@ -105,10 +105,10 @@ Map<String, Object?> _normalizeEntry(Map<String, dynamic> entry) {
       in ((entry['meanings'] as List?) ?? const []).take(maxMeanings)) {
     final m = meaning as Map;
     final definitions = <String>[];
-    for (final definition
-        in ((m['definitions'] as List?) ?? const []).take(maxDefinitions)) {
+    for (final definition in ((m['definitions'] as List?) ?? const [])) {
       final text = (((definition as Map)['definition']) as String? ?? '').trim();
       if (text.isNotEmpty) definitions.add(text);
+      if (definitions.length >= maxDefinitions) break;
     }
     meanings.add({
       'partOfSpeech': (m['partOfSpeech'] as String?) ?? '',
@@ -156,11 +156,11 @@ Map<String, Object?> _normalizeWiktionary(
         in ((entries as List?) ?? const []).take(maxMeanings - meanings.length)) {
       final e = entry as Map;
       final definitions = <String>[];
-      for (final definition
-          in ((e['definitions'] as List?) ?? const []).take(maxDefinitions)) {
+      for (final definition in ((e['definitions'] as List?) ?? const [])) {
         final text =
             _stripHtml(((definition as Map)['definition']) as String? ?? '');
         if (text.isNotEmpty) definitions.add(text);
+        if (definitions.length >= maxDefinitions) break;
       }
       if (definitions.isNotEmpty) {
         meanings.add({
@@ -193,7 +193,13 @@ String _unescapeHtml(String text) {
         final code = raw.startsWith('x') || raw.startsWith('X')
             ? int.tryParse(raw.substring(1), radix: 16)
             : int.tryParse(raw);
-        return code == null ? m.group(0)! : String.fromCharCode(code);
+        if (code == null) return m.group(0)!;
+        // Mirror Python's html.unescape: out-of-range and surrogate code
+        // points become U+FFFD instead of throwing RangeError.
+        if (code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+          return '\uFFFD';
+        }
+        return String.fromCharCode(code);
       })
       .replaceAll('&lt;', '<')
       .replaceAll('&gt;', '>')

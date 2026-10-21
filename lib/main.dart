@@ -154,6 +154,19 @@ class VellumApp extends StatefulWidget {
 class _VellumAppState extends State<VellumApp> {
   late final AppState _state;
 
+  /// Navigator used by the app-wide shortcuts to pop pushed routes.
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  /// Reaches the [HomePage] so Ctrl+F can focus the library search from any
+  /// route.
+  final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
+
+  void _focusLibrarySearch() {
+    // Pop any pushed routes so the HomePage (and its search field) is visible.
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    _homeKey.currentState?.focusLibrarySearch();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -212,6 +225,7 @@ class _VellumAppState extends State<VellumApp> {
           title: 'Vellum',
           debugShowCheckedModeBanner: false,
           scaffoldMessengerKey: _state.messengerKey,
+          navigatorKey: _navigatorKey,
           themeMode: _state.themeMode,
           theme: _theme(_state.accentColor, Brightness.light),
           darkTheme: _theme(_state.accentColor, Brightness.dark),
@@ -219,10 +233,14 @@ class _VellumAppState extends State<VellumApp> {
             bindings: <ShortcutActivator, VoidCallback>{
               const SingleActivator(LogicalKeyboardKey.keyQ, control: true):
                   _quit,
+              const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+                  _focusLibrarySearch,
+              const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
+                  () => _navigatorKey.currentState?.maybePop(),
             },
             child: child ?? const SizedBox.shrink(),
           ),
-          home: const _TitleBarTheme(child: HomePage()),
+          home: _TitleBarTheme(child: HomePage(key: _homeKey)),
         ),
       ),
     );

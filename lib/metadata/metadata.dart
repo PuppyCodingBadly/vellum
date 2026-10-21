@@ -108,13 +108,16 @@ abstract class MetadataSource {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   });
 
   /// Fuzzy search by a free-form string; default delegates to [search].
   Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client}) async {
-    return search(title: query, client: client);
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
+    return search(title: query, client: client, timeout: timeout);
   }
 
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client});
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client, Duration timeout = const Duration(seconds: 15)});
 }

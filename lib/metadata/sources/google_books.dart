@@ -22,6 +22,7 @@ class GoogleBooks extends MetadataSource {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final parts = <String>[];
     if (title.isNotEmpty) parts.add('intitle:$title');
@@ -30,18 +31,20 @@ class GoogleBooks extends MetadataSource {
     }
     if (isbn.isNotEmpty) parts.add('isbn:$isbn');
     if (parts.isEmpty) return [];
-    return _query(parts.join('+'), client);
+    return _query(parts.join('+'), client, timeout);
   }
 
   @override
   Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client}) async {
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim();
     if (query.isEmpty) return [];
-    return _query(query, client);
+    return _query(query, client, timeout);
   }
 
-  Future<List<Metadata>> _query(String q, http.Client? client) async {
+  Future<List<Metadata>> _query(String q, http.Client? client,
+      Duration timeout) async {
     final httpClient = client ?? http.Client();
     try {
       final uri = Uri.parse(_apiUrl).replace(queryParameters: {
@@ -49,7 +52,7 @@ class GoogleBooks extends MetadataSource {
         'maxResults': '20',
         'langRestrict': 'en',
       });
-      final resp = await httpClient.get(uri);
+      final resp = await httpClient.get(uri).timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final items = (data['items'] as List?) ?? [];
@@ -65,11 +68,13 @@ class GoogleBooks extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     if (meta.coverUrl.isEmpty) return null;
     final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient.get(Uri.parse(meta.coverUrl));
+      final resp = await httpClient.get(Uri.parse(meta.coverUrl)).timeout(timeout);
       if (resp.statusCode != 200) return null;
       return resp.bodyBytes;
     } catch (_) {

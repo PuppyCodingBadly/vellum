@@ -92,7 +92,8 @@ class _StubSource extends MetadataSource {
       {String title = '',
       List<String>? authors,
       String isbn = '',
-      http.Client? client}) async {
+      http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     if (isbn.isNotEmpty) isbnSearches.add(isbn);
     if (throws) throw Exception('source exploded');
     return results;
@@ -100,12 +101,16 @@ class _StubSource extends MetadataSource {
 
   @override
   Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client}) async {
-    return freeTextResults ?? super.searchFreeText(query, client: client);
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
+    return freeTextResults ??
+        super.searchFreeText(query, client: client, timeout: timeout);
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     coverCalls++;
     return cover;
   }

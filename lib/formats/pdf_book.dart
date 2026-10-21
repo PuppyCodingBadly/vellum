@@ -42,10 +42,24 @@ class PdfBook {
       }
     }
     _doc = _loadDocument(_library, path);
+    if (_library.FPDF_GetPageCount(_doc) < 1) {
+      _library.FPDF_CloseDocument(_doc);
+      throw FormatException('not a readable PDF: $path');
+    }
   }
 
   final String _path;
   late final FPDF_DOCUMENT _doc;
+  bool _closed = false;
+
+  /// Close the PDFium document, releasing native resources.
+  ///
+  /// Safe to call more than once; later calls are no-ops.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    _library.FPDF_CloseDocument(_doc);
+  }
 
   static PDFium? _pdfiumCache;
 

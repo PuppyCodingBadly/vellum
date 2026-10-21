@@ -26,6 +26,7 @@ class OpenLibrary extends MetadataSource {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final authorsList = authors ?? const <String>[];
     if (title.isEmpty && authorsList.isEmpty && isbn.isEmpty) return [];
@@ -38,12 +39,13 @@ class OpenLibrary extends MetadataSource {
     if (title.isNotEmpty) params['title'] = title;
     if (authorsList.isNotEmpty) params['author'] = authorsList[0];
     if (isbn.isNotEmpty) params['isbn'] = isbn;
-    return _query(params, client);
+    return _query(params, client, timeout);
   }
 
   @override
   Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client}) async {
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim();
     if (query.isEmpty) return [];
     return _query({
@@ -51,15 +53,15 @@ class OpenLibrary extends MetadataSource {
       'limit': '20',
       'language': 'eng',
       'fields': _fields,
-    }, client);
+    }, client, timeout);
   }
 
   Future<List<Metadata>> _query(
-      Map<String, String> params, http.Client? client) async {
+      Map<String, String> params, http.Client? client, Duration timeout) async {
     final httpClient = client ?? http.Client();
     try {
       final uri = Uri.parse(_apiUrl).replace(queryParameters: params);
-      final resp = await httpClient.get(uri);
+      final resp = await httpClient.get(uri).timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final docs = (data['docs'] as List?) ?? [];
@@ -75,11 +77,13 @@ class OpenLibrary extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> downloadCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     if (meta.coverUrl.isEmpty) return null;
     final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient.get(Uri.parse(meta.coverUrl));
+      final resp = await httpClient.get(Uri.parse(meta.coverUrl)).timeout(timeout);
       if (resp.statusCode != 200) return null;
       return resp.bodyBytes;
     } catch (_) {

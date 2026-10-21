@@ -177,6 +177,33 @@ void main() {
       expect(captured.first.url.queryParameters['types'], 'works');
     });
 
+    test('source_id uses uri tail over wdId', () async {
+      const search = {
+        'results': [
+          {'id': 'x', 'uri': 'inv:abc123', 'image': ''}
+        ]
+      };
+      const entities = {
+        'entities': {
+          'inv:abc123': {
+            'uri': 'inv:abc123',
+            'wdId': 'Q999',
+            'labels': {'en': 'Local Book'},
+            'claims': {},
+          }
+        }
+      };
+      final client = MockClient((request) async {
+        final payload =
+            request.url.path.contains('entities') ? entities : search;
+        return http.Response(jsonEncode(payload), 200,
+            headers: {'content-type': 'application/json'});
+      });
+      final results = await Inventaire().search(title: 'Local', client: client);
+      expect(results, hasLength(1));
+      expect(results[0].sourceId, 'inventaire:abc123');
+    });
+
     test('skips non-english works', () async {
       const search = {
         'results': [

@@ -28,6 +28,10 @@ void main() {
     expect(htmlToText('one<br>two'), 'one\ntwo');
   });
 
+  test('stray td outside a table still becomes a space', () {
+    expect(htmlToText('Price:<td>\$5'), 'Price: \$5');
+  });
+
   test('headings are block tags', () {
     expect(htmlToText('<h1>Title</h1><p>Body</p>'), 'Title\nBody');
   });

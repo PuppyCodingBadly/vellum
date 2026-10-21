@@ -55,6 +55,19 @@ void main() {
     expect(config.getString('color_scheme'), 'system');
   });
 
+  test('wrong-typed values fall back to defaults', () {
+    final path = '${tmp.path}/config.json';
+    File(path).writeAsStringSync(jsonEncode({
+      'show_hidden': 1,
+      'color_scheme': 42,
+      'reader_font_scale': 'huge',
+    }));
+    final config = VellumConfig(path);
+    expect(config.getBool('show_hidden'), isFalse);
+    expect(config.getString('color_scheme'), 'system');
+    expect(config.getDouble('reader_font_scale'), 1.0);
+  });
+
   test('dataDir honors XDG-style location and ends with vellum', () {
     // Env vars cannot be mutated per-test; verify shape only.
     expect(VellumConfig.dataDir(), endsWith('/vellum'));

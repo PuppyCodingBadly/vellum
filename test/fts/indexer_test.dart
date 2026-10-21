@@ -95,7 +95,22 @@ void main() {
   test('garbage epub skipped without failing indexAll', () async {
     addBookWithFile('epub', epubBytes());
     addBookWithFile('epub', utf8.encode('this is not a zip at all'), title: 'bad');
-    expect(await indexer.indexAll(), greaterThanOrEqualTo(1));
+    expect(await indexer.indexAll(), 1);
+  });
+
+  test('corrupt book is not counted by indexAll', () async {
+    addBookWithFile('epub', utf8.encode('this is not a zip at all'), title: 'bad');
+    expect(await indexer.indexAll(), 0);
+  });
+
+  test('extraction dirs are per-book and cleaned up after indexing', () async {
+    addBookWithFile('epub', epubBytes());
+    addBookWithFile('epub', epubBytes());
+    await indexer.indexAll();
+    final root = Directory('${tmp.path}/.fts-extract');
+    if (root.existsSync()) {
+      expect(root.listSync(), isEmpty);
+    }
   });
 
   test('PDF-only book indexes zero rows', () async {

@@ -18,7 +18,7 @@ import shutil
 from typing import Any
 
 from .vendor import store as store_mod
-from .vendor.loader import load_plugin_zip
+from .vendor.loader import load_plugin_zip, unload_plugin
 from .vendor.metadata import Metadata
 from .vendor.store import StoreResult, is_store_plugin, load_store_plugin
 
@@ -33,6 +33,7 @@ class _Registry:
         os.makedirs(plugin_dir, exist_ok=True)
         self.metadata: dict[str, Any] = {}   # name -> CalibrePluginAdapter
         self.zip_paths: dict[str, str] = {}  # metadata name -> zip path
+        self.import_names: dict[str, str] = {}  # metadata name -> import name
         self.stores: dict[str, Any] = {}     # store name -> StoreAdapter
         self.load_all_done = False
 
@@ -98,6 +99,7 @@ class Bridge:
                 adapter = load_plugin_zip(path)
                 reg.metadata[adapter.name] = adapter
                 reg.zip_paths[adapter.name] = path
+                reg.import_names[adapter.name] = getattr(adapter, "import_name", "")
             except ValueError as exc:
                 log.warning("skipping plugin %s: %s", path, exc)
             except Exception:
@@ -137,6 +139,7 @@ class Bridge:
         adapter = load_plugin_zip(dest)
         reg.metadata[adapter.name] = adapter
         reg.zip_paths[adapter.name] = dest
+        reg.import_names[adapter.name] = getattr(adapter, "import_name", "")
         return {
             "kind": "metadata",
             "name": adapter.name,
@@ -148,9 +151,12 @@ class Bridge:
         reg = self._registry(plugin_dir)
         adapter = reg.metadata.pop(name, None)
         zip_path = reg.zip_paths.pop(name, None)
+        import_name = reg.import_names.pop(name, "")
+        if import_name:
+            unload_plugin(import_name)
         if zip_path and os.path.exists(zip_path):
             os.remove(zip_path)
-        return adapter is not None or zip_path is not None or True
+        return adapter is not None or zip_path is not None
 
     def _m_loaded(self, plugin_dir: str) -> dict:
         reg = self._registry(plugin_dir)

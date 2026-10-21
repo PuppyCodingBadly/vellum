@@ -51,8 +51,12 @@ class AppState extends ChangeNotifier {
   Library library;
   final MetadataEngine engine;
   final PluginController plugins;
-  final FtsIndexer fts;
-  final ReadingStatsTracker stats;
+  /// Full-text indexer bound to the current [library]; recreated on switch.
+  FtsIndexer fts;
+
+  /// Reading-stats tracker bound to the current [library]; recreated on
+  /// switch.
+  ReadingStatsTracker stats;
 
   /// Root scaffold messenger used by [showToast]; installed on `MaterialApp`.
   final GlobalKey<ScaffoldMessengerState> messengerKey =
@@ -158,6 +162,10 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       // The old connection is already unreachable; ignore close failures.
     }
+    // Rebind services to the new library so searches and stats hit the new
+    // database instead of the replaced one.
+    fts = FtsIndexer(opened);
+    stats = ReadingStatsTracker(opened);
     await refresh();
     return null;
   }

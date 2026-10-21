@@ -1,9 +1,9 @@
 /// Tests for importing a calibre library folder.
 ///
 /// Mirrors /tmp/vellum/tests/test_calibre.py. The Dart port cannot
-/// monkeypatch `_importRow`, so the per-row-failure test closes the target
-/// library instead: every row fails, the import completes, and failures are
-/// counted rather than thrown.
+/// monkeypatch `_importRow`, so the per-row-failure test breaks the target
+/// library's schema instead: every row fails, the import completes, and
+/// failures are counted rather than thrown.
 library;
 
 import 'dart:io';
@@ -188,15 +188,17 @@ void main() {
   });
 
   test('row failure is counted, not fatal', () async {
-    // A disposed library makes every per-row import throw; the import must
+    // Breaking the library schema makes every per-row import throw
+    // (addBook -> _writeLinks inserts into authors); the import must
     // still complete and report the failures.
-    library.close();
+    final db = sqlite3.open(p.join(tmp.path, 'vellum.db'));
+    db.execute('DROP TABLE authors');
+    db.dispose();
+
     final result = await importCalibreLibrary(library, calibreRoot.path);
     expect(result.failed, 1);
     expect(result.added, 0);
     expect(result.firstError, isNotEmpty);
-    // Replace the closed library so tearDown does not dispose it twice.
-    library = Library(p.join(tmp.path, 'vellum2.db'));
   });
 
   test('broken optional table does not fail the book', () async {

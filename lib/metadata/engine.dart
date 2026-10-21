@@ -22,12 +22,17 @@ class MetadataEngine {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     // Fan out in parallel; results concatenated in registration order.
     final perSource = await Future.wait(_sources.map((source) async {
       try {
         return await source.search(
-            title: title, authors: authors, isbn: isbn, client: client);
+            title: title,
+            authors: authors,
+            isbn: isbn,
+            client: client,
+            timeout: timeout);
       } catch (_) {
         return <Metadata>[];
       }
@@ -36,21 +41,25 @@ class MetadataEngine {
     return _dedupe(results).where(_isEnglish).toList();
   }
 
-  Future<Metadata?> grabUrl(String url, {http.Client? client}) =>
-      UniversalGrabber().grab(url, client: client);
+  Future<Metadata?> grabUrl(String url,
+          {http.Client? client,
+          Duration timeout = const Duration(seconds: 20)}) =>
+      UniversalGrabber().grab(url, client: client, timeout: timeout);
 
   Future<List<Metadata>> findQuery(String query,
-      {http.Client? client}) async {
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim().replaceAll(RegExp(r'\s+'), ' ');
     if (query.isEmpty) return [];
     final isbn = _queryIsbn(query);
     List<Metadata> results;
     if (isbn.isNotEmpty) {
-      results = await find(isbn: isbn, client: client);
+      results = await find(isbn: isbn, client: client, timeout: timeout);
     } else {
       final perSource = await Future.wait(_sources.map((source) async {
         try {
-          return await source.searchFreeText(query, client: client);
+          return await source.searchFreeText(query,
+              client: client, timeout: timeout);
         } catch (_) {
           return <Metadata>[];
         }
@@ -75,9 +84,14 @@ class MetadataEngine {
     List<String>? authors,
     String isbn = '',
     http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
-    final results =
-        await find(title: title, authors: authors, isbn: isbn, client: client);
+    final results = await find(
+        title: title,
+        authors: authors,
+        isbn: isbn,
+        client: client,
+        timeout: timeout);
     final merged = mergeResults(results);
     if (merged != null && results.length > 1) {
       return [merged, ...results];
@@ -192,11 +206,14 @@ class MetadataEngine {
     return merged;
   }
 
-  Future<Uint8List?> fetchCover(Metadata meta, {http.Client? client}) async {
+  Future<Uint8List?> fetchCover(Metadata meta,
+      {http.Client? client,
+      Duration timeout = const Duration(seconds: 15)}) async {
     for (final source in _sources) {
       if (source.id == meta.sourceId || source.name == meta.sourceName) {
         try {
-          return await source.downloadCover(meta, client: client);
+          return await source.downloadCover(meta,
+              client: client, timeout: timeout);
         } catch (_) {
           return null;
         }
@@ -207,7 +224,7 @@ class MetadataEngine {
     try {
       final request = http.Request('GET', Uri.parse(meta.coverUrl))
         ..headers['User-Agent'] = 'Vellum/0.1 metadata grabber';
-      final resp = await httpClient.send(request);
+      final resp = await httpClient.send(request).timeout(timeout);
       final contentType =
           (resp.headers['content-type'] ?? '').toLowerCase();
       if (contentType.isNotEmpty && !contentType.startsWith('image/')) {

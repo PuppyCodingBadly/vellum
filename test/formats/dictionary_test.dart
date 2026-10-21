@@ -174,6 +174,76 @@ void main() {
     expect((result!['meanings'] as List).length, 1);
   });
 
+  test('definition cap skips empties before taking first three', () async {
+    final client = MockClient((req) async => _json([
+          {
+            'word': 'test',
+            'meanings': [
+              {
+                'partOfSpeech': 'noun',
+                'definitions': [
+                  {'definition': '   '},
+                  {'definition': 'One.'},
+                  {'definition': 'Two.'},
+                  {'definition': 'Three.'},
+                  {'definition': 'Four.'},
+                ],
+              },
+            ],
+          },
+        ]));
+    final result = await lookup('test', client: client);
+    final meanings = result!['meanings'] as List;
+    expect((meanings[0] as Map)['definitions'], ['One.', 'Two.', 'Three.']);
+  });
+
+  test('wiktionary cap skips empty definitions before taking', () async {
+    final client = MockClient((req) async {
+      if (req.url.host == 'api.dictionaryapi.dev') {
+        return http.Response('nope', 404);
+      }
+      return _json({
+        'en': [
+          {
+            'partOfSpeech': 'noun',
+            'definitions': [
+              {'definition': '<b> </b>'},
+              {'definition': 'One.'},
+              {'definition': 'Two.'},
+              {'definition': 'Three.'},
+              {'definition': 'Four.'},
+            ],
+          },
+        ],
+      });
+    });
+    final result = await lookup('test', client: client);
+    final meanings = result!['meanings'] as List;
+    expect((meanings[0] as Map)['definitions'], ['One.', 'Two.', 'Three.']);
+  });
+
+  test('out-of-range numeric entities become U+FFFD', () async {
+    final client = MockClient((req) async {
+      if (req.url.host == 'api.dictionaryapi.dev') {
+        return http.Response('nope', 404);
+      }
+      return _json({
+        'en': [
+          {
+            'partOfSpeech': 'noun',
+            'definitions': [
+              {'definition': 'Bad: &#1114112; and &#xD800; ok: &#65;.'},
+            ],
+          },
+        ],
+      });
+    });
+    final result = await lookup('test', client: client);
+    final meanings = result!['meanings'] as List;
+    expect((meanings[0] as Map)['definitions'],
+        ['Bad: \uFFFD and \uFFFD ok: A.']);
+  });
+
   test('wiktionary without definitions returns null', () async {
     final client = MockClient((req) async {
       if (req.url.host == 'api.dictionaryapi.dev') {

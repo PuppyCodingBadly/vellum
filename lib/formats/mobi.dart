@@ -258,7 +258,10 @@ class MobiBook {
             .listSync()
             .map((e) => e.uri.pathSegments.last)
             .where((n) => n.startsWith('img-') && n.contains('.')))
-          int.parse(name.substring(4, name.lastIndexOf('.'))): name,
+          // Skip foreign img-*.* files with non-numeric stems.
+          if (int.tryParse(name.substring(4, name.lastIndexOf('.')))
+              case final index?)
+            index: name,
       };
       return destDir;
     }

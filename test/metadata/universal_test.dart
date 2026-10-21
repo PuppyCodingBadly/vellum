@@ -1,6 +1,10 @@
 /// Tests for the universal URL metadata grabber.
 library;
 
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:test/test.dart';
 import 'package:vellum/metadata/engine.dart';
 import 'package:vellum/metadata/metadata.dart';
@@ -101,6 +105,94 @@ void main() {
   test('grab rejects search strings', () {
     expect(() => UniversalGrabber().grab('Dune Frank Herbert'),
         throwsFormatException);
+  });
+
+  test('grab decodes latin1 charset', () async {
+    final client = MockClient((request) async {
+      final body = latin1.encode(
+          '<html><head><title>Caf\xe9 Society</title></head></html>');
+      return http.Response.bytes(body, 200, headers: {
+        'content-type': 'text/html; charset=iso-8859-1',
+      });
+    });
+    final meta = await UniversalGrabber()
+        .grab('https://example.com/book', client: client);
+    expect(meta, isNotNull);
+    expect(meta!.title, 'Caf\xe9 Society');
+  });
+
+  test('grab decodes latin1 for text/html without declared charset', () async {
+    final client = MockClient((request) async => http.Response(
+        '<html><head><title>Café</title></head></html>', 200,
+        headers: {'content-type': 'text/html'}));
+    final meta = await UniversalGrabber()
+        .grab('https://example.com/book', client: client);
+    expect(meta!.title, 'Café');
+  });
+
+  test('grab decodes utf-8 for non-text types without charset', () async {
+    final client = MockClient((request) async => http.Response.bytes(
+        utf8.encode('<html><head><title>Café</title></head></html>'), 200,
+        headers: {'content-type': 'application/xhtml+xml'}));
+    final meta = await UniversalGrabber()
+        .grab('https://example.com/book', client: client);
+    expect(meta!.title, 'Café');
+  });
+
+  test('json-ld numeric html entities are unescaped', () {
+    const html = '''
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Book", "name": "Tom &#x26; Jerry &#65;"}
+      </script>
+    </head></html>
+    ''';
+    final meta = parseBookPage(html, 'https://example.com/');
+    expect(meta!.title, 'Tom & Jerry A');
+  });
+
+  test('json-ld @graph keeps typed parent', () {
+    const html = '''
+    <html><head>
+      <script type="application/ld+json">
+      {
+        "@type": "Book",
+        "name": "Parent Book",
+        "author": {"@type": "Person", "name": "Ann"},
+        "@graph": [{"@type": "WebPage", "name": "Page"}]
+      }
+      </script>
+    </head></html>
+    ''';
+    final meta = parseBookPage(html, 'https://example.com/');
+    expect(meta, isNotNull);
+    expect(meta!.title, 'Parent Book');
+    expect(meta.authors, ['Ann']);
+  });
+
+  test('json-ld genre splits on commas only', () {
+    const html = '''
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Book", "name": "T", "genre": "Science Fiction; Fantasy, Drama"}
+      </script>
+    </head></html>
+    ''';
+    final meta = parseBookPage(html, 'https://example.com/');
+    expect(meta!.tags, ['Science Fiction; Fantasy', 'Drama']);
+  });
+
+  test('json-ld rating bestRating zero falls back to five', () {
+    const html = '''
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Book", "name": "T",
+       "aggregateRating": {"ratingValue": "3", "bestRating": "0"}}
+      </script>
+    </head></html>
+    ''';
+    final meta = parseBookPage(html, 'https://example.com/');
+    expect(meta!.rating, 3.0);
   });
 
   test('engine merge results', () {

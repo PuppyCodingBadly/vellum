@@ -17,7 +17,18 @@ const _skipTags = {'script', 'style'};
 /// skipped, block tags become newlines, <td> becomes a space, whitespace
 /// collapses per line, and empty lines are dropped.
 String htmlToText(String markup) {
-  final doc = htmlparser.parse(markup);
+  // package:html's tree constructor drops <td>/<th> outside table context
+  // (a streaming parser like the Python contract's HTMLParser keeps them),
+  // so substitute stray cell tags before parsing: each start tag becomes a
+  // space, end tags vanish. Skipped when a real <table> is present so
+  // genuine cells keep their normal handling.
+  var input = markup;
+  if (!markup.toLowerCase().contains('<table')) {
+    input = input
+        .replaceAll(RegExp(r'<(?:td|th)(?=[\s>/])[^>]*>', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'</(?:td|th)\s*>', caseSensitive: false), '');
+  }
+  final doc = htmlparser.parse(input);
   final parts = StringBuffer();
   void walk(dom.Node node) {
     if (node is dom.Text) {
