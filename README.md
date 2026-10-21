@@ -13,9 +13,6 @@ flatpak run io.github.vellum.Vellum
 
 Updates: `flatpak update io.github.vellum.Vellum`.
 
-The Flatpak uses the existing `io.github.vellum.Vellum` app ID, so it
-upgrades an older GTK installation in place and keeps the same library,
-config, covers, and plugins.
 
 ## Features
 
