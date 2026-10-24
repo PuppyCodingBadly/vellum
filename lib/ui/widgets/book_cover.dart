@@ -5,6 +5,7 @@
 library;
 
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/material.dart';
 
@@ -27,22 +28,18 @@ class BookCover extends StatelessWidget {
   final double height;
   final double borderRadius;
 
-  /// Resolved thumbnail paths, keyed by
-  /// `id:coverPath:mtimeMs:size` so stale entries never win. Insertion order
-  /// is tracked so the cache stays bounded; older mtime/size variants of the
-  /// same book cover are evicted on insert.
+  /// Resolved thumbnail paths, keyed by `id:coverPath`.
+  ///
+  /// The cache is deliberately time-agnostic: the freshness check and the
+  /// PNG transcode both run in a background isolate, so `build()` performs no
+  /// file I/O. Changed metadata produces a new key (the path changes).
   static final Map<String, Future<String>> _thumbCache =
       <String, Future<String>>{};
 
   /// Maximum retained thumbnails before the oldest entries are evicted.
   static const int _thumbCacheLimit = 500;
 
-  static void _evictThumbnail(String key, String prefix) {
-    // Dart maps preserve insertion order; drop entries for the same
-    // `id:coverPath` prefix, then trim to [_thumbCacheLimit].
-    _thumbCache.removeWhere(
-      (k, _) => k != key && k.startsWith(prefix),
-    );
+  static void _trimCache() {
     while (_thumbCache.length >= _thumbCacheLimit) {
       _thumbCache.remove(_thumbCache.keys.first);
     }
@@ -54,24 +51,24 @@ class BookCover extends StatelessWidget {
     String coverPath,
   ) {
     if (coverPath.isEmpty) return Future<String>.value('');
-    var mtime = 0;
-    var size = 0;
-    try {
-      final stat = File(coverPath).statSync();
-      mtime = stat.modified.millisecondsSinceEpoch;
-      size = stat.size;
-    } catch (_) {
-      // Missing cover: thumbPath will fall back to the original path and the
-      // image loader will show the placeholder.
+    final key = '$bookId:$coverPath';
+    final cached = _thumbCache.remove(key);
+    if (cached != null) {
+      _thumbCache[key] = cached; // refresh recency
+      return cached;
     }
-    final key = '$bookId:$coverPath:$mtime:$size';
-    if (!_thumbCache.containsKey(key)) {
-      _evictThumbnail(key, '$bookId:$coverPath:');
-    }
-    return _thumbCache.putIfAbsent(
-      key,
-      () => Future<String>(() => thumbPath(dataDir, bookId, coverPath)),
+    _trimCache();
+    final future = Isolate.run(
+      () => thumbPath(dataDir, bookId, coverPath),
+      debugName: 'cover-thumb-$bookId',
     );
+    _thumbCache[key] = future;
+    return future;
+  }
+
+  /// Drops cached thumbnails for [bookId] (for example after a cover update).
+  static void invalidate(int bookId) {
+    _thumbCache.removeWhere((key, _) => key.startsWith('$bookId:'));
   }
 
   String get _initials {
@@ -122,6 +119,9 @@ class BookCover extends StatelessWidget {
               File(path),
               fit: BoxFit.cover,
               gaplessPlayback: true,
+              // Thumbs are at most 320×480; never decode above display size.
+              cacheWidth:
+                  (width * MediaQuery.devicePixelRatioOf(context)).round(),
               errorBuilder: (context, error, stackTrace) =>
                   _placeholder(state.accentColor),
             );

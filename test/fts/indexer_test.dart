@@ -103,14 +103,12 @@ void main() {
     expect(await indexer.indexAll(), 0);
   });
 
-  test('extraction dirs are per-book and cleaned up after indexing', () async {
+  test('indexing never extracts books to disk', () async {
     addBookWithFile('epub', epubBytes());
     addBookWithFile('epub', epubBytes());
     await indexer.indexAll();
-    final root = Directory('${tmp.path}/.fts-extract');
-    if (root.existsSync()) {
-      expect(root.listSync(), isEmpty);
-    }
+    // Chapters are read straight from memory; no temp tree is created.
+    expect(Directory('${tmp.path}/.fts-extract').existsSync(), isFalse);
   });
 
   test('PDF-only book indexes zero rows', () async {

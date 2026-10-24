@@ -24,6 +24,7 @@ class _StorePageState extends State<StorePage> {
   String? _selectedStore;
   List<Map<String, Object?>>? _results;
   String? _resultsStore;
+  String? _searchError;
   final Set<int> _downloading = {};
 
   @override
@@ -49,10 +50,13 @@ class _StorePageState extends State<StorePage> {
     final storeName = _effectiveStore(stores);
     setState(() => _searching = true);
     List<Map<String, Object?>> results;
+    String? error;
     try {
       results = await appState.plugins.storeSearch(storeName, query);
-    } catch (_) {
+    } catch (e) {
+      // A failing store must not masquerade as "No results".
       results = const [];
+      error = e.toString();
     }
     if (mounted) {
       setState(() {
@@ -60,6 +64,7 @@ class _StorePageState extends State<StorePage> {
         _downloading.clear();
         _results = results;
         _resultsStore = storeName;
+        _searchError = error;
       });
     } else {
       _searching = false;
@@ -215,6 +220,14 @@ class _StorePageState extends State<StorePage> {
   }
 
   Widget _buildResults(String storeName) {
+    final error = _searchError;
+    if (error != null) {
+      return _StatusPage(
+        icon: Icons.error_outline,
+        title: 'Search failed',
+        description: error,
+      );
+    }
     final results = _results;
     if (results == null) {
       return const _StatusPage(

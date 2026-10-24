@@ -489,4 +489,61 @@ CREATE TABLE books (
       reopened.close();
     });
   });
+
+  group('Library performance and indexes', () {
+    test('addBooks writes a large batch and hydrates every chunk', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final books = [
+        for (var i = 0; i < 1000; i++)
+          Book(
+            title: 'Book ${i.toString().padLeft(4, '0')}',
+            authors: ['Author ${i % 7}'],
+            tags: ['tag${i % 5}'],
+            formats: const ['epub'],
+            path: '/books/$i.epub',
+          ),
+      ];
+
+      expect(lib.addBooks(books), hasLength(1000));
+      expect(books.first.id, isNotNull);
+      expect(books.last.id, books.first.id! + 999);
+
+      final loaded = lib.allBooks();
+      expect(loaded, hasLength(1000));
+      // 500 is the IN-chunk boundary: links must be complete on both sides.
+      for (final index in [0, 499, 500, 999]) {
+        expect(loaded[index].authors, ['Author ${index % 7}']);
+        expect(loaded[index].tags, ['tag${index % 5}']);
+        expect(loaded[index].formats, ['epub']);
+      }
+    });
+
+    test('file-backed libraries run in WAL mode', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-wal-');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final path = p.join(tmp.path, 'library.db');
+      final lib = Library(path);
+      addTearDown(lib.close);
+
+      lib.addBook(Book(title: 'Dune'));
+
+      // WAL keeps a -wal sidecar next to the database while it is open.
+      expect(File('$path-wal').existsSync(), isTrue);
+    });
+
+    test('catalog search treats % and _ literally', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      lib.addBooks([
+        Book(title: '100% Pure'),
+        Book(title: '100x Pure'),
+        Book(title: 'a_b'),
+        Book(title: 'axb'),
+      ]);
+
+      expect(lib.search('100%').map((b) => b.title), ['100% Pure']);
+      expect(lib.search('a_b').map((b) => b.title), ['a_b']);
+    });
+  });
 }

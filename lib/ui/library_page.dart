@@ -32,7 +32,13 @@ class LibraryPage extends StatelessWidget {
 
     final grid = state.books.isEmpty
         ? (hasQuery
-            ? const SizedBox.shrink()
+            ? Center(
+                child: Text(
+                  hits.isEmpty
+                      ? 'No results for “$query”.'
+                      : 'No matching titles for “$query”.',
+                ),
+              )
             : const Center(child: Text('No books in your library yet.')))
         : GridView.builder(
             padding: const EdgeInsets.all(12),

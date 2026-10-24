@@ -189,8 +189,10 @@ class _VellumAppState extends State<VellumApp> {
   final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
 
   void _focusLibrarySearch() {
-    // Pop any pushed routes so the HomePage (and its search field) is visible.
-    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    // Only act while the home route is on top: popping the reader (or any
+    // other pushed route) would throw away the user's current view.
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null || navigator.canPop()) return;
     _homeKey.currentState?.focusLibrarySearch();
   }
 
