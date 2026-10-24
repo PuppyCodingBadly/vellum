@@ -17,7 +17,11 @@ class PluginController extends ChangeNotifier {
   PluginController({
     required this.pluginDir,
     SidecarClient? client,
-  }) : client = client ?? SidecarClient();
+  }) : client = client ?? SidecarClient() {
+    // A fresh sidecar process starts with an empty plugin registry; reload it
+    // before retried requests reach the plugins.
+    this.client.onRestart = _restoreAfterRestart;
+  }
 
   final String pluginDir;
   final SidecarClient client;
@@ -52,6 +56,16 @@ class PluginController extends ChangeNotifier {
     debugPrint('Vellum: loaded ${_metadata.length} metadata plugins and '
         '${_stores.length} store plugins');
     _notify();
+  }
+
+  /// Re-loads every plugin after the sidecar process was respawned.
+  Future<void> _restoreAfterRestart() async {
+    if (_disposed) return;
+    _started = false;
+    _metadata = const [];
+    _stores = const [];
+    _notify();
+    await _loadAll();
   }
 
   Future<void> _ensureStarted() async {
@@ -133,6 +147,7 @@ class PluginController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    client.onRestart = null;
     unawaited(client.dispose());
     super.dispose();
   }

@@ -118,6 +118,12 @@ class SidecarClient {
   final Map<int, _Pending> _pending = {};
   bool _disposed = false;
   Future<Process>? _starting;
+  Future<void>? _restartFuture;
+
+  /// Runs after the sidecar process dies, before in-flight requests are
+  /// retried. The plugin controller uses it to restore the plugin registry in
+  /// the fresh process; null means no state to restore.
+  Future<void> Function()? onRestart;
 
   /// Captured stderr lines from the sidecar process.
   final List<String> stderrLog = [];
@@ -214,19 +220,54 @@ class SidecarClient {
       _pending.clear();
       return;
     }
-    // Died with requests in flight: restart once and retry each once.
+    // Died with requests in flight: restore process state, then retry each
+    // request once.
     final pending = _pending.values.toList();
     _pending.clear();
     for (final p in pending) {
       p.timer?.cancel();
+    }
+    unawaited(_restartPending(pending));
+  }
+
+  Future<void> _restartPending(List<_Pending> pending) async {
+    try {
+      await _waitForRestart();
+    } catch (error) {
+      final wrapped =
+          error is SidecarException ? error : SidecarException('$error');
+      for (final p in pending) {
+        if (!p.completer.isCompleted) p.completer.completeError(wrapped);
+      }
+      return;
+    }
+    if (_disposed) {
+      for (final p in pending) {
+        if (!p.completer.isCompleted) {
+          p.completer.completeError(SidecarException('sidecar disposed'));
+        }
+      }
+      return;
+    }
+    for (final p in pending) {
       if (p.retried) {
-        p.completer.completeError(
-            SidecarException('sidecar process died mid-request'));
+        if (!p.completer.isCompleted) {
+          p.completer.completeError(
+              SidecarException('sidecar process died mid-request'));
+        }
         continue;
       }
       p.retried = true;
       _retry(p);
     }
+  }
+
+  /// Runs [onRestart] once per process death, sharing the in-flight run.
+  Future<void> _waitForRestart() {
+    final hook = onRestart;
+    if (hook == null) return Future<void>.value();
+    return _restartFuture ??=
+        Future<void>.sync(hook).whenComplete(() => _restartFuture = null);
   }
 
   Future<void> _retry(_Pending p) async {

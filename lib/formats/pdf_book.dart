@@ -12,6 +12,16 @@ import 'package:pdfium_dart/pdfium_dart.dart';
 /// Default rasterization scale (1.0 = PDF points at 72 dpi).
 const defaultScale = 1.75;
 
+/// Typed failure from PDFium rasterization, safe to show to the reader.
+class PdfRenderException implements Exception {
+  const PdfRenderException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Reads a PDF document and rasterizes pages to PNG with PDFium.
 ///
 /// The document is opened synchronously; use [renderPage] for pixels and
@@ -52,6 +62,16 @@ class PdfBook {
   late final FPDF_DOCUMENT _doc;
   bool _closed = false;
 
+  /// Largest bitmap rendered in one call: 100 MP (≈400 MB of BGRA pixels).
+  ///
+  /// Crafted MediaBoxes and deep zooms must fail before allocating, not take
+  /// the process down with an OOM.
+  static const int maxRasterPixels = 100 * 1000 * 1000;
+
+  void _ensureOpen() {
+    if (_closed) throw StateError('PDF document is closed: $_path');
+  }
+
   /// Close the PDFium document, releasing native resources.
   ///
   /// Safe to call more than once; later calls are no-ops.
@@ -59,6 +79,44 @@ class PdfBook {
     if (_closed) return;
     _closed = true;
     _library.FPDF_CloseDocument(_doc);
+  }
+
+  /// Releases PDFium's process-global resources.
+  ///
+  /// Only call once the isolate owning this library is finished with every
+  /// document (the reader worker calls it just before exiting).
+  static void shutdownLibrary() {
+    final pdfium = _pdfiumCache;
+    if (pdfium == null) return;
+    _pdfiumCache = null;
+    pdfium.FPDF_DestroyLibrary();
+  }
+
+  /// Bitmap size for a page of [widthPoints]×[heightPoints] at [scale].
+  ///
+  /// Clamps each dimension to 1 px, then throws [PdfRenderException] when the
+  /// pixel count would exceed [maxRasterPixels] — before any allocation.
+  static ({int width, int height}) rasterSize(
+    double widthPoints,
+    double heightPoints,
+    double scale,
+  ) {
+    if (!scale.isFinite || scale <= 0) {
+      throw const PdfRenderException('invalid PDF render scale');
+    }
+    if (!widthPoints.isFinite || !heightPoints.isFinite) {
+      throw const PdfRenderException('PDF page has an invalid size');
+    }
+    final width =
+        (widthPoints * scale).round().clamp(1, 1 << 30);
+    final height =
+        (heightPoints * scale).round().clamp(1, 1 << 30);
+    if (width * height > maxRasterPixels) {
+      throw const PdfRenderException(
+        'PDF page is too large to render at this zoom',
+      );
+    }
+    return (width: width, height: height);
   }
 
   static PDFium? _pdfiumCache;
@@ -104,12 +162,16 @@ class PdfBook {
   }
 
   /// Total number of pages in the document.
-  int pageCount() => _library.FPDF_GetPageCount(_doc);
+  int pageCount() {
+    _ensureOpen();
+    return _library.FPDF_GetPageCount(_doc);
+  }
 
   /// Page label for [index], falling back to `Page ${index + 1}`.
   ///
   /// Throws [RangeError] when [index] is out of bounds.
   String titleAt(int index) {
+    _ensureOpen();
     final count = pageCount();
     if (index < 0 || index >= count) {
       throw RangeError.range(index, 0, count - 1, 'index');
@@ -145,37 +207,43 @@ class PdfBook {
   /// Throws [RangeError] when [index] is out of bounds and
   /// [FormatException] when PDFium cannot render the page.
   Future<Uint8List> renderPage(int index, {double scale = defaultScale}) async {
+    _ensureOpen();
     final count = pageCount();
     if (index < 0 || index >= count) {
       throw RangeError.range(index, 0, count - 1, 'index');
     }
     final page = _library.FPDF_LoadPage(_doc, index);
     if (page == ffi.nullptr) {
-      throw FormatException('failed to render page $index: $_path');
+      throw PdfRenderException('failed to render page ${index + 1}');
     }
     FPDF_BITMAP bitmap = ffi.nullptr;
     try {
-      final width =
-          (_library.FPDF_GetPageWidthF(page) * scale).round().clamp(1, 1 << 30);
-      final height = (_library.FPDF_GetPageHeightF(page) * scale)
-          .round()
-          .clamp(1, 1 << 30);
-      bitmap = _library.FPDFBitmap_Create(width, height, 1);
+      final width = (_library.FPDF_GetPageWidthF(page) * scale);
+      final height = (_library.FPDF_GetPageHeightF(page) * scale);
+      final size = rasterSize(width, height, 1.0);
+      bitmap = _library.FPDFBitmap_Create(size.width, size.height, 1);
       if (bitmap == ffi.nullptr) {
-        throw FormatException('failed to render page $index: $_path');
+        throw PdfRenderException('failed to render page ${index + 1}');
       }
-      _library.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
-      _library.FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, 0);
+      final rasterWidth = size.width;
+      final rasterHeight = size.height;
+      _library.FPDFBitmap_FillRect(
+          bitmap, 0, 0, rasterWidth, rasterHeight, 0xFFFFFFFF);
+      _library.FPDF_RenderPageBitmap(
+          bitmap, page, 0, 0, rasterWidth, rasterHeight, 0, 0);
       final buffer = _library.FPDFBitmap_GetBuffer(bitmap);
       final stride = _library.FPDFBitmap_GetStride(bitmap);
       if (buffer == ffi.nullptr || stride <= 0) {
-        throw FormatException('failed to render page $index: $_path');
+        throw PdfRenderException('failed to render page ${index + 1}');
       }
       // PDFium's default bitmap format is BGRA8888.
       final image = img.Image.fromBytes(
-        width: width,
-        height: height,
-        bytes: buffer.cast<ffi.Uint8>().asTypedList(stride * height).buffer,
+        width: rasterWidth,
+        height: rasterHeight,
+        bytes: buffer
+            .cast<ffi.Uint8>()
+            .asTypedList(stride * rasterHeight)
+            .buffer,
         rowStride: stride,
         order: img.ChannelOrder.bgra,
       );

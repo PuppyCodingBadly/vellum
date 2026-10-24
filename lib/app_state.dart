@@ -42,6 +42,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     plugins.removeListener(notifyListeners);
     plugins.dispose();
+    library.close();
     super.dispose();
   }
 
@@ -134,13 +135,34 @@ class AppState extends ChangeNotifier {
 
   // --- library switching ---
 
+  /// Number of open reader screens holding the current [library].
+  int _openReaders = 0;
+
+  /// Whether a reader is open; switching libraries is refused while true.
+  bool get hasOpenReaders => _openReaders > 0;
+
+  /// Registers a reader that reads and writes the current [library].
+  void registerReader() {
+    _openReaders++;
+  }
+
+  /// Unregisters a reader created after [registerReader].
+  void unregisterReader() {
+    if (_openReaders > 0) _openReaders--;
+  }
+
   /// Switches to the library database inside [dir].
   ///
   /// Validates that [dir] exists (creating it if necessary) and is writable,
   /// opens `<dir>/library.db` and only then replaces the current library.
   /// Returns null on success or an error message on failure; on failure the
-  /// previous library stays active.
+  /// previous library stays active. Refused while a reader is open, because
+  /// closing the connection under a live reader would drop its position and
+  /// highlight writes.
   Future<String?> switchLibraryDirectory(String dir) async {
+    if (hasOpenReaders) {
+      return 'Close the open book before switching libraries';
+    }
     final target = dir.trim();
     if (target.isEmpty) return 'No directory selected';
     Library? opened;
@@ -157,11 +179,7 @@ class AppState extends ChangeNotifier {
     }
     final previous = library;
     library = opened;
-    try {
-      previous.close();
-    } catch (_) {
-      // The old connection is already unreachable; ignore close failures.
-    }
+    previous.close();
     // Rebind services to the new library so searches and stats hit the new
     // database instead of the replaced one.
     fts = FtsIndexer(opened);

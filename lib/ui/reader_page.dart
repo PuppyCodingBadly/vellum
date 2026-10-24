@@ -65,6 +65,7 @@ class _ReaderPageState extends State<ReaderPage> {
     _appState = appState;
     final controller = _controller;
     if (controller == null) {
+      appState.registerReader();
       final created = ReaderController(
         book: widget.book,
         library: appState.library,
@@ -98,6 +99,7 @@ class _ReaderPageState extends State<ReaderPage> {
     if (controller != null) {
       controller.removeListener(_onControllerChanged);
       controller.dispose();
+      _appState?.unregisterReader();
     }
     final appState = _appState;
     if (appState != null) {
@@ -961,7 +963,9 @@ class _ReaderPageState extends State<ReaderPage> {
     _ReaderColors colors,
   ) {
     final bytes = controller.pdfPageBytes;
-    _currentContentKey = 'pdf-${controller.index}';
+    final error = controller.pdfRenderError;
+    _currentContentKey =
+        error == null ? 'pdf-${controller.index}' : 'pdf-${controller.index}-error';
     return GestureDetector(
       onHorizontalDragEnd: _onSwipe,
       child: SizedBox.expand(
@@ -972,9 +976,35 @@ class _ReaderPageState extends State<ReaderPage> {
           child: SizedBox.expand(
             key: ValueKey<String>(_currentContentKey),
             child: bytes == null
-                ? Center(
-                    child: CircularProgressIndicator(color: colors.foreground),
-                  )
+                ? error == null
+                    ? Center(
+                        child:
+                            CircularProgressIndicator(color: colors.foreground),
+                      )
+                    : Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(32),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.broken_image_outlined,
+                                size: 56,
+                                color: colors.foreground.withValues(alpha: 0.7),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                error,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color:
+                                      colors.foreground.withValues(alpha: 0.8),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
                 : Image.memory(
                     bytes,
                     fit: BoxFit.contain,
