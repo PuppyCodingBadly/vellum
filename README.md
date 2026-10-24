@@ -1,5 +1,7 @@
 # Vellum
 
+> **Contributors/agents: see [ACTION_PLAN.md](ACTION_PLAN.md) — the prioritized, executable improvement plan for this repo.**
+
 Vellum is a calibre-inspired ebook library manager for Linux desktop. It keeps the
 catalogue in a local SQLite database, reads EPUB, MOBI, and PDF books, and
 looks up metadata and covers from several online sources.
