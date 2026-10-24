@@ -10,7 +10,11 @@ import 'package:vellum/formats/pdf_book.dart';
 const _pngMagic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
 /// Build a minimal valid multi-page PDF with a real xref table.
-String _makePdf(String path, [List<String> texts = const ['Hello page one', 'Hello page two']]) {
+String _makePdf(
+  String path, [
+  List<String> texts = const ['Hello page one', 'Hello page two'],
+  String mediaBox = '0 0 612 792',
+]) {
   final objects = <List<int>>[];
   objects.add('<< /Type /Catalog /Pages 2 0 R >>'.codeUnits);
   final kids = [for (var i = 0; i < texts.length; i++) '${3 + i * 2} 0 R'].join(' ');
@@ -19,7 +23,7 @@ String _makePdf(String path, [List<String> texts = const ['Hello page one', 'Hel
   for (var i = 0; i < texts.length; i++) {
     final content = 'BT /F1 24 Tf 72 700 Td (${texts[i]}) Tj ET';
     objects.add(
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+      '<< /Type /Page /Parent 2 0 R /MediaBox [$mediaBox] '
               '/Resources << /Font << /F1 $fontObj 0 R >> >> '
               '/Contents ${4 + i * 2} 0 R >>'
           .codeUnits,
@@ -96,5 +100,47 @@ void main() {
     final pdf = PdfBook(_makePdf('${tmp.path}/book.pdf'));
     pdf.close();
     expect(() => pdf.close(), returnsNormally); // safe to call twice
+  });
+
+  test('closed book rejects use instead of touching native handles', () {
+    final pdf = PdfBook(_makePdf('${tmp.path}/book.pdf'));
+    pdf.close();
+
+    expect(() => pdf.pageCount(), throwsStateError);
+    expect(() => pdf.titleAt(0), throwsStateError);
+    expect(() => pdf.renderPage(0), throwsStateError);
+  });
+
+  test('rejects rasters above the pixel budget before allocating', () {
+    // 20000×20000 = 400 MP, four times the budget.
+    expect(
+      () => PdfBook.rasterSize(20000, 20000, 1),
+      throwsA(isA<PdfRenderException>()),
+    );
+    // A sane page at an absurd zoom also fails (595×842 → 11900×16840 px).
+    expect(
+      () => PdfBook.rasterSize(595, 842, 20.0),
+      throwsA(isA<PdfRenderException>()),
+    );
+    expect(PdfBook.rasterSize(595, 842, defaultScale),
+        (width: 1041, height: 1474));
+    expect(PdfBook.rasterSize(0, 0, 1), (width: 1, height: 1));
+  });
+
+  test('huge MediaBox render fails with a typed error, no allocation', () {
+    final pdf = PdfBook(_makePdf('${tmp.path}/huge.pdf', const ['x'],
+        '0 0 20000 20000'));
+
+    expect(
+      pdf.renderPage(0),
+      throwsA(
+        isA<PdfRenderException>().having(
+          (error) => error.message,
+          'message',
+          contains('too large'),
+        ),
+      ),
+    );
+    pdf.close();
   });
 }

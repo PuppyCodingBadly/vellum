@@ -17,7 +17,19 @@ import 'models.dart';
 /// with `PRAGMA foreign_keys = ON`.
 class Library {
   final String path;
-  late final Database _db;
+
+  /// Live connection; null once [close] ran.
+  Database? _connection;
+
+  /// The connection, rejecting use after [close] instead of writing to a
+  /// disposed handle (or, worse, the previous library file).
+  Database get _db {
+    final connection = _connection;
+    if (connection == null) {
+      throw StateError('Library $path is closed');
+    }
+    return connection;
+  }
 
   /// Whether the FTS5 module is available; when false a plain fallback
   /// `book_fts` table is used instead.
@@ -47,7 +59,7 @@ class Library {
 
   Library(this.path) {
     _ensureSqliteOverride();
-    _db = path == ':memory:' ? sqlite3.openInMemory() : sqlite3.open(path);
+    _connection = path == ':memory:' ? sqlite3.openInMemory() : sqlite3.open(path);
     _db.execute('PRAGMA foreign_keys = ON');
     _createSchema();
     _migrate();
@@ -60,12 +72,16 @@ class Library {
     return File(path).absolute.parent.path;
   }
 
-  /// Closes the connection. Only meaningful for `:memory:` databases;
-  /// for file-backed libraries the persistent connection is kept and this
-  /// is a no-op (matching the Python contract "close only matters for
-  /// `:memory:`").
+  /// Closes the connection; idempotent.
+  ///
+  /// Every later operation throws [StateError] rather than touching a disposed
+  /// handle, so a stale [Library] reference fails loudly instead of silently
+  /// writing to the wrong database.
   void close() {
-    if (path == ':memory:') _db.dispose();
+    final connection = _connection;
+    if (connection == null) return;
+    _connection = null;
+    connection.dispose();
   }
 
   static const _schema = '''

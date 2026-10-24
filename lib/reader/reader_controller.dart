@@ -157,6 +157,7 @@ class ReaderController extends ChangeNotifier {
   double _zoom;
   int _pdfSerial = 0;
   bool _pdfPageLoading = false;
+  String? _pdfRenderError;
   bool _loaded = false;
   bool _sessionStarted = false;
   bool _disposed = false;
@@ -235,6 +236,9 @@ class ReaderController extends ChangeNotifier {
 
   /// True while the current PDF page is still rendering.
   bool get pdfPageLoading => isPdf && _pdfPageLoading;
+
+  /// Human-readable reason the current PDF page failed to render, if any.
+  String? get pdfRenderError => isPdf ? _pdfRenderError : null;
 
   /// Title of the current item.
   String get itemTitle {
@@ -430,6 +434,8 @@ class ReaderController extends ChangeNotifier {
         // Statistics failures must not break navigation away.
       }
     }
+    _pdf?.close();
+    _pdf = null;
     _pdfWorker.dispose();
     super.dispose();
   }
@@ -650,6 +656,7 @@ class ReaderController extends ChangeNotifier {
     final current = _index;
     _touchPdfCache(current);
     _pdfPageLoading = !_pdfCache.containsKey(current);
+    _pdfRenderError = null;
     notifyListeners();
 
     final targets = <int>[current];
@@ -663,15 +670,17 @@ class ReaderController extends ChangeNotifier {
 
   Future<void> _renderPdfPage(int serial, int target, double scale) async {
     Uint8List? bytes;
+    String? failure;
     try {
+      // All PDFium access belongs to the worker isolate: PDFium is
+      // process-global and not thread-safe, so a UI-isolate fallback would
+      // race a render already in flight and crash the process.
       bytes = await _pdfWorker.render(target, scale);
-    } catch (_) {
+    } catch (error) {
       if (_disposed) return;
-      try {
-        bytes = await _pdf!.renderPage(target, scale: scale);
-      } catch (_) {
-        bytes = null;
-      }
+      failure = error is PdfRenderException
+          ? error.message
+          : 'Could not render this page';
     }
     if (_disposed) return;
     if (serial != _pdfSerial || (scale - _pdfScale).abs() > 1e-9) {
@@ -682,6 +691,7 @@ class ReaderController extends ChangeNotifier {
       if (target == _index) _pdfPageLoading = false;
     } else if (target == _index) {
       _pdfPageLoading = false;
+      _pdfRenderError = failure ?? 'Could not render this page';
     }
     notifyListeners();
   }
@@ -715,6 +725,13 @@ class _PdfWorker {
       <int, Completer<Uint8List>>{};
   int _nextId = 0;
   bool _closed = false;
+  bool _tornDown = false;
+  Completer<void>? _closeAck;
+  ReceivePort? _errorPort;
+  ReceivePort? _exitPort;
+
+  /// How long the worker gets to close its document before it is killed.
+  static const Duration _closeTimeout = Duration(seconds: 2);
 
   Future<Uint8List> render(int index, double scale) async {
     if (_closed) throw StateError('PDF renderer is closed');
@@ -740,17 +757,26 @@ class _PdfWorker {
     _receive = receive;
     receive.listen(_onMessage);
     final errorPort = ReceivePort();
+    _errorPort = errorPort;
     errorPort.listen((message) {
+      _failPending(StateError('PDF renderer failed: $message'));
       if (!_ready.isCompleted) {
         _ready.completeError(StateError('PDF renderer failed: $message'));
       }
-      errorPort.close();
+    });
+    final exitPort = ReceivePort();
+    _exitPort = exitPort;
+    exitPort.listen((_) {
+      exitPort.close();
+      if (_closed) return; // Expected: dispose kills the isolate.
+      _failPending(StateError('PDF renderer exited unexpectedly'));
     });
     try {
       final isolate = await Isolate.spawn(
         _entry,
         <Object>[receive.sendPort, path],
         onError: errorPort.sendPort,
+        onExit: exitPort.sendPort,
         errorsAreFatal: false,
       );
       _isolate = isolate;
@@ -760,15 +786,27 @@ class _PdfWorker {
       }
     } catch (error) {
       errorPort.close();
+      exitPort.close();
       if (!_ready.isCompleted) _ready.completeError(error);
     }
     _sendPort = await _ready.future;
-    errorPort.close();
+  }
+
+  void _failPending(StateError error) {
+    for (final completer in _pending.values) {
+      if (!completer.isCompleted) completer.completeError(error);
+    }
+    _pending.clear();
   }
 
   void _onMessage(Object? message) {
     if (message is SendPort) {
       if (!_ready.isCompleted) _ready.complete(message);
+      return;
+    }
+    if (message is List && message.length == 1 && message[0] == 'closed') {
+      final ack = _closeAck;
+      if (ack != null && !ack.isCompleted) ack.complete();
       return;
     }
     if (message is List && message.length == 3) {
@@ -781,8 +819,9 @@ class _PdfWorker {
       if (bytes is Uint8List) {
         completer.complete(bytes);
       } else {
+        // Keep the failure typed and readable: the reader shows this text.
         completer.completeError(
-          StateError(error is String ? error : 'PDF render failed'),
+          PdfRenderException(error is String ? error : 'PDF render failed'),
         );
       }
     }
@@ -797,8 +836,17 @@ class _PdfWorker {
     PdfBook? pdf;
     var chain = Future<void>.value();
     receive.listen((message) {
+      final request = message as List;
+      if (request.length == 1 && request[0] == 'close') {
+        chain = chain.then((_) {
+          pdf?.close();
+          pdf = null;
+          PdfBook.shutdownLibrary();
+          replyPort.send(const <Object>['closed']);
+        });
+        return;
+      }
       chain = chain.then((_) async {
-        final request = message as List;
         final id = request[0] as int;
         final index = request[1] as int;
         final scale = (request[2] as num).toDouble();
@@ -816,16 +864,40 @@ class _PdfWorker {
     });
   }
 
+  /// Stops the worker: asks it to close its document, then kills it.
+  ///
+  /// [Isolate.kill] does not run cleanup, so the handshake is what releases
+  /// the worker's `FPDF_DOCUMENT` (and PDFium's global resources).
   void dispose() {
     if (_closed) return;
     _closed = true;
-    for (final completer in _pending.values) {
-      if (!completer.isCompleted) {
-        completer.completeError(StateError('PDF renderer is closed'));
-      }
+    _failPending(StateError('PDF renderer is closed'));
+    final port = _sendPort;
+    if (port == null) {
+      _tearDown();
+      return;
     }
-    _pending.clear();
+    final ack = Completer<void>();
+    _closeAck = ack;
+    port.send(const <Object>['close']);
+    unawaited(
+      ack.future
+          .timeout(_closeTimeout)
+          .catchError((_) {})
+          .whenComplete(_tearDown),
+    );
+  }
+
+  void _tearDown() {
+    if (_tornDown) return;
+    _tornDown = true;
     _receive?.close();
+    _receive = null;
+    _errorPort?.close();
+    _errorPort = null;
+    _exitPort?.close();
+    _exitPort = null;
     _isolate?.kill(priority: Isolate.immediate);
+    _isolate = null;
   }
 }

@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 import 'package:vellum/core/db.dart';
@@ -121,16 +123,6 @@ void main() {
       tmp.deleteSync(recursive: true);
     });
 
-    test('close on a file-backed library is a no-op', () {
-      final tmp = Directory.systemTemp.createTempSync('vellum-close');
-      final lib = Library('${tmp.path}/library.db');
-      lib.addBook(Book(title: 'T'));
-      lib.close();
-      // Persistent connection stays usable (Python contract: close only
-      // matters for :memory:).
-      expect(lib.allBooks(), hasLength(1));
-      tmp.deleteSync(recursive: true);
-    });
   });
 
   group('Library search', () {
@@ -466,6 +458,35 @@ CREATE TABLE books (
       expect(lib.searchBookContent('%%%'), isEmpty);
       lib.close();
       tmp.deleteSync(recursive: true);
+    });
+  });
+
+  group('Library.close', () {
+    test('is idempotent and rejects use afterwards', () {
+      final lib = Library(':memory:');
+      lib.addBook(Book(title: 'Dune'));
+
+      lib.close();
+      lib.close(); // second close is a no-op, not an error
+
+      expect(() => lib.allBooks(), throwsStateError);
+      expect(() => lib.addBook(Book(title: 'x')), throwsStateError);
+    });
+
+    test('file-backed close releases the database file', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-close-');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final path = p.join(tmp.path, 'library.db');
+
+      final lib = Library(path);
+      lib.addBook(Book(title: 'Dune'));
+      lib.close();
+      expect(() => lib.allBooks(), throwsStateError);
+
+      // Reopening proves the connection (and its file lock) was released.
+      final reopened = Library(path);
+      expect(reopened.allBooks().map((book) => book.title), ['Dune']);
+      reopened.close();
     });
   });
 }
