@@ -118,7 +118,7 @@ class HomePageState extends State<HomePage> {
       context: context,
       builder: (context) => const AboutDialog(
         applicationName: 'Vellum',
-        applicationVersion: '0.2.2',
+        applicationVersion: '0.2.3',
         applicationLegalese: 'GPL-3.0',
         children: [
           Text('A calibre-like ebook library manager.'),
