@@ -24,6 +24,24 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.3" date="2026-10-23">
+      <description>
+        <p>Log uncaught errors and startup stages to
+        <code>crash.log</code>, and honor <code>VELLUM_X11=1</code> for
+        safe mode on Wayland systems.</p>
+        <p>Close PDF and library handles deterministically, refuse library
+        switches while a book is open, and put a 100 MP cap on PDF
+        rasterization so oversized pages report an error instead of
+        exhausting memory.</p>
+        <p>Reload the plugin registry after the plugin sidecar restarts, so
+        searches keep working without an app restart.</p>
+        <p>Speed up large libraries: batched database hydration and writes,
+        WAL journaling, secondary indexes, in-memory full-text indexing, and
+        cover thumbnailing off the UI thread.</p>
+        <p>Ctrl+F no longer closes the reader, and empty or failed searches
+        explain themselves instead of rendering a blank page.</p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-10-20">
       <description>
         <p>Resolve download links from calibre store plugins such as
