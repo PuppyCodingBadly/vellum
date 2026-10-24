@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../core/db.dart';
+import '../core/models.dart';
 import '../formats/epub.dart';
 import '../formats/mobi.dart';
 import '../formats/text_extract.dart';
@@ -49,9 +50,58 @@ class FtsIndexer {
     };
   }
 
-  /// Per-book extraction directory under `<baseDir>/.fts-extract`.
-  Directory _extractDir(int bookId) => Directory(
-      '${_library.baseDir}${Platform.pathSeparator}.fts-extract${Platform.pathSeparator}$bookId');
+  /// Extracts FTS rows for [book] from memory.
+  ///
+  /// Returns null when the file cannot be parsed; PDFs and other formats
+  /// yield zero rows (their content is image-rendered).
+  Future<List<Map<String, Object>>?> _extractRows(Book book) async {
+    final rows = <Map<String, Object>>[];
+    final formats = book.formats.map((e) => e.toLowerCase()).toList();
+    try {
+      if (formats.contains('epub')) {
+        final epub = EpubBook(book.path);
+        final chapters = epub.chapters();
+        for (var i = 0; i < chapters.length; i++) {
+          rows.add({
+            'chapter': i,
+            'title': chapters[i].$2,
+            'content': htmlToText(epub.chapterSource(i)),
+          });
+        }
+      } else if (formats.contains('mobi')) {
+        final mobi = MobiBook(book.path);
+        final sections = mobi.sections();
+        for (var i = 0; i < sections.length; i++) {
+          rows.add({
+            'chapter': i,
+            'title': sections[i].$2,
+            'content': htmlToText(mobi.sectionSource(i)),
+          });
+        }
+      }
+    } catch (e) {
+      stderr.writeln('FtsIndexer: failed to index book ${book.id}: $e');
+      return null;
+    }
+    return rows;
+  }
+
+  /// Records the indexed file signature in [state]; returns true if changed.
+  bool _recordSignature(Map<String, dynamic> state, Book book) {
+    final key = book.id.toString();
+    final sig = _fileSignature(book.path);
+    if (sig == null) {
+      return state.remove(key) != null;
+    }
+    final saved = state[key];
+    if (saved is Map &&
+        saved['mtimeMs'] == sig['mtimeMs'] &&
+        saved['size'] == sig['size']) {
+      return false;
+    }
+    state[key] = sig;
+    return true;
+  }
 
   /// Indexes a single book, replacing any previous FTS rows for it.
   ///
@@ -60,64 +110,11 @@ class FtsIndexer {
   Future<bool> indexBook(int bookId) async {
     final book = _library.getBook(bookId);
     if (book == null) return false;
-    final rows = <Map<String, Object>>[];
-    final formats = book.formats.map((e) => e.toLowerCase()).toList();
-
-    if (formats.contains('epub')) {
-      // Extract per book so concurrent/sequential books never share stale
-      // content, and clean up afterwards to avoid disk accumulation.
-      final extractDir = _extractDir(bookId);
-      if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
-      try {
-        final epub = EpubBook(book.path);
-        final chapters = epub.chapters();
-        epub.extractTo(extractDir.path);
-        for (var i = 0; i < chapters.length; i++) {
-          final (_, title) = chapters[i];
-          final file = epub.chapterFile(extractDir.path, i);
-          final html = await File(file).readAsString();
-          rows.add({'chapter': i, 'title': title, 'content': htmlToText(html)});
-        }
-      } catch (e) {
-        stderr.writeln('FtsIndexer: failed to index epub $bookId: $e');
-        return false;
-      } finally {
-        if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
-      }
-    } else if (formats.contains('mobi')) {
-      // MOBI sectionHtml() extracts images into a fresh system-temp dir
-      // that is never removed; route it into a per-book dir we clean up.
-      final extractDir = _extractDir(bookId);
-      if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
-      try {
-        final mobi = MobiBook(book.path);
-        final sections = mobi.sections();
-        mobi.extractTo(extractDir.path);
-        for (var i = 0; i < sections.length; i++) {
-          rows.add({
-            'chapter': i,
-            'title': sections[i].$2,
-            'content': htmlToText(mobi.sectionHtml(i)),
-          });
-        }
-      } catch (e) {
-        stderr.writeln('FtsIndexer: failed to index mobi $bookId: $e');
-        return false;
-      } finally {
-        if (extractDir.existsSync()) extractDir.deleteSync(recursive: true);
-      }
-    }
-    // PDF and other formats: zero rows (image-rendered content).
-
+    final rows = await _extractRows(book);
+    if (rows == null) return false;
     _library.replaceBookFts(bookId, rows);
-
     final state = _loadState();
-    final sig = _fileSignature(book.path);
-    if (sig != null) {
-      state[bookId.toString()] = sig;
-    } else {
-      state.remove(bookId.toString());
-    }
+    _recordSignature(state, book);
     _saveState(state);
     return true;
   }
@@ -127,27 +124,30 @@ class FtsIndexer {
   /// number of books (re-)indexed.
   Future<int> indexAll({bool force = false}) async {
     final state = _loadState();
-    var indexed = 0;
+    final pending = <int, List<Map<String, Object>>>{};
+    var stateDirty = false;
     for (final book in _library.allBooks(includeHidden: true)) {
       final id = book.id;
       if (id == null) continue;
-      if (!force) {
-        final sig = _fileSignature(book.path);
-        final saved = state[id.toString()];
-        if (sig != null &&
-            saved is Map &&
-            saved['mtimeMs'] == sig['mtimeMs'] &&
-            saved['size'] == sig['size']) {
-          continue; // unchanged
-        }
-      }
-      try {
-        if (await indexBook(id)) indexed++;
-      } catch (e) {
-        stderr.writeln('FtsIndexer: skipping book $id: $e');
-      }
+      if (!force && !_needsIndex(state, book)) continue;
+      final rows = await _extractRows(book);
+      if (rows == null) continue; // parse failure: keep previous rows
+      pending[id] = rows;
+      stateDirty = _recordSignature(state, book) || stateDirty;
     }
-    return indexed;
+    if (pending.isNotEmpty) _library.replaceBookFtsMany(pending);
+    if (stateDirty) _saveState(state);
+    return pending.length;
+  }
+
+  /// True when [book]'s file mtime/size differs from the recorded signature.
+  bool _needsIndex(Map<String, dynamic> state, Book book) {
+    final sig = _fileSignature(book.path);
+    final saved = state[book.id.toString()];
+    return sig == null ||
+        saved is! Map ||
+        saved['mtimeMs'] != sig['mtimeMs'] ||
+        saved['size'] != sig['size'];
   }
 
   /// Removes a book's FTS rows and indexed-state entry.

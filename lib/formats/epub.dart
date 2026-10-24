@@ -35,6 +35,10 @@ class EpubBook {
     } catch (e) {
       throw FormatException('Not a valid epub file: $path', e);
     }
+    _entries = <String, ArchiveFile>{
+      for (final file in _archive.files)
+        if (file.isFile) file.name: file,
+    };
 
     final containerData = _readEntry(_containerPath);
     if (containerData == null) {
@@ -135,6 +139,10 @@ class EpubBook {
   }
 
   late final Archive _archive;
+
+  /// Archive entries by name: O(1) lookups instead of linear scans.
+  late final Map<String, ArchiveFile> _entries;
+
   late final String _opfPath;
   late final String _opfDir;
   late final List<(String, String)> _chapters;
@@ -171,6 +179,22 @@ class EpubBook {
     return '$opfDir/${href.split('/').join('/')}';
   }
 
+  /// Raw XHTML of chapter [index] straight from the in-memory archive.
+  ///
+  /// Used for indexing: no extraction round trip, no temp files.
+  String chapterSource(int index) {
+    if (index < 0 || index >= _chapters.length) {
+      throw RangeError.index(index, _chapters, 'chapter index out of range');
+    }
+    final (href, _) = _chapters[index];
+    final name = _opfDir.isEmpty ? href : '$_opfDir/$href';
+    final entry = _entries[name] ?? _entries[href];
+    if (entry == null) {
+      throw FormatException('Missing chapter $name in $_opfPath');
+    }
+    return utf8.decode(entry.content as List<int>, allowMalformed: true);
+  }
+
   // -- internals -------------------------------------------------------------
 
   /// Normalize a zip entry name posix-style; returns null when the entry is
@@ -191,21 +215,15 @@ class EpubBook {
   }
 
   String? _readEntry(String name) {
-    for (final file in _archive.files) {
-      if (file.isFile && file.name == name) {
-        return utf8.decode(file.content as List<int>, allowMalformed: true);
-      }
-    }
-    return null;
+    final entry = _entries[name];
+    if (entry == null) return null;
+    return utf8.decode(entry.content as List<int>, allowMalformed: true);
   }
 
   List<int>? _readEntryBytes(String name) {
-    for (final file in _archive.files) {
-      if (file.isFile && file.name == name) {
-        return file.content as List<int>;
-      }
-    }
-    return null;
+    final entry = _entries[name];
+    if (entry == null) return null;
+    return entry.content as List<int>;
   }
 
   Map<String, String> _loadTitles(String? ncxHref, String? navHref) {

@@ -60,10 +60,34 @@ class Library {
   Library(this.path) {
     _ensureSqliteOverride();
     _connection = path == ':memory:' ? sqlite3.openInMemory() : sqlite3.open(path);
+    if (path != ':memory:') {
+      // One writer plus concurrent readers; NORMAL is durable enough for a
+      // catalogue and removes an fsync per commit.
+      _db.execute('PRAGMA journal_mode = WAL');
+      _db.execute('PRAGMA synchronous = NORMAL');
+    }
     _db.execute('PRAGMA foreign_keys = ON');
     _createSchema();
     _migrate();
+    _write(_createIndexes);
   }
+
+  /// Secondary indexes; created after migrations so old databases that lack
+  /// the `hidden` column can be upgraded first.
+  void _createIndexes() {
+    _db.execute(_indexSchema);
+  }
+
+  static const _indexSchema = '''
+CREATE INDEX IF NOT EXISTS books_title ON books(title);
+CREATE INDEX IF NOT EXISTS books_hidden_title ON books(hidden, title);
+CREATE INDEX IF NOT EXISTS book_authors_book ON book_authors(book_id);
+CREATE INDEX IF NOT EXISTS book_tags_book ON book_tags(book_id);
+CREATE INDEX IF NOT EXISTS formats_book ON formats(book_id);
+CREATE INDEX IF NOT EXISTS highlights_book ON highlights(book_id);
+CREATE INDEX IF NOT EXISTS reading_sessions_book ON reading_sessions(book_id);
+CREATE INDEX IF NOT EXISTS shelf_books_book ON shelf_books(book_id);
+''';
 
   /// Directory covers etc. live next to: cwd for `:memory:`, otherwise the
   /// parent of the resolved database path.
@@ -213,15 +237,31 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
 
   static String _nowIso() => DateTime.now().toUtc().toIso8601String();
 
-  /// Wraps [fn] in an explicit transaction (commit-on-exit semantics).
+  /// Nesting depth of [_write]; >0 means a transaction is already open.
+  int _writeDepth = 0;
+
+  /// Wraps [fn] in a transaction (commit-on-exit semantics).
+  ///
+  /// Nested calls use savepoints, so composed public APIs (for example
+  /// importing a batch of books and their links) commit as one unit.
   T _write<T>(T Function() fn) {
-    _db.execute('BEGIN');
+    final savepoint = 'vellum_write_$_writeDepth';
+    final nested = _writeDepth > 0;
+    _db.execute(nested ? 'SAVEPOINT $savepoint' : 'BEGIN');
+    _writeDepth++;
     try {
       final result = fn();
-      _db.execute('COMMIT');
+      _writeDepth--;
+      _db.execute(nested ? 'RELEASE $savepoint' : 'COMMIT');
       return result;
     } catch (_) {
-      _db.execute('ROLLBACK');
+      _writeDepth--;
+      if (nested) {
+        _db.execute('ROLLBACK TO $savepoint');
+        _db.execute('RELEASE $savepoint');
+      } else {
+        _db.execute('ROLLBACK');
+      }
       rethrow;
     }
   }
@@ -274,9 +314,14 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   }
 
   /// Adds [book] and returns its new id (also set on [book.id]).
-  int addBook(Book book) {
-    return _write(() {
-      if (book.added.isEmpty) book.added = _nowIso();
+  int addBook(Book book) => _write(() => _insertBook(book));
+
+  /// Adds [books] in one transaction and returns their new ids.
+  List<int> addBooks(List<Book> books) =>
+      _write(() => [for (final book in books) _insertBook(book)]);
+
+  int _insertBook(Book book) {
+    if (book.added.isEmpty) book.added = _nowIso();
       _db.execute(
         'INSERT INTO books (title, sort, isbn, publisher, pubdate, language, '
         'description, cover_path, path, rating, added, hidden, source_id) '
@@ -300,7 +345,6 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
       book.id = _db.lastInsertRowId;
       _writeLinks(book);
       return book.id!;
-    });
   }
 
   /// Updates an existing book. Throws [ArgumentError] when [book.id] is null
@@ -349,46 +393,69 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     return _rowToBook(rows.first);
   }
 
-  Book _rowToBook(Row row) {
-    final id = row['id'] as int;
-    final authors = _db
-        .select(
-            'SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id '
-            'WHERE ba.book_id = ? ORDER BY ba.position',
-            [id])
-        .map((r) => r['name'] as String)
-        .toList();
-    final tags = _db
-        .select(
-            'SELECT t.name FROM book_tags bt JOIN tags t ON t.id = bt.tag_id '
-            'WHERE bt.book_id = ? ORDER BY t.name',
-            [id])
-        .map((r) => r['name'] as String)
-        .toList();
-    final formats = _db
-        .select('SELECT format FROM formats WHERE book_id = ? ORDER BY format',
-            [id])
-        .map((r) => r['format'] as String)
-        .toList();
-    return Book(
-      id: id,
-      title: row['title'] as String,
-      authors: authors,
-      sort: row['sort'] as String,
-      isbn: row['isbn'] as String,
-      publisher: row['publisher'] as String,
-      pubdate: row['pubdate'] as String,
-      language: row['language'] as String,
-      description: row['description'] as String,
-      tags: tags,
-      formats: formats,
-      coverPath: row['cover_path'] as String,
-      path: row['path'] as String,
-      rating: (row['rating'] as num).toDouble(),
-      added: row['added'] as String,
-      hidden: (row['hidden'] as int) != 0,
-      sourceId: row['source_id'] as String,
-    );
+  Book _rowToBook(Row row) => _rowsToBooks([row]).single;
+
+  /// Hydrates [rows] with three batched IN queries: O(1) statements per page
+  /// of books instead of three per book.
+  List<Book> _rowsToBooks(List<Row> rows) {
+    if (rows.isEmpty) return const <Book>[];
+    final ids = [for (final row in rows) row['id'] as int];
+    final authors = <int, List<String>>{};
+    final tags = <int, List<String>>{};
+    final formats = <int, List<String>>{};
+    // Stay below SQLite's variable limit on every build.
+    const chunkSize = 500;
+    for (var start = 0; start < ids.length; start += chunkSize) {
+      final chunk = ids.sublist(
+          start, start + chunkSize > ids.length ? ids.length : start + chunkSize);
+      final placeholders = List.filled(chunk.length, '?').join(', ');
+      for (final r in _db.select(
+          'SELECT ba.book_id AS book_id, a.name AS name '
+          'FROM book_authors ba JOIN authors a ON a.id = ba.author_id '
+          'WHERE ba.book_id IN ($placeholders) '
+          'ORDER BY ba.book_id, ba.position',
+          chunk)) {
+        (authors[r['book_id'] as int] ??= <String>[])
+            .add(r['name'] as String);
+      }
+      for (final r in _db.select(
+          'SELECT bt.book_id AS book_id, t.name AS name '
+          'FROM book_tags bt JOIN tags t ON t.id = bt.tag_id '
+          'WHERE bt.book_id IN ($placeholders) '
+          'ORDER BY bt.book_id, t.name',
+          chunk)) {
+        (tags[r['book_id'] as int] ??= <String>[]).add(r['name'] as String);
+      }
+      for (final r in _db.select(
+          'SELECT book_id, format FROM formats '
+          'WHERE book_id IN ($placeholders) ORDER BY book_id, format',
+          chunk)) {
+        (formats[r['book_id'] as int] ??= <String>[])
+            .add(r['format'] as String);
+      }
+    }
+    return [
+      for (final row in rows)
+        Book(
+          id: row['id'] as int,
+          title: row['title'] as String,
+          authors: authors[row['id']] ?? const <String>[],
+          sort: row['sort'] as String,
+          isbn: row['isbn'] as String,
+          publisher: row['publisher'] as String,
+          pubdate: row['pubdate'] as String,
+          language: row['language'] as String,
+          description: row['description'] as String,
+          tags: tags[row['id']] ?? const <String>[],
+          formats: formats[row['id']] ?? const <String>[],
+          coverPath: row['cover_path'] as String,
+          path: row['path'] as String,
+          rating: (row['rating'] as num).toDouble(),
+          added: row['added'] as String,
+          hidden: (row['hidden'] as int) != 0,
+          sourceId: row['source_id'] as String,
+        ),
+    ];
   }
 
   /// Returns the book with [id], or null.
@@ -400,8 +467,14 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     final sql = includeHidden
         ? 'SELECT * FROM books ORDER BY title'
         : 'SELECT * FROM books WHERE hidden = 0 ORDER BY title';
-    return _db.select(sql).map(_rowToBook).toList();
+    return _rowsToBooks(_db.select(sql));
   }
+
+  /// Escapes LIKE metacharacters so a literal `%`/`_`/`\` matches itself.
+  static String _escapeLike(String value) => value
+      .replaceAll(r'\', r'\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
 
   /// Searches the library. Empty/whitespace query returns [allBooks].
   /// Whitespace-separated tokens are ANDed; each token matches
@@ -410,19 +483,20 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     final tokens =
         query.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
     if (tokens.isEmpty) return allBooks(includeHidden: includeHidden);
-    const perToken = '''
-(lower(b.title) LIKE ? OR lower(b.isbn) LIKE ?
+    const perToken = r'''
+(lower(b.title) LIKE ? ESCAPE '\' OR lower(b.isbn) LIKE ? ESCAPE '\'
  OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-   WHERE ba.book_id = b.id AND lower(a.name) LIKE ?)
+   WHERE ba.book_id = b.id AND lower(a.name) LIKE ? ESCAPE '\')
  OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
-   WHERE bt.book_id = b.id AND lower(t.name) LIKE ?))''';
+   WHERE bt.book_id = b.id AND lower(t.name) LIKE ? ESCAPE '\'))''';
     final where = tokens.map((_) => perToken).join(' AND ');
     final sql = 'SELECT b.* FROM books b WHERE $where'
         '${includeHidden ? '' : ' AND b.hidden = 0'} ORDER BY b.title';
     final params = [
-      for (final token in tokens) ...List.filled(4, '%${token.toLowerCase()}%')
+      for (final token in tokens)
+        ...List.filled(4, '%${_escapeLike(token.toLowerCase())}%')
     ];
-    return _db.select(sql, params).map(_rowToBook).toList();
+    return _rowsToBooks(_db.select(sql, params));
   }
 
   /// Deletes a book; children rows cascade.
@@ -575,7 +649,7 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
         'JOIN shelf_books sb ON sb.book_id = b.id '
         'WHERE sb.shelf_id = ?'
         '${includeHidden ? '' : ' AND b.hidden = 0'} ORDER BY b.title';
-    return _db.select(sql, [shelfId]).map(_rowToBook).toList();
+    return _rowsToBooks(_db.select(sql, [shelfId]));
   }
 
   /// Ids of shelves containing [bookId].
@@ -644,20 +718,31 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
 
   /// Replaces the FTS rows for [bookId] with [rows].
   void replaceBookFts(int bookId, List<Map<String, Object>> rows) {
+    _write(() => _replaceFtsRows(bookId, rows));
+  }
+
+  /// Replaces FTS rows for many books in one transaction (indexing runs).
+  void replaceBookFtsMany(Map<int, List<Map<String, Object>>> rowsByBook) {
     _write(() {
-      _db.execute('DELETE FROM book_fts WHERE book_id = ?', [bookId]);
-      for (final r in rows) {
-        _db.execute(
-            'INSERT INTO book_fts (book_id, chapter, title, content) '
-            'VALUES (?, ?, ?, ?)',
-            [
-              bookId,
-              r['chapter'] as int,
-              r['title'] as String,
-              r['content'] as String,
-            ]);
+      for (final entry in rowsByBook.entries) {
+        _replaceFtsRows(entry.key, entry.value);
       }
     });
+  }
+
+  void _replaceFtsRows(int bookId, List<Map<String, Object>> rows) {
+    _db.execute('DELETE FROM book_fts WHERE book_id = ?', [bookId]);
+    for (final r in rows) {
+      _db.execute(
+          'INSERT INTO book_fts (book_id, chapter, title, content) '
+          'VALUES (?, ?, ?, ?)',
+          [
+            bookId,
+            r['chapter'] as int,
+            r['title'] as String,
+            r['content'] as String,
+          ]);
+    }
   }
 
   /// Sanitizes a raw query into an FTS5 MATCH expression: tokens wrapped in

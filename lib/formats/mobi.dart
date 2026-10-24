@@ -213,6 +213,16 @@ class MobiBook {
   /// (record offset, title) for each section.
   List<(int offset, String title)> sections() => List.of(_sections);
 
+  /// Raw HTML chunk for section [index], without extracting images.
+  ///
+  /// Indexing only needs the text; this avoids creating a temp directory.
+  String sectionSource(int index) {
+    if (index < 0 || index >= _chunks.length) {
+      throw RangeError.index(index, _chunks, 'section index out of range');
+    }
+    return _chunks[index];
+  }
+
   /// Full HTML document for section [index] with image refs rewritten.
   String sectionHtml(int index) {
     if (index < 0 || index >= _chunks.length) {

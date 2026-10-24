@@ -9,6 +9,7 @@ import '../metadata/engine.dart';
 import '../metadata/metadata.dart';
 import '../metadata/sorting.dart';
 import '../metadata/universal.dart' show normalizeUrl;
+import 'widgets/book_cover.dart';
 
 /// Modal dialog that searches metadata sources and applies a chosen result.
 class MetadataDialog extends StatefulWidget {
@@ -267,6 +268,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
 
     try {
       app.library.updateBook(book);
+      if (book.id != null) BookCover.invalidate(book.id!);
     } catch (error) {
       app.showToast('Failed to save book: $error');
       if (mounted) setState(() => _applying = false);
