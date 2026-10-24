@@ -14,6 +14,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app_state.dart';
 import 'core/config.dart';
+import 'core/crash_log.dart';
 import 'core/db.dart';
 import 'fts/indexer.dart';
 import 'metadata/engine.dart';
@@ -28,7 +29,28 @@ import 'ui/home_page.dart';
 
 /// Boots the services and starts the Flutter application.
 Future<void> main() async {
+  final dataDir = VellumConfig.dataDir();
+  final crashLog = CrashLog(Directory(dataDir));
+
+  // Errors escaping any callback land in the crash log instead of ending the
+  // process silently; the app keeps running so the user can save/report.
+  runZonedGuarded<void>(
+    () => unawaited(_start(dataDir, crashLog)),
+    (error, stackTrace) => crashLog.recordError('zone', error, stackTrace),
+  );
+}
+
+/// Builds the services and runs the UI, reporting failures to [crashLog].
+Future<void> _start(String dataDir, CrashLog crashLog) async {
   WidgetsFlutterBinding.ensureInitialized();
+  installCrashHandlers(crashLog);
+
+  final environment = Platform.environment;
+  crashLog.stage(
+    'startup gdk_backend=${environment['GDK_BACKEND'] ?? 'auto'} '
+    'software_gl=${environment['LIBGL_ALWAYS_SOFTWARE'] ?? 'off'}',
+  );
+
   await windowManager.ensureInitialized();
   unawaited(windowManager.waitUntilReadyToShow(
     const WindowOptions(
@@ -41,10 +63,10 @@ Future<void> main() async {
     () async {
       await windowManager.show();
       await windowManager.focus();
+      crashLog.stage('window-ready');
     },
   ));
 
-  final dataDir = VellumConfig.dataDir();
   Directory(dataDir).createSync(recursive: true);
   Directory(p.join(dataDir, 'covers')).createSync(recursive: true);
   final pluginDir = p.join(dataDir, 'plugins');
@@ -59,7 +81,8 @@ Future<void> main() async {
   Library library;
   try {
     library = Library(configuredPath);
-  } catch (error) {
+  } catch (error, stackTrace) {
+    crashLog.recordError('library-open', error, stackTrace);
     debugPrint('Vellum: could not open $configuredPath: $error');
     pendingToast =
         'Could not open $configuredPath; using the default library';
@@ -77,7 +100,8 @@ Future<void> main() async {
   unawaited(() async {
     try {
       await plugins.start();
-    } catch (error) {
+    } catch (error, stackTrace) {
+      crashLog.recordError('plugins-start', error, stackTrace);
       debugPrint('Vellum: plugin sidecar failed to start: $error');
     }
   }());
@@ -94,13 +118,15 @@ Future<void> main() async {
         'Clean Code',
         'Dune',
       });
-    } catch (error) {
+    } catch (error, stackTrace) {
+      crashLog.recordError('demo-purge', error, stackTrace);
       debugPrint('Vellum: legacy demo book purge failed: $error');
     } finally {
       config.set('legacy_demo_books_purged', true);
     }
   }
 
+  crashLog.stage('run-app');
   runApp(
     VellumApp(
       config: config,
@@ -117,7 +143,8 @@ Future<void> main() async {
     unawaited(() async {
       try {
         await fts.indexAll();
-      } catch (error) {
+      } catch (error, stackTrace) {
+        crashLog.recordError('fts-index', error, stackTrace);
         debugPrint('Vellum: full-text indexing failed: $error');
       }
     }());
