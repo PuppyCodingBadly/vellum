@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/isbn.dart';
 import '../core/models.dart';
 import '../metadata/engine.dart';
 import '../metadata/metadata.dart';
@@ -109,7 +110,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
     try {
       final searches = await Future.wait([
         app.engine.findQuery(query),
-        _searchPlugins(app, title: query, isbn: _queryIsbn(query)),
+        _searchPlugins(app, title: query, isbn: queryIsbn(query)),
       ]);
       if (!mounted || serial != _serial) return;
       final builtIns =
@@ -463,20 +464,6 @@ class _MetadataDialogState extends State<MetadataDialog> {
         );
     }
   }
-}
-
-/// Extracts an ISBN from a free-text query, mirroring the metadata engine:
-/// 13 digits pass through; 9 digits plus a digit/X are uppercased; else ''.
-String _queryIsbn(String query) {
-  final digits = query.replaceAll(RegExp(r'[^0-9Xx]'), '');
-  final isDigit = RegExp(r'^[0-9]+$');
-  if (digits.length == 13 && isDigit.hasMatch(digits)) return digits;
-  if (digits.length == 10 &&
-      isDigit.hasMatch(digits.substring(0, 9)) &&
-      (isDigit.hasMatch(digits[9]) || digits[9].toUpperCase() == 'X')) {
-    return digits.toUpperCase();
-  }
-  return '';
 }
 
 class _ResultTile extends StatelessWidget {

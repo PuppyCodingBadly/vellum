@@ -49,3 +49,13 @@ app.*.map.json
 /flatpak/sidecar/
 /flatpak/data/
 /build/flatpak-*/
+
+# Mutation testing artifacts
+# (mutation_test HTML report; mutmut 3.x keeps all state under mutants/ —
+#  it does not write .mutmut-cache or html/)
+/mutation-test-report/
+/sidecar/mutants/
+
+# Python test/coverage artifacts (tool/coverage.sh runs pytest from the root)
+/.coverage
+/.pytest_cache/

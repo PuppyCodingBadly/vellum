@@ -112,6 +112,12 @@ The UI smoke tests cover navigation, library/content search, details, the
 reader, shelves, plugins/store empty states, live reading statistics, and font
 scaling for EPUB, MOBI, and PDF.
 
+`./tool/coverage.sh` runs the same suites with coverage and prints a per-file
+line-coverage summary for Dart (from `coverage/lcov.info`) and for the Python
+sidecar (via coverage.py, when installed). It forwards any extra arguments to
+`flutter test` and renders an HTML report into `coverage/html/` when `genhtml`
+is available (`dnf install lcov`).
+
 ## Data locations
 
 - Config and library: `$XDG_DATA_HOME/vellum` (default

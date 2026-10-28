@@ -8,7 +8,10 @@ import zipfile
 
 import pytest
 
-SIDECAR_MAIN = os.path.join(os.path.dirname(__file__), os.pardir, "main.py")
+# Directory containing the vellum_sidecar package for this copy of the tests:
+# sidecar/ normally, sidecar/mutants/ under mutmut (which copies only
+# source_paths + tests, so a ../main.py sibling does not exist there).
+SIDECAR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FAKESRC_INIT = '''
 from calibre.ebooks.metadata.sources.base import Source
@@ -96,7 +99,8 @@ class Sidecar:
 @pytest.fixture
 def sidecar():
     proc = subprocess.Popen(
-        [sys.executable, SIDECAR_MAIN],
+        [sys.executable, "-m", "vellum_sidecar"],
+        cwd=SIDECAR_ROOT,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

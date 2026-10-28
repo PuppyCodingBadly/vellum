@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import '../core/isbn.dart';
 import 'metadata.dart';
 import 'universal.dart';
 
@@ -51,7 +52,7 @@ class MetadataEngine {
       Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim().replaceAll(RegExp(r'\s+'), ' ');
     if (query.isEmpty) return [];
-    final isbn = _queryIsbn(query);
+    final isbn = queryIsbn(query);
     List<Metadata> results;
     if (isbn.isNotEmpty) {
       results = await find(isbn: isbn, client: client, timeout: timeout);
@@ -282,18 +283,6 @@ bool _isEnglish(Metadata meta) {
   return language.startsWith('en') ||
       language == 'english' ||
       language == 'eng';
-}
-
-String _queryIsbn(String query) {
-  final digits = query.replaceAll(RegExp(r'[^0-9Xx]'), '');
-  final isDigit = RegExp(r'^[0-9]+$');
-  if (digits.length == 13 && isDigit.hasMatch(digits)) return digits;
-  if (digits.length == 10 &&
-      isDigit.hasMatch(digits.substring(0, 9)) &&
-      (isDigit.hasMatch(digits[9]) || digits[9].toUpperCase() == 'X')) {
-    return digits.toUpperCase();
-  }
-  return '';
 }
 
 /// Ratcliff-Obershelp ratio matching Python's difflib.SequenceMatcher.ratio:

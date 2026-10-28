@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Mutation testing configuration for vellum's interior Dart logic.
+     Run with: dart run mutation_test mutation_test.xml
+     (usually via tool/mutation.sh in full mode; see docs/mutation-testing.md) -->
+<mutations version="1.2">
+  <!-- Interior logic only: lib/ui and lib/main.dart are deliberately excluded. -->
+  <directories>
+    <directory recursive="true">lib/core</directory>
+    <directory recursive="true">lib/formats</directory>
+    <directory recursive="true">lib/fts</directory>
+    <directory recursive="true">lib/import</directory>
+    <directory recursive="true">lib/metadata</directory>
+    <directory recursive="true">lib/plugins</directory>
+    <directory recursive="true">lib/reader</directory>
+    <directory recursive="true">lib/stats</directory>
+    <directory recursive="true">lib/store</directory>
+  </directories>
+  <files>
+    <file>lib/app_state.dart</file>
+  </files>
+  <exclude>
+    <directory>lib/ui</directory>
+    <file>lib/main.dart</file>
+    <!-- Single-line comments are never mutated. -->
+    <token begin="//" end="\n"/>
+  </exclude>
+  <commands>
+    <command group="test" expected-return="0" working-directory="." timeout="600">flutter test</command>
+  </commands>
+  <!-- Fail the run when fewer than 70% of mutants are detected. -->
+  <threshold failure="70"/>
+</mutations>

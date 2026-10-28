@@ -24,6 +24,15 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.4" date="2026-10-28">
+      <description>
+        <p>A test and tooling release. Adds mutation testing for the Dart
+        logic and the Python sidecar, coverage reporting, and widget tests for
+        the library, reader, shelves, statistics, store, plugins and
+        preferences. ISBN detection in free-text queries is now shared between
+        the metadata dialog and the lookup engine.</p>
+      </description>
+    </release>
     <release version="0.2.3" date="2026-10-23">
       <description>
         <p>Log uncaught errors and startup stages to
