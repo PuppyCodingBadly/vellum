@@ -2,13 +2,11 @@
 ///
 /// [InkSurface] lays a paint layer over its child and turns stylus (and, for
 /// desktop, mouse) drags into [InkStroke]s. A stroke is captured in surface
-/// coordinates, then normalized into the rectangle of the anchor that
+/// coordinates, then normalized into the line boxes of the anchor that
 /// [InkSurface.anchorBuilder] derives from the stroke's first and last point.
 /// Touch stays out of the gesture arena, so scrolling, selection and links
 /// under the surface keep working untouched.
 library;
-
-import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -17,13 +15,13 @@ import '../../core/ink.dart';
 
 /// Draws [strokes] and the in-flight preview over a page.
 ///
-/// A stroke's points are stored normalized to its anchor rectangle, so the
-/// painter asks [rectFor] where that rectangle sits on the surface. The same
-/// [rectFor] answers the eraser's hit test.
+/// A stroke's points are stored normalized to the line boxes of its anchor,
+/// so the painter asks [linesFor] where those boxes sit on the surface. The
+/// same [linesFor] answers the eraser's hit test.
 class InkSurfacePainter extends CustomPainter {
   InkSurfacePainter({
     required this.strokes,
-    required this.rectFor,
+    required this.linesFor,
     required this.tool,
     this.previewPoints = const <Offset>[],
     this.previewPressures = const <double>[],
@@ -35,8 +33,10 @@ class InkSurfacePainter extends CustomPainter {
   /// Committed strokes, in paint order.
   final List<InkStroke> strokes;
 
-  /// Where a stroke's anchor currently sits, in surface coordinates.
-  final Rect Function(InkStroke stroke) rectFor;
+  /// Where a stroke's anchor lines currently sit, in surface coordinates.
+  ///
+  /// Empty means the stroke's stored anchor rect is the only line.
+  final List<Rect> Function(InkStroke stroke) linesFor;
 
   /// Only [InkTool.pen] previews; the eraser paints nothing of its own.
   final InkTool tool;
@@ -71,10 +71,10 @@ class InkSurfacePainter extends CustomPainter {
   }
 
   void _paintStroke(Canvas canvas, InkStroke stroke) {
-    final rect = rectFor(stroke);
+    final lines = linesFor(stroke);
     final count = stroke.pointCount;
     final points = <Offset>[
-      for (var i = 0; i < count; i++) stroke.pointLocal(i, rect),
+      for (var i = 0; i < count; i++) inkPointInLines(stroke, i, lines),
     ];
     final pressures = <double>[
       for (var i = 0; i < count; i++) _pressureAt(stroke, i),
@@ -84,7 +84,7 @@ class InkSurfacePainter extends CustomPainter {
       points: points,
       pressures: pressures,
       color: Color(stroke.color),
-      width: stroke.width,
+      width: inkWidthInLines(stroke, lines),
     );
   }
 
@@ -149,9 +149,9 @@ class InkSurfacePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant InkSurfacePainter oldDelegate) {
-    // rectFor is deliberately not compared: a geometry change arrives with new
-    // strokes and anchors, and a new function identity on an unrelated rebuild
-    // must not force a repaint.
+    // linesFor is deliberately not compared: a geometry change arrives with
+    // new strokes and anchors, and a new function identity on an unrelated
+    // rebuild must not force a repaint.
     return oldDelegate.strokes != strokes ||
         oldDelegate.tool != tool ||
         oldDelegate.previewRevision != previewRevision ||
@@ -164,9 +164,9 @@ class InkSurfacePainter extends CustomPainter {
 ///
 /// Wrap the widget the strokes belong to; the child keeps its own layout and
 /// hit testing while the ink layer sits above it. The parent supplies [strokes]
-/// (a new list whenever ink changes), [rectFor] to locate each stroke's anchor
-/// on the surface, and [anchorBuilder] to decide which anchor a new stroke
-/// belongs to.
+/// (a new list whenever ink changes), [linesFor] to locate each stroke's
+/// anchor lines on the surface, and [anchorBuilder] to decide which anchor a
+/// new stroke belongs to.
 class InkSurface extends StatefulWidget {
   const InkSurface({
     super.key,
@@ -175,7 +175,7 @@ class InkSurface extends StatefulWidget {
     required this.color,
     required this.width,
     required this.strokes,
-    required this.rectFor,
+    required this.linesFor,
     required this.anchorBuilder,
     required this.onStrokeComplete,
     required this.onErase,
@@ -190,17 +190,23 @@ class InkSurface extends StatefulWidget {
   /// Ink colour for a new stroke.
   final Color color;
 
-  /// Stroke width in surface (and anchor-rect) logical pixels.
+  /// Stroke width in surface (and anchor line) logical pixels.
   final double width;
 
   final List<InkStroke> strokes;
 
-  /// The surface-space rectangle of [stroke]'s anchor.
-  final Rect Function(InkStroke stroke) rectFor;
+  /// The surface-space line boxes of [stroke]'s anchor, in reading order.
+  ///
+  /// Empty means the stroke's stored anchor rect is the only line.
+  final List<Rect> Function(InkStroke stroke) linesFor;
 
   /// Builds the anchor for a finished stroke from its first and last
-  /// surface-space points. Its `rect` defines the normalization rectangle;
-  /// points may land outside 0..1 when the pen leaves that rectangle.
+  /// surface-space points.
+  ///
+  /// Its `lines` are the draw-time line boxes; each captured point is
+  /// normalized into the box that contains it, or the nearest box. An anchor
+  /// without lines is normalized into `rect`, and points may leave 0..1 when
+  /// the pen leaves the box.
   final InkAnchor Function(Offset firstLocal, Offset lastLocal) anchorBuilder;
 
   final ValueChanged<InkStroke> onStrokeComplete;
@@ -289,38 +295,77 @@ class _InkSurfaceState extends State<InkSurface> {
     });
   }
 
-  /// Normalizes the captured surface points into the new anchor's rectangle.
-  /// Values outside 0..1 are kept: a stroke may legitimately leave its anchor.
+  /// Normalizes the captured surface points into the new anchor's line boxes.
+  ///
+  /// A point goes into the box that contains it, or the nearest box when it
+  /// lies outside all of them, and its index is stored with it. Values outside
+  /// 0..1 are kept: a stroke may legitimately leave its box.
   InkStroke? _buildStroke() {
     if (_points.isEmpty) return null;
     final anchor = widget.anchorBuilder(_points.first, _points.last);
-    final rect = anchor.rect;
-    final scaleX = rect.width == 0 ? 1.0 : 1 / rect.width;
-    final scaleY = rect.height == 0 ? 1.0 : 1 / rect.height;
-    final normalized = <Offset>[
-      for (final point in _points)
-        Offset(
-          (point.dx - rect.left) * scaleX,
-          (point.dy - rect.top) * scaleY,
-        ),
-    ];
+    final lines = anchor.lines.isEmpty ? <Rect>[anchor.rect] : anchor.lines;
+    final normalized = <Offset>[];
+    final lineIndices = <int>[];
+    for (final point in _points) {
+      final line = _lineIndexAt(lines, point);
+      lineIndices.add(line);
+      normalized.add(_normalizeInto(point, lines[line]));
+    }
+    // Round-trip through the codec so the stored points have the same float32
+    // precision as a stroke read back from the database.
+    final decoded = InkCodec.decodePoints(
+      InkCodec.encodePoints(normalized, _pressures, lineIndices),
+    );
     return InkStroke(
       anchor: anchor,
       color: widget.color.toARGB32(),
       width: widget.width,
-      // The codec BLOB already is the float32 triple layout the stroke stores.
-      points: Float32List.sublistView(
-        InkCodec.encodePoints(normalized, _pressures),
-      ),
+      points: decoded.points,
+      lineIndices: decoded.lineIndices,
     );
+  }
+
+  static Offset _normalizeInto(Offset point, Rect box) {
+    final scaleX = box.width == 0 ? 1.0 : 1 / box.width;
+    final scaleY = box.height == 0 ? 1.0 : 1 / box.height;
+    return Offset(
+      (point.dx - box.left) * scaleX,
+      (point.dy - box.top) * scaleY,
+    );
+  }
+
+  /// Index of the line box containing [point], or the nearest box otherwise.
+  static int _lineIndexAt(List<Rect> lines, Offset point) {
+    var nearest = 0;
+    var nearestDistance = double.infinity;
+    for (var i = 0; i < lines.length; i++) {
+      final box = lines[i];
+      if (box.contains(point)) return i;
+      final dx = point.dx < box.left
+          ? box.left - point.dx
+          : point.dx > box.right
+          ? point.dx - box.right
+          : 0.0;
+      final dy = point.dy < box.top
+          ? box.top - point.dy
+          : point.dy > box.bottom
+          ? point.dy - box.bottom
+          : 0.0;
+      final distance = dx * dx + dy * dy;
+      if (distance < nearestDistance) {
+        nearest = i;
+        nearestDistance = distance;
+      }
+    }
+    return nearest;
   }
 
   void _eraseAt(Offset local) {
     for (final stroke in widget.strokes) {
       if (_erased.contains(stroke)) continue;
-      if (inkStrokeHit(
+      if (inkStrokeHitLines(
         stroke,
-        widget.rectFor(stroke),
+        widget.linesFor(stroke),
         local,
         radius: _eraserRadius,
       )) {
@@ -378,7 +423,7 @@ class _InkSurfaceState extends State<InkSurface> {
               child: CustomPaint(
                 painter: InkSurfacePainter(
                   strokes: widget.strokes,
-                  rectFor: widget.rectFor,
+                  linesFor: widget.linesFor,
                   tool: widget.tool,
                   previewPoints: _points,
                   previewPressures: _pressures,

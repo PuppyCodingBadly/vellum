@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:path/path.dart' as p;
@@ -690,7 +689,12 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
       List<double> pressure = const [0.5, 0.8],
       double width = 2.5,
       int color = 0xFF112233,
+      List<Rect> lines = const <Rect>[],
+      List<int>? lineIndices,
     }) {
+      final decoded = InkCodec.decodePoints(
+        InkCodec.encodePoints(points, pressure, lineIndices ?? const <int>[]),
+      );
       return InkStroke(
         anchor: InkAnchor(
           kind: kind,
@@ -698,12 +702,12 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
           start: start,
           end: end,
           rect: const Rect.fromLTWH(4, 8, 600, 800),
+          lines: lines,
         ),
         color: color,
         width: width,
-        points: Float32List.sublistView(
-          InkCodec.encodePoints(points, pressure),
-        ),
+        points: decoded.points,
+        lineIndices: decoded.lineIndices.isEmpty ? null : decoded.lineIndices,
       );
     }
 
@@ -784,6 +788,88 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
       lib.deleteBook(bookId);
       expect(lib.listInkStrokesForBook(bookId), isEmpty);
       expect(lib.listInkStrokesForBook(otherId), hasLength(1));
+    });
+
+    test('round-trips per-line anchors and point line indices', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final bookId = lib.addBook(Book(title: 'Lined'));
+
+      const lines = [
+        Rect.fromLTWH(4, 8, 600, 20),
+        Rect.fromLTWH(4, 40, 600, 20),
+        Rect.fromLTWH(4, 72, 600, 20),
+      ];
+      final added = stroke(
+        chapter: 4,
+        lines: lines,
+        lineIndices: const [0, 2],
+        points: const [Offset(0, 0.5), Offset(1, 0.5)],
+        pressure: const [0.25, 0.75],
+      );
+      final id = lib.addInkStroke(bookId, added);
+
+      final loaded = lib.listInkStrokes(bookId, 4).single;
+      expect(loaded.id, id);
+      expect(loaded.anchor.lines, lines);
+      expect(loaded.anchor.rect, const Rect.fromLTWH(4, 8, 600, 800));
+      expect(loaded.lineIndices, [0, 2]);
+      expect(loaded.pointCount, 2);
+      expect(loaded.points[0], closeTo(0, 1e-6));
+      expect(loaded.points[1], closeTo(0.5, 1e-6));
+      expect(loaded.points[2], closeTo(0.25, 1e-6));
+      expect(loaded.points[3], closeTo(1, 1e-6));
+      expect(loaded.points[4], closeTo(0.5, 1e-6));
+      expect(loaded.points[5], closeTo(0.75, 1e-6));
+    });
+
+    test('reads a legacy rect array and stride-3 blob', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-ink-legacy');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final path = '${tmp.path}/library.db';
+
+      final lib = Library(path);
+      final bookId = lib.addBook(Book(title: 'Legacy'));
+      lib.close();
+
+      final legacyPoints = InkCodec.encodePoints(
+        const [Offset(0.25, 0.5), Offset(0.75, 0.5)],
+        const [0.5, 1],
+      );
+      expect(legacyPoints, hasLength(24));
+
+      final raw = sqlite3.open(path);
+      raw.execute(
+        'INSERT INTO ink_strokes '
+        '(book_id, chapter, kind, start, end, rect, color, width, points, '
+        'created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          bookId,
+          0,
+          'text',
+          3,
+          9,
+          '[4.0, 8.0, 600.0, 800.0]',
+          0xFF445566,
+          2.0,
+          legacyPoints,
+          '2020-01-01T00:00:00Z',
+        ],
+      );
+      raw.dispose();
+
+      final reopened = Library(path);
+      addTearDown(reopened.close);
+      final loaded = reopened.listInkStrokes(bookId, 0).single;
+      expect(loaded.anchor.rect, const Rect.fromLTWH(4, 8, 600, 800));
+      expect(loaded.anchor.lines, isEmpty);
+      expect(loaded.lineIndices, isNull);
+      expect(loaded.pointCount, 2);
+      expect(loaded.points[0], closeTo(0.25, 1e-6));
+      expect(loaded.points[3], closeTo(0.75, 1e-6));
+      expect(loaded.points[4], closeTo(0.5, 1e-6));
+      expect(loaded.color, 0xFF445566);
+      expect(loaded.width, 2.0);
     });
 
     test('migrates an old library without the ink table', () {

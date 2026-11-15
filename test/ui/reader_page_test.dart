@@ -33,6 +33,15 @@ import '../support/test_support.dart';
 double _readerFontSize(WidgetTester tester) =>
     tester.widget<SelectableText>(find.byType(SelectableText)).style!.fontSize!;
 
+/// The bounds a surface currently gives a stroke: the union of its line boxes,
+/// or the stored anchor rect when the surface reports no lines.
+Rect _surfaceBounds(InkSurface surface, InkStroke stroke) {
+  final lines = surface.linesFor(stroke);
+  return lines.isEmpty
+      ? stroke.anchor.rect
+      : lines.reduce((a, b) => a.expandToInclude(b));
+}
+
 void main() {
   late Directory tmp;
   late String configPath;
@@ -291,6 +300,8 @@ void main() {
     final stroke = drawn.strokes.single;
     expect(stroke.anchor.kind, InkAnchorKind.text);
     expect(stroke.anchor.end, greaterThan(stroke.anchor.start));
+    // The draw-time line boxes are stored with the anchor.
+    expect(stroke.anchor.lines, isNotEmpty);
     expect(library.listInkStrokes(book.id!, 0), hasLength(1));
 
     // A chapter visit drops the ink and coming back reads it from the DB.
@@ -306,14 +317,22 @@ void main() {
     expect(reloaded.anchor.end, stroke.anchor.end);
 
     // A font-size change keeps the stroke over the same character range.
-    final before = reloadedSurface.rectFor(reloaded);
+    final before = _surfaceBounds(reloadedSurface, reloaded);
     await tester.tap(find.byTooltip('Increase font size'));
     await tester.pumpAndSettle();
     final scaledSurface = tester.widget<InkSurface>(find.byType(InkSurface));
-    final after = scaledSurface.rectFor(reloaded);
+    final afterLines = scaledSurface.linesFor(reloaded);
+    final after = _surfaceBounds(scaledSurface, reloaded);
     expect(reloaded.anchor.start, stroke.anchor.start);
     expect(reloaded.anchor.end, stroke.anchor.end);
     expect(after.overlaps(before), isTrue);
+    // The points are re-mapped into the rescaled line boxes, not the old ones.
+    for (var i = 0; i < reloaded.pointCount; i++) {
+      expect(
+        after.inflate(1).contains(inkPointInLines(reloaded, i, afterLines)),
+        isTrue,
+      );
+    }
   });
 
   testWidgets('eraser, undo and redo edit stored ink', (tester) async {
@@ -471,7 +490,7 @@ void main() {
     expect(drawn.strokes, hasLength(1));
     final stroke = drawn.strokes.single;
     expect(stroke.anchor.kind, InkAnchorKind.page);
-    final before = drawn.rectFor(stroke);
+    final before = _surfaceBounds(drawn, stroke);
     expect(before.width, greaterThan(0));
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
@@ -486,10 +505,15 @@ void main() {
     // page point instead of drifting with the new pixels.
     final zoomed = tester.widget<InkSurface>(find.byType(InkSurface));
     expect(zoomed.strokes, hasLength(1));
-    final after = zoomed.rectFor(stroke);
+    final after = _surfaceBounds(zoomed, stroke);
     expect(after.width, closeTo(before.width, 1.0));
     expect(after.height, closeTo(before.height, 1.0));
-    expect(after.contains(zoomed.strokes.single.pointLocal(0, after)), isTrue);
+    expect(
+      after.contains(
+        inkPointInLines(zoomed.strokes.single, 0, zoomed.linesFor(stroke)),
+      ),
+      isTrue,
+    );
     expect(library.listInkStrokes(book.id!, 0), hasLength(1));
 
     // Tear the reader down inside the test and let the PDF worker's 2 s

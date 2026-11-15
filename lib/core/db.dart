@@ -724,26 +724,59 @@ CREATE TABLE IF NOT EXISTS ink_strokes (
       'chapter': row['chapter'],
       'start': row['start'],
       'end': row['end'],
-      'rect': jsonDecode(row['rect'] as String),
+      ..._anchorGeometryFromColumn(jsonDecode(row['rect'] as String)),
     });
+    final decoded = InkCodec.decodePoints(row['points'] as Uint8List);
     return InkStroke(
       id: row['id'] as int,
       anchor: anchor,
       color: row['color'] as int,
       width: (row['width'] as num).toDouble(),
-      points: InkCodec.decodePoints(row['points'] as Uint8List),
+      points: decoded.points,
+      lineIndices: decoded.lineIndices.isEmpty ? null : decoded.lineIndices,
     );
+  }
+
+  /// The `rect` column holds `[left, top, width, height]`, as it always has.
+  /// Per-line boxes ride along in the same value as `{"rect": ..., "lines":
+  /// ...}`, which only rows that need them use; an anchor without lines keeps
+  /// writing the bare legacy array.
+  static String _anchorRectColumn(InkAnchor anchor) {
+    final json = anchor.toJson();
+    if (anchor.lines.isEmpty) return jsonEncode(json['rect']);
+    return jsonEncode({'rect': json['rect'], 'lines': json['lines']});
+  }
+
+  /// Reads either the legacy bare rect array or the line-bearing object.
+  static Map<String, Object?> _anchorGeometryFromColumn(Object? stored) {
+    if (stored is List) return {'rect': stored};
+    if (stored is Map) {
+      return {
+        'rect': stored['rect'],
+        if (stored['lines'] != null) 'lines': stored['lines'],
+      };
+    }
+    throw FormatException('ink rect column must hold a rect or line geometry');
   }
 
   /// Inserts [stroke] for [bookId] and returns its id, also set on [stroke].
   int addInkStroke(int bookId, InkStroke stroke) {
     final anchor = stroke.anchor;
-    final rectJson = jsonEncode(anchor.toJson()['rect']);
-    final points = Uint8List.view(
-      stroke.points.buffer,
-      stroke.points.offsetInBytes,
-      stroke.points.lengthInBytes,
-    );
+    final rectJson = _anchorRectColumn(anchor);
+    // Line indices live in the point BLOB; a stroke without them keeps the
+    // compact legacy triples instead of a header of zeroes.
+    final lineIndices = stroke.lineIndices;
+    final points = lineIndices == null
+        ? Uint8List.view(
+            stroke.points.buffer,
+            stroke.points.offsetInBytes,
+            stroke.points.lengthInBytes,
+          )
+        : InkCodec.encodePoints(
+            [for (var i = 0; i < stroke.pointCount; i++) stroke.pointAt(i)],
+            [for (var i = 0; i < stroke.pointCount; i++) stroke.pressureAt(i)],
+            lineIndices,
+          );
     final id = _write(() {
       _db.execute(
         'INSERT INTO ink_strokes '

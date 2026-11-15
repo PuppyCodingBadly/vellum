@@ -354,6 +354,7 @@ class _ReaderPageState extends State<ReaderPage> {
         kind: InkAnchorKind.text,
         chapter: chapter,
         rect: fallbackRect,
+        lines: <Rect>[fallbackRect],
       );
     }
     int documentOffset(Offset local) {
@@ -371,24 +372,25 @@ class _ReaderPageState extends State<ReaderPage> {
       start = end;
       end = swap;
     }
-    final rect =
-        _textRangeRect(document, text, surface, start, end) ?? fallbackRect;
+    final lines = _textRangeLines(document, text, surface, start, end);
     return InkAnchor(
       kind: InkAnchorKind.text,
       chapter: chapter,
       start: start,
       end: end,
-      rect: rect,
+      rect: _unionOf(lines),
+      lines: lines,
     );
   }
 
-  /// Resolves the display rect of a text-anchored stroke in surface space.
+  /// Resolves the display line boxes of a text-anchored stroke in surface
+  /// space.
   ///
   /// Re-measuring from the character range keeps a stroke over the same words
   /// after a font-size change instead of leaving it at its old pixels. The
   /// keys are the stroke's own chapter, so an outgoing chapter's ink is not
   /// re-measured against the incoming chapter during a transition.
-  Rect _textRectFor(
+  List<Rect> _textLinesFor(
     InkStroke stroke, {
     required GlobalKey textKey,
     required GlobalKey surfaceKey,
@@ -397,19 +399,23 @@ class _ReaderPageState extends State<ReaderPage> {
     final text = _findRenderEditableFrom(textKey);
     final surface = surfaceKey.currentContext?.findRenderObject();
     if (document == null || text == null || surface is! RenderBox) {
-      return stroke.anchor.rect;
+      return <Rect>[stroke.anchor.rect];
     }
-    return _textRangeRect(
-          document,
-          text,
-          surface,
-          stroke.anchor.start,
-          stroke.anchor.end,
-        ) ??
-        stroke.anchor.rect;
+    return _textRangeLines(
+      document,
+      text,
+      surface,
+      stroke.anchor.start,
+      stroke.anchor.end,
+    );
   }
 
-  Rect? _textRangeRect(
+  /// The surface-space box of each text line the character range touches.
+  ///
+  /// Never empty: an empty selection falls back to the range's caret box. The
+  /// boxes are in reading order, which is what the per-line point mapping
+  /// indexes into.
+  List<Rect> _textRangeLines(
     DocumentModel document,
     RenderEditable text,
     RenderBox surface,
@@ -418,16 +424,32 @@ class _ReaderPageState extends State<ReaderPage> {
   ) {
     final from = document.documentStartToRendered(start);
     final to = document.documentEndToRendered(end);
-    Rect? local;
+    final lines = <Rect>[];
     if (to > from) {
       for (final box in text.getBoxesForSelection(
         TextSelection(baseOffset: from, extentOffset: to),
       )) {
-        final rect = box.toRect();
-        local = local?.expandToInclude(rect) ?? rect;
+        lines.add(_toSurfaceRect(surface, text, box.toRect()));
       }
     }
-    local ??= text.getLocalRectForCaret(TextPosition(offset: from));
+    if (lines.isEmpty) {
+      lines.add(
+        _toSurfaceRect(
+          surface,
+          text,
+          text.getLocalRectForCaret(TextPosition(offset: from)),
+        ),
+      );
+    }
+    return lines;
+  }
+
+  /// Maps [local], a rect in the text's coordinates, into [surface] space.
+  static Rect _toSurfaceRect(
+    RenderBox surface,
+    RenderEditable text,
+    Rect local,
+  ) {
     final topLeft = surface.globalToLocal(text.localToGlobal(local.topLeft));
     final bottomRight = surface.globalToLocal(
       text.localToGlobal(local.bottomRight),
@@ -441,6 +463,9 @@ class _ReaderPageState extends State<ReaderPage> {
       math.max(rect.height, 1),
     );
   }
+
+  static Rect _unionOf(List<Rect> rects) =>
+      rects.reduce((a, b) => a.expandToInclude(b));
 
   /// Pixel size of a PNG, read from its IHDR header.
   ///
@@ -524,7 +549,7 @@ class _ReaderPageState extends State<ReaderPage> {
   InkSurface _inkSurface({
     required ReaderController controller,
     required InkAnchorKind kind,
-    required Rect Function(InkStroke) rectFor,
+    required List<Rect> Function(InkStroke) linesFor,
     required InkAnchor Function(Offset firstLocal, Offset lastLocal)
     anchorBuilder,
     required Widget child,
@@ -542,7 +567,7 @@ class _ReaderPageState extends State<ReaderPage> {
         for (final stroke in controller.inkStrokes)
           if (stroke.anchor.kind == kind) stroke,
       ],
-      rectFor: rectFor,
+      linesFor: linesFor,
       anchorBuilder: anchorBuilder,
       onStrokeComplete: controller.addInkStroke,
       onErase: controller.eraseInkStroke,
@@ -1504,7 +1529,7 @@ class _ReaderPageState extends State<ReaderPage> {
                           controller: controller,
                           kind: InkAnchorKind.text,
                           key: inkKey,
-                          rectFor: (stroke) => _textRectFor(
+                          linesFor: (stroke) => _textLinesFor(
                             stroke,
                             textKey: textKey,
                             surfaceKey: inkKey,
@@ -1617,11 +1642,12 @@ class _ReaderPageState extends State<ReaderPage> {
                       return _inkSurface(
                         controller: controller,
                         kind: InkAnchorKind.page,
-                        rectFor: (_) => pageRect,
+                        linesFor: (_) => <Rect>[pageRect],
                         anchorBuilder: (firstLocal, lastLocal) => InkAnchor(
                           kind: InkAnchorKind.page,
                           chapter: controller.index,
                           rect: pageRect,
+                          lines: <Rect>[pageRect],
                         ),
                         child: SizedBox.expand(
                           child: Image.memory(
@@ -1891,8 +1917,9 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
     return surface.globalToLocal(block.localToGlobal(Offset.zero)) & block.size;
   }
 
-  Rect _strokeRect(InkStroke stroke) =>
-      _blockRect(stroke.anchor.start) ?? stroke.anchor.rect;
+  List<Rect> _strokeLines(InkStroke stroke) => <Rect>[
+    _blockRect(stroke.anchor.start) ?? stroke.anchor.rect,
+  ];
 
   InkAnchor _blockAnchor(Offset firstLocal, Offset lastLocal) {
     _syncBlockKeys();
@@ -1925,6 +1952,7 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
       start: index ?? 0,
       end: index ?? 0,
       rect: rect,
+      lines: <Rect>[rect],
     );
   }
 
@@ -2034,7 +2062,7 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
                 for (final stroke in controller.inkStrokes)
                   if (stroke.anchor.kind == InkAnchorKind.reflowBlock) stroke,
               ],
-              rectFor: _strokeRect,
+              linesFor: _strokeLines,
               anchorBuilder: _blockAnchor,
               onStrokeComplete: controller.addInkStroke,
               onErase: controller.eraseInkStroke,
