@@ -1,6 +1,6 @@
 # Vellum METADATA + PLUGINS slice — implementation contract (from Python source)
 
-Original source (authoritative, readable): /tmp/vellum/src/vellum/metadata/** and /tmp/vellum/src/vellum/plugins/**, tests /tmp/vellum/tests/test_{metadata,extra_sources,universal,shim}.py
+Original source (authoritative, readable): the original application's tree, `src/vellum/metadata/**` and `src/vellum/plugins/**`, tests `tests/test_{metadata,extra_sources,universal,shim}.py`
 
 ## 1. Data model (sources/base.py)
 ```python

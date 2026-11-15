@@ -1,6 +1,6 @@
 # Vellum — Action Plan (executable)
 
-**Repo:** `/tmp/vellum-flutter` (clone of `github.com/PuppyCodingBadly/vellum`, baseline commit `fdd403f`, version 0.2.2+1)
+**Repo:** repo root (clone of `github.com/PuppyCodingBadly/vellum`, baseline commit `fdd403f`, version 0.2.2+1)
 **Audience:** autonomous coding agent (DeepSeek). Every task below is self-contained: Target files, current behavior, required change, acceptance criteria. Execute phases in order; tasks within a phase are independent and may be parallelized.
 **Stack facts:** Flutter 3.35+/Dart 3.9+, Linux desktop only, `package:sqlite3` is **synchronous FFI**, Python sidecar under `sidecar/` runs calibre plugins over JSON-lines stdio.
 

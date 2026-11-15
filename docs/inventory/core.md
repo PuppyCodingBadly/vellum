@@ -1,6 +1,6 @@
 # Vellum DATA/FORMATS slice — implementation contract (from Python source)
 
-Original source (authoritative, readable): /tmp/vellum/src/vellum/core/*.py and /tmp/vellum/tests/test_{db,covers,sorting,calibre,importer,store,epub,mobi,pdfbook,dictionary,gestures}.py
+Original source (authoritative, readable): the original application's tree, `src/vellum/core/*.py` and `tests/test_{db,covers,sorting,calibre,importer,store,epub,mobi,pdfbook,dictionary,gestures}.py`
 
 ## models.py
 Two dataclasses:

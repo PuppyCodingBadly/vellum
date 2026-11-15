@@ -1,6 +1,6 @@
 # Vellum UI slice — implementation contract (GTK4/libadwaita → Flutter)
 
-Original source (authoritative, readable): /tmp/vellum/src/vellum/app.py and /tmp/vellum/src/vellum/ui/*.py
+Original source (authoritative, readable): the original application's tree, `src/vellum/app.py` and `src/vellum/ui/*.py`
 
 ## 0. Application shell (app.py)
 - application_id "io.github.vellum.Vellum", name "Vellum", version 0.1.20, GPL-3.0, "A calibre-like ebook library manager."
