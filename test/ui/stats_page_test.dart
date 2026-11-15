@@ -103,7 +103,8 @@ void main() {
     await tester.tap(find.byTooltip('Refresh statistics'));
     await tester.pump();
 
-    expect(find.text('1m'), findsOneWidget);
+    // The summary and the recent-session row both report the same minute.
+    expect(find.text('1m'), findsWidgets);
     expect(find.textContaining('No reading sessions yet'), findsNothing);
   });
 }

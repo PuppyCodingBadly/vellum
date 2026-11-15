@@ -2,12 +2,15 @@
 library;
 
 import 'dart:ffi' as ffi;
+import 'dart:math' as math;
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:image/image.dart' as img;
 import 'package:pdfium_dart/pdfium_dart.dart';
+
+import 'pdf_reflow.dart';
 
 /// Default rasterization scale (1.0 = PDF points at 72 dpi).
 const defaultScale = 1.75;
@@ -200,6 +203,197 @@ class PdfBook {
       }
     }
     return 'Page ${index + 1}';
+  }
+
+  /// Build a reflow layout for [index] from PDFium's text layer.
+  ///
+  /// The page is rendered once at [renderScale] so the layout can crop the
+  /// original glyphs into a tintable atlas. Not every PDF has a text layer;
+  /// in that case the result reports [PdfReflowPage.hasText] false and the
+  /// reader keeps showing the page bitmap. No OCR is performed.
+  PdfReflowPage reflowPage(
+    int index, {
+    double renderScale = 3.0,
+  }) {
+    _ensureOpen();
+    final count = pageCount();
+    if (index < 0 || index >= count) {
+      throw RangeError.range(index, 0, count - 1, 'index');
+    }
+    final page = _library.FPDF_LoadPage(_doc, index);
+    if (page == ffi.nullptr) {
+      throw PdfRenderException('failed to open page ${index + 1}');
+    }
+    FPDF_BITMAP bitmap = ffi.nullptr;
+    FPDF_TEXTPAGE? textPage;
+    final left = calloc<ffi.Double>();
+    final right = calloc<ffi.Double>();
+    final bottom = calloc<ffi.Double>();
+    final top = calloc<ffi.Double>();
+    final originX = calloc<ffi.Double>();
+    final originY = calloc<ffi.Double>();
+    final objLeft = calloc<ffi.Float>();
+    final objRight = calloc<ffi.Float>();
+    final objBottom = calloc<ffi.Float>();
+    final objTop = calloc<ffi.Float>();
+    try {
+      final pageWidth = _library.FPDF_GetPageWidthF(page);
+      final pageHeight = _library.FPDF_GetPageHeightF(page);
+      if (_library.FPDFPage_GetRotation(page) != 0) {
+        return PdfReflowPage.fallback(
+          'This page is rotated; showing the page image.',
+          pageWidth: pageWidth,
+          pageHeight: pageHeight,
+        );
+      }
+      final size = rasterSize(pageWidth, pageHeight, renderScale);
+
+      bitmap = _library.FPDFBitmap_Create(size.width, size.height, 1);
+      if (bitmap == ffi.nullptr) {
+        throw PdfRenderException('failed to render page ${index + 1}');
+      }
+      _library.FPDFBitmap_FillRect(
+        bitmap,
+        0,
+        0,
+        size.width,
+        size.height,
+        0xFFFFFFFF,
+      );
+      _library.FPDF_RenderPageBitmap(
+        bitmap,
+        page,
+        0,
+        0,
+        size.width,
+        size.height,
+        0,
+        0,
+      );
+      final buffer = _library.FPDFBitmap_GetBuffer(bitmap);
+      final stride = _library.FPDFBitmap_GetStride(bitmap);
+      if (buffer == ffi.nullptr || stride <= 0) {
+        throw PdfRenderException('failed to render page ${index + 1}');
+      }
+      final raster = img.Image.fromBytes(
+        width: size.width,
+        height: size.height,
+        bytes: buffer.cast<ffi.Uint8>().asTypedList(stride * size.height).buffer,
+        rowStride: stride,
+        order: img.ChannelOrder.bgra,
+      );
+
+      final loaded = _library.FPDFText_LoadPage(page);
+      if (loaded == ffi.nullptr) {
+        return PdfReflowPage.fallback(
+          'This page has no text layer; showing the page image.',
+          pageWidth: pageWidth,
+          pageHeight: pageHeight,
+        );
+      }
+      textPage = loaded;
+      final charCount = _library.FPDFText_CountChars(loaded);
+      final chars = <PdfChar>[];
+      for (var i = 0; i < charCount; i++) {
+        if (_library.FPDFText_GetCharBox(
+              loaded,
+              i,
+              left,
+              right,
+              bottom,
+              top,
+            ) ==
+            0) {
+          continue;
+        }
+        final unicode = _library.FPDFText_GetUnicode(loaded, i);
+        if (unicode <= 0) continue;
+        final text = String.fromCharCode(unicode);
+        if (text == '\u0000' || text == '\uFFFD') continue;
+        final charLeft = math.min(left.value, right.value);
+        final charRight = math.max(left.value, right.value);
+        final charBottom = math.min(bottom.value, top.value);
+        final charTop = math.max(bottom.value, top.value);
+        var baseline = charBottom;
+        if (_library.FPDFText_GetCharOrigin(
+              loaded,
+              i,
+              originX,
+              originY,
+            ) !=
+            0) {
+          baseline = originY.value;
+        }
+        final fontSize = _library.FPDFText_GetFontSize(loaded, i);
+        chars.add(
+          PdfChar(
+            text: text,
+            left: charLeft,
+            bottom: charBottom,
+            right: charRight,
+            top: charTop,
+            baseline: baseline,
+            fontSize: fontSize > 0 ? fontSize : 12,
+          ),
+        );
+      }
+
+      final images = <PdfImagePlacement>[];
+      final objectCount = _library.FPDFPage_CountObjects(page);
+      for (var i = 0; i < objectCount; i++) {
+        final object = _library.FPDFPage_GetObject(page, i);
+        if (object == ffi.nullptr) continue;
+        if (_library.FPDFPageObj_GetType(object) != FPDF_PAGEOBJ_IMAGE) {
+          continue;
+        }
+        if (_library.FPDFPageObj_GetBounds(
+              object,
+              objLeft,
+              objBottom,
+              objRight,
+              objTop,
+            ) ==
+            0) {
+          continue;
+        }
+        final imageLeft = math.min(objLeft.value, objRight.value);
+        final imageRight = math.max(objLeft.value, objRight.value);
+        final imageBottom = math.min(objBottom.value, objTop.value);
+        final imageTop = math.max(objBottom.value, objTop.value);
+        if (imageRight <= imageLeft || imageTop <= imageBottom) continue;
+        images.add(
+          PdfImagePlacement(
+            left: imageLeft,
+            bottom: imageBottom,
+            right: imageRight,
+            top: imageTop,
+          ),
+        );
+      }
+
+      return buildPdfReflowPage(
+        chars: chars,
+        images: images,
+        bitmap: raster,
+        renderScale: renderScale,
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+      );
+    } finally {
+      if (textPage != null) _library.FPDFText_ClosePage(textPage);
+      if (bitmap != ffi.nullptr) _library.FPDFBitmap_Destroy(bitmap);
+      _library.FPDF_ClosePage(page);
+      calloc.free(left);
+      calloc.free(right);
+      calloc.free(bottom);
+      calloc.free(top);
+      calloc.free(originX);
+      calloc.free(originY);
+      calloc.free(objLeft);
+      calloc.free(objRight);
+      calloc.free(objBottom);
+      calloc.free(objTop);
+    }
   }
 
   /// Render [index] to PNG bytes at [scale] (1.0 = PDF points).

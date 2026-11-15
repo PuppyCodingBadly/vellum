@@ -6,9 +6,10 @@ import '../app_state.dart';
 import '../core/models.dart';
 import 'metadata_dialog.dart';
 import 'reader_page.dart';
+import 'theme.dart';
 import 'widgets/book_cover.dart';
 
-/// Full-page view of a single book with cover, metadata, and actions.
+/// Full-page view of a single book: the cover, its facts, and the actions.
 class BookDetailsPage extends StatefulWidget {
   const BookDetailsPage({super.key, required this.book});
 
@@ -47,7 +48,9 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   }
 
   bool get _canRead =>
-      _book.formats.any((format) => _readableFormats.contains(format.toLowerCase())) &&
+      _book.formats.any(
+        (format) => _readableFormats.contains(format.toLowerCase()),
+      ) &&
       _book.path.isNotEmpty &&
       File(_book.path).existsSync();
 
@@ -66,9 +69,9 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   }
 
   void _openReader() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => ReaderPage(book: _book)),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => ReaderPage(book: _book)));
   }
 
   Future<void> _toggleHidden() async {
@@ -83,165 +86,310 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final title = _book.title.isEmpty ? 'Untitled' : _book.title;
-
+    final palette = context.palette;
     return Scaffold(
-      appBar: AppBar(
-        centerTitle: true,
-        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ),
-      body: SingleChildScrollView(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 780),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 24,
-                children: [
-                  _buildHeader(theme),
-                  _buildDetails(theme),
-                  _buildDescription(theme),
-                ],
+      backgroundColor: palette.background,
+      body: SafeArea(
+        child: Column(
+          children: [
+            _topBar(palette),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(
+                  VellumSpace.xl,
+                  VellumSpace.xs,
+                  VellumSpace.xl,
+                  VellumSpace.xxl,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1040),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final wide = constraints.maxWidth >= 680;
+                        final cover = _cover(palette);
+                        final info = _identity(palette);
+                        if (!wide) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Center(child: cover),
+                              const SizedBox(height: VellumSpace.lg),
+                              info,
+                              const SizedBox(height: VellumSpace.xl),
+                              _description(palette),
+                            ],
+                          );
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                cover,
+                                const SizedBox(width: 40),
+                                Expanded(child: info),
+                              ],
+                            ),
+                            const SizedBox(height: VellumSpace.xl),
+                            _description(palette),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildHeader(ThemeData theme) {
+  Widget _topBar(VellumPalette palette) {
+    return SizedBox(
+      height: 58,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: VellumSpace.md),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back, size: 19),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+            const SizedBox(width: 4),
+            Text('Library', style: VellumType.ui(12.5, color: palette.textDim)),
+            const Spacer(),
+            if (_book.hidden)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: _status('Hidden', palette),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _status(String label, VellumPalette palette) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: palette.surfaceHigh,
+        borderRadius: VellumRadius.smallAll,
+        border: Border.all(color: palette.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.visibility_off_outlined, size: 13, color: palette.textDim),
+          const SizedBox(width: 5),
+          Text(label, style: VellumType.ui(11, color: palette.textDim)),
+        ],
+      ),
+    );
+  }
+
+  Widget _cover(VellumPalette palette) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [palette.coverShadow(hovered: false)],
+      ),
+      child: BookCover(book: _book, width: 236, height: 354, borderRadius: 10),
+    );
+  }
+
+  Widget _identity(VellumPalette palette) {
+    final theme = Theme.of(context);
+    final title = _book.title.isEmpty ? 'Untitled' : _book.title;
     final authors = _book.authors.isEmpty
         ? 'Unknown author'
         : _book.authors.join(', ');
     final rating = _book.rating;
     final filledStars = rating.round().clamp(0, 5).toInt();
     final stars = '★' * filledStars + '☆' * (5 - filledStars);
-    final ratingText = rating > 0 ? '$stars  ${rating.toStringAsFixed(1)}' : stars;
-    final accent = _appState?.accentColor ?? theme.colorScheme.primary;
+    final ratingText = rating > 0
+        ? '$stars  ${rating.toStringAsFixed(1)}'
+        : stars;
 
-    return Row(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        BookCover(book: _book, width: 220, height: 330),
-        const SizedBox(width: 24),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        Text(
+          title,
+          style: VellumType.display(
+            38,
+            weight: FontWeight.w600,
+            height: 1.06,
+            letterSpacing: -0.7,
+            color: palette.text,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          authors,
+          style: VellumType.ui(
+            theme.textTheme.bodyLarge?.fontSize ?? 15,
+            height: 1.45,
+            color: palette.textDim,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          ratingText,
+          style: VellumType.ui(
+            13,
+            height: 1.3,
+            color: palette.accentSoft,
+          ).copyWith(letterSpacing: 0.8),
+        ),
+        if (_book.tags.isNotEmpty) ...[
+          const SizedBox(height: VellumSpace.md),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
             children: [
-              Text(
-                _book.title.isEmpty ? 'Untitled' : _book.title,
-                style: theme.textTheme.headlineMedium,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                authors,
-                style: theme.textTheme.bodyLarge
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 8),
-              Text(ratingText, style: theme.textTheme.bodyLarge),
-              if (_book.tags.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final tag in _book.tags)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: accent.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          tag,
-                          style: theme.textTheme.labelMedium
-                              ?.copyWith(color: accent),
-                        ),
-                      ),
-                  ],
+              for (final tag in _book.tags)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: palette.surfaceHigh,
+                    borderRadius: VellumRadius.smallAll,
+                    border: Border.all(color: palette.line),
+                  ),
+                  child: Text(
+                    tag,
+                    style: VellumType.ui(
+                      11,
+                      weight: FontWeight.w500,
+                      color: palette.textDim,
+                    ),
+                  ),
                 ),
-              ],
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton(
+            ],
+          ),
+        ],
+        const SizedBox(height: VellumSpace.lg),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (_canRead)
+              FilledButton.icon(
+                onPressed: _openReader,
+                icon: const Icon(Icons.menu_book_outlined, size: 17),
+                label: const Text('Read'),
+              ),
+            _canRead
+                ? OutlinedButton(
+                    onPressed: _fetchMetadata,
+                    child: const Text('Fetch Metadata'),
+                  )
+                : FilledButton(
                     onPressed: _fetchMetadata,
                     child: const Text('Fetch Metadata'),
                   ),
-                  if (_canRead)
-                    FilledButton(
-                      onPressed: _openReader,
-                      child: const Text('Read'),
-                    ),
-                  OutlinedButton(
-                    onPressed: _toggleHidden,
-                    child: Text(_book.hidden ? 'Unhide Book' : 'Hide Book'),
-                  ),
-                ],
-              ),
-            ],
-          ),
+            OutlinedButton(
+              onPressed: _toggleHidden,
+              child: Text(_book.hidden ? 'Unhide Book' : 'Hide Book'),
+            ),
+          ],
         ),
+        _facts(palette),
       ],
     );
   }
 
-  Widget _buildDetails(ThemeData theme) {
+  Widget _facts(VellumPalette palette) {
     final rows = <(String, String)>[
       ('Publisher', _book.publisher),
       ('Published', _book.pubdate),
       ('Language', _book.language),
       ('ISBN', _book.isbn),
+      ('Format', _book.formats.join(', ').toUpperCase()),
     ].where((row) => row.$2.isNotEmpty).toList();
     if (rows.isEmpty) return const SizedBox.shrink();
 
-    final labelStyle = theme.textTheme.bodyMedium
-        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Details', style: theme.textTheme.titleMedium),
-        const SizedBox(height: 8),
-        for (final (label, value) in rows)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+    return Padding(
+      padding: const EdgeInsets.only(top: VellumSpace.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Divider(height: 1, color: palette.line),
+          const SizedBox(height: VellumSpace.md),
+          Wrap(
+            spacing: VellumSpace.lg,
+            runSpacing: VellumSpace.md,
+            children: [
+              for (final (label, value) in rows)
                 SizedBox(
                   width: 120,
-                  child: Text(label, style: labelStyle),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: VellumType.ui(
+                          10.5,
+                          weight: FontWeight.w500,
+                          height: 1.2,
+                          color: palette.textDim,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        value,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: VellumType.ui(
+                          12.5,
+                          height: 1.4,
+                          color: palette.text,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                Expanded(
-                  child: Text(value, style: theme.textTheme.bodyMedium),
-                ),
-              ],
-            ),
+            ],
           ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildDescription(ThemeData theme) {
+  Widget _description(VellumPalette palette) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Description', style: theme.textTheme.titleMedium),
-        const SizedBox(height: 8),
-        SelectableText(
-          _book.description.isEmpty
-              ? 'No description available.'
-              : _book.description,
+        Text(
+          'Description',
+          style: VellumType.display(
+            20,
+            weight: FontWeight.w600,
+            height: 1.2,
+            color: palette.text,
+          ),
+        ),
+        const SizedBox(height: VellumSpace.sm),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: SelectableText(
+            _book.description.isEmpty
+                ? 'No description available.'
+                : _book.description,
+            style: VellumType.ui(
+              14,
+              height: 1.7,
+              color: _book.description.isEmpty ? palette.textDim : palette.text,
+            ),
+          ),
         ),
       ],
     );

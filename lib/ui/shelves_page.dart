@@ -3,13 +3,14 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../core/models.dart';
 import 'book_details_page.dart';
-import 'widgets/book_cover.dart';
+import 'theme.dart';
+import 'widgets/book_grid.dart';
 
 /// Shelves (user collections) page.
 ///
 /// Wide layouts show the shelf list beside the selected shelf's books; narrow
 /// layouts drill down from the list into a single shelf. Shelf contents use the
-/// same [BookCard] grid as the library page.
+/// same [BookGrid] as the library.
 class ShelvesPage extends StatefulWidget {
   const ShelvesPage({super.key});
 
@@ -24,7 +25,9 @@ class _ShelvesPageState extends State<ShelvesPage> {
   bool _showShelfDetail = false;
 
   int? _effectiveSelection(
-      List<Map<String, Object?>> shelves, {required bool wide}) {
+    List<Map<String, Object?>> shelves, {
+    required bool wide,
+  }) {
     final requested = _selectedShelfId;
     if (requested != null && shelves.any((s) => s['id'] == requested)) {
       return requested;
@@ -34,7 +37,9 @@ class _ShelvesPageState extends State<ShelvesPage> {
   }
 
   Future<void> _createShelf(
-      AppState appState, List<Map<String, Object?>> shelves) async {
+    AppState appState,
+    List<Map<String, Object?>> shelves,
+  ) async {
     final existing = shelves
         .map((s) => (s['name'] as String).trim().toLowerCase())
         .toSet();
@@ -56,8 +61,11 @@ class _ShelvesPageState extends State<ShelvesPage> {
     await appState.refresh();
   }
 
-  Future<void> _renameShelf(AppState appState,
-      List<Map<String, Object?>> shelves, Map<String, Object?> shelf) async {
+  Future<void> _renameShelf(
+    AppState appState,
+    List<Map<String, Object?>> shelves,
+    Map<String, Object?> shelf,
+  ) async {
     final id = shelf['id'] as int;
     final currentName = shelf['name'] as String;
     final existing = shelves
@@ -130,7 +138,10 @@ class _ShelvesPageState extends State<ShelvesPage> {
   }
 
   Future<void> _removeFromShelf(
-      AppState appState, int shelfId, Book book) async {
+    AppState appState,
+    int shelfId,
+    Book book,
+  ) async {
     final bookId = book.id;
     if (bookId == null) return;
     appState.library.removeBookFromShelf(shelfId, bookId);
@@ -139,7 +150,11 @@ class _ShelvesPageState extends State<ShelvesPage> {
   }
 
   Future<void> _showBookMenu(
-      AppState appState, BuildContext cardContext, int shelfId, Book book) async {
+    AppState appState,
+    BuildContext cardContext,
+    int shelfId,
+    Book book,
+  ) async {
     final overlay = Overlay.of(context).context.findRenderObject();
     final card = cardContext.findRenderObject();
     if (overlay is! RenderBox || card is! RenderBox) return;
@@ -164,9 +179,7 @@ class _ShelvesPageState extends State<ShelvesPage> {
 
   void _openBook(Book book) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => BookDetailsPage(book: book),
-      ),
+      MaterialPageRoute<void>(builder: (_) => BookDetailsPage(book: book)),
     );
   }
 
@@ -199,8 +212,8 @@ class _ShelvesPageState extends State<ShelvesPage> {
             return Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SizedBox(width: 260, child: list),
-                const VerticalDivider(width: 1),
+                SizedBox(width: 256, child: list),
+                VerticalDivider(width: 1, color: context.palette.line),
                 Expanded(
                   child: selectedId == null
                       ? const Center(child: Text('No shelves yet'))
@@ -219,68 +232,110 @@ class _ShelvesPageState extends State<ShelvesPage> {
     );
   }
 
-  Widget _buildShelfList(AppState appState,
-      List<Map<String, Object?>> shelves, int? selectedId,
-      {required bool wide}) {
-    final theme = Theme.of(context);
+  Widget _buildShelfList(
+    AppState appState,
+    List<Map<String, Object?>> shelves,
+    int? selectedId, {
+    required bool wide,
+  }) {
+    final palette = context.palette;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('Shelves', style: theme.textTheme.titleLarge),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: FilledButton.icon(
-            onPressed: () => _createShelf(appState, shelves),
-            icon: const Icon(Icons.add),
-            label: const Text('New Shelf'),
+          padding: const EdgeInsets.fromLTRB(
+            VellumSpace.lg,
+            VellumSpace.lg,
+            VellumSpace.lg,
+            VellumSpace.md,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Shelves',
+                style: VellumType.display(
+                  27,
+                  weight: FontWeight.w600,
+                  height: 1.1,
+                  letterSpacing: -0.4,
+                  color: palette.text,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => _createShelf(appState, shelves),
+                  icon: const Icon(Icons.add, size: 17),
+                  label: const Text('New Shelf'),
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 8),
         Expanded(
           child: shelves.isEmpty
-              ? const Center(child: Text('No shelves yet'))
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(VellumSpace.lg),
+                    child: Text(
+                      'No shelves yet',
+                      textAlign: TextAlign.center,
+                      style: VellumType.ui(
+                        13,
+                        height: 1.5,
+                        color: palette.textDim,
+                      ),
+                    ),
+                  ),
+                )
               : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: VellumSpace.sm,
+                    vertical: VellumSpace.xs,
+                  ),
                   itemCount: shelves.length,
                   itemBuilder: (context, index) {
                     final shelf = shelves[index];
                     final shelfId = shelf['id'] as int;
                     final name = shelf['name'] as String;
                     final bookCount = shelf['book_count'] as int;
-                    return ListTile(
-                      selected: shelfId == selectedId,
-                      title: Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text('$bookCount books'),
-                      onTap: () => setState(() {
-                        _selectedShelfId = shelfId;
-                        if (!wide) _showShelfDetail = true;
-                      }),
-                      trailing: PopupMenuButton<String>(
-                        tooltip: 'Shelf actions',
-                        onSelected: (action) {
-                          if (action == 'rename') {
-                            _renameShelf(appState, shelves, shelf);
-                          } else if (action == 'delete') {
-                            _deleteShelf(appState, shelfId);
-                          }
-                        },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem<String>(
-                            value: 'rename',
-                            child: Text('Rename'),
-                          ),
-                          PopupMenuItem<String>(
-                            value: 'delete',
-                            child: Text('Delete'),
-                          ),
-                        ],
+                    final selected = shelfId == selectedId;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: ListTile(
+                        selected: selected,
+                        title: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text('$bookCount books'),
+                        onTap: () => setState(() {
+                          _selectedShelfId = shelfId;
+                          if (!wide) _showShelfDetail = true;
+                        }),
+                        trailing: PopupMenuButton<String>(
+                          tooltip: 'Shelf actions',
+                          onSelected: (action) {
+                            if (action == 'rename') {
+                              _renameShelf(appState, shelves, shelf);
+                            } else if (action == 'delete') {
+                              _deleteShelf(appState, shelfId);
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem<String>(
+                              value: 'rename',
+                              child: Text('Rename'),
+                            ),
+                            PopupMenuItem<String>(
+                              value: 'delete',
+                              child: Text('Delete'),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   },
@@ -291,38 +346,64 @@ class _ShelvesPageState extends State<ShelvesPage> {
   }
 
   Widget _buildShelfDetail(
-      AppState appState, List<Map<String, Object?>> shelves, int shelfId,
-      {required bool narrow}) {
-    final theme = Theme.of(context);
+    AppState appState,
+    List<Map<String, Object?>> shelves,
+    int shelfId, {
+    required bool narrow,
+  }) {
+    final palette = context.palette;
     final index = shelves.indexWhere((s) => s['id'] == shelfId);
     final name = index >= 0 ? shelves[index]['name'] as String : '';
-    final books = appState.library
-        .shelfBooks(shelfId, includeHidden: appState.showHidden);
+    final books = appState.library.shelfBooks(
+      shelfId,
+      includeHidden: appState.showHidden,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+          padding: EdgeInsets.fromLTRB(
+            narrow ? VellumSpace.sm : VellumSpace.xl,
+            VellumSpace.lg,
+            VellumSpace.xl,
+            VellumSpace.xs,
+          ),
           child: Row(
             children: [
               if (narrow)
                 IconButton(
                   tooltip: 'Back',
                   onPressed: () => setState(() => _showShelfDetail = false),
-                  icon: const Icon(Icons.arrow_back),
+                  icon: const Icon(Icons.arrow_back, size: 19),
                 ),
               Expanded(
-                child: Text(
-                  name,
-                  style: theme.textTheme.titleLarge,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: VellumType.display(
+                        27,
+                        weight: FontWeight.w600,
+                        height: 1.1,
+                        letterSpacing: -0.4,
+                        color: palette.text,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      books.length == 1 ? '1 book' : '${books.length} books',
+                      style: VellumType.ui(12, color: palette.textDim),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: VellumSpace.sm),
               FilledButton.tonalIcon(
                 onPressed: () => _addBooks(appState, shelfId),
-                icon: const Icon(Icons.add),
+                icon: const Icon(Icons.add, size: 17),
                 label: const Text('Add books…'),
               ),
             ],
@@ -330,28 +411,28 @@ class _ShelvesPageState extends State<ShelvesPage> {
         ),
         Expanded(
           child: books.isEmpty
-              ? const Center(child: Text('No books on this shelf'))
-              : GridView.builder(
-                  padding: const EdgeInsets.all(12),
-                  gridDelegate:
-                      const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 190,
-                    childAspectRatio: 2 / 3,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
+              ? Center(
+                  child: Text(
+                    'No books on this shelf',
+                    textAlign: TextAlign.center,
+                    style: VellumType.ui(
+                      13,
+                      height: 1.5,
+                      color: palette.textDim,
+                    ),
                   ),
-                  itemCount: books.length,
-                  itemBuilder: (context, index) {
-                    final book = books[index];
-                    return Builder(
-                      builder: (cardContext) => BookCard(
-                        book: book,
-                        onTap: () => _openBook(book),
-                        onLongPress: () =>
-                            _showBookMenu(appState, cardContext, shelfId, book),
-                      ),
-                    );
-                  },
+                )
+              : BookGrid(
+                  books: books,
+                  onTap: _openBook,
+                  onLongPress: (book, cardContext) =>
+                      _showBookMenu(appState, cardContext, shelfId, book),
+                  padding: const EdgeInsets.fromLTRB(
+                    VellumSpace.xl,
+                    VellumSpace.sm,
+                    VellumSpace.xl,
+                    VellumSpace.xl,
+                  ),
                 ),
         ),
       ],
@@ -422,10 +503,7 @@ class _ShelfNameDialogState extends State<_ShelfNameDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: _submit,
-          child: Text(widget.actionLabel),
-        ),
+        FilledButton(onPressed: _submit, child: Text(widget.actionLabel)),
       ],
     );
   }
@@ -484,37 +562,37 @@ class _AddBooksDialogState extends State<_AddBooksDialog> {
               child: widget.books.isEmpty
                   ? const Center(child: Text('No books to add'))
                   : books.isEmpty
-                      ? const Center(child: Text('No matching books'))
-                      : ListView.builder(
-                          itemCount: books.length,
-                          itemBuilder: (context, index) {
-                            final book = books[index];
-                            final bookId = book.id!;
-                            return CheckboxListTile(
-                              value: _selected.contains(bookId),
-                              onChanged: (checked) => setState(() {
-                                if (checked == true) {
-                                  _selected.add(bookId);
-                                } else {
-                                  _selected.remove(bookId);
-                                }
-                              }),
-                              title: Text(
-                                book.title.isEmpty ? 'Untitled' : book.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                book.authors.isEmpty
-                                    ? 'Unknown author'
-                                    : book.authors.join(', '),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              dense: true,
-                            );
-                          },
-                        ),
+                  ? const Center(child: Text('No matching books'))
+                  : ListView.builder(
+                      itemCount: books.length,
+                      itemBuilder: (context, index) {
+                        final book = books[index];
+                        final bookId = book.id!;
+                        return CheckboxListTile(
+                          value: _selected.contains(bookId),
+                          onChanged: (checked) => setState(() {
+                            if (checked == true) {
+                              _selected.add(bookId);
+                            } else {
+                              _selected.remove(bookId);
+                            }
+                          }),
+                          title: Text(
+                            book.title.isEmpty ? 'Untitled' : book.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            book.authors.isEmpty
+                                ? 'Unknown author'
+                                : book.authors.join(', '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          dense: true,
+                        );
+                      },
+                    ),
             ),
           ],
         ),

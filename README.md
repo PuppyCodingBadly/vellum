@@ -31,6 +31,9 @@ Updates: `flatpak update io.github.vellum.Vellum`.
   and microdata)
 - EPUB/MOBI/PDF reader with:
   - adjustable font size for EPUB and MOBI, and font-scaled PDF page rendering
+  - PDF reflow from the original text layer: word sprites are tinted for the
+    reader theme and wrapped to the window, while image-only pages stay as page
+    images
   - Light, Sepia, and Dark themes (or follow the system scheme)
   - table of contents, page/chapter turns, swipe gestures, and fullscreen
   - text highlights with a highlights panel (EPUB/MOBI)
@@ -67,6 +70,21 @@ For a build:
 flutter build linux --release
 ./build/linux/x64/release/bundle/vellum
 ```
+
+### PDF reflow
+
+PDF pages can be read as page images or reflowed. Reflow reads PDFium's text
+layer, groups characters into words, lines, and paragraphs, crops the original
+glyphs into a tintable sprite atlas, and wraps those sprites to the window
+width. Nothing is OCR'd, so the original type and symbols survive. Headings,
+quotations, lists, and image/chart blocks keep their reading order; page
+furniture such as running heads and page numbers is left out. A page with no
+text layer (a scan) falls back to the page image and says so.
+
+Toggle reflow in the PDF reader header (the wrap-text button) or under
+**Preferences → Reader → Reflow PDF pages**. The choice is stored as
+`pdf_reflow` in `config.json`. Page text is available to screen readers and the
+reader's **Copy page text** action; the sprites themselves are images.
 
 ### PDF support
 

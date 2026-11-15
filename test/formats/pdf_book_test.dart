@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:vellum/formats/pdf_book.dart';
+import 'package:vellum/formats/pdf_reflow.dart';
 
 const _pngMagic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -83,6 +84,44 @@ void main() {
     expect(pdf.titleAt(0), isNotEmpty);
     expect(pdf.titleAt(1) != pdf.titleAt(0) || pdf.titleAt(0) == 'Page 1',
         isTrue);
+  });
+
+  test('reflow reads the PDF text layer without OCR', () {
+    final pdf = PdfBook(_makePdf('${tmp.path}/reflow.pdf', [
+      'Hello reflow page with several words',
+    ]));
+    try {
+      final page = pdf.reflowPage(0);
+      expect(page.hasText, isTrue);
+      expect(page.atlasPng, isNotNull);
+      final text = page.blocks
+          .whereType<PdfReflowParagraph>()
+          .map((paragraph) => paragraph.text)
+          .join(' ');
+      expect(text, contains('Hello reflow page'));
+      final words = page.blocks
+          .whereType<PdfReflowParagraph>()
+          .expand((paragraph) => paragraph.lines)
+          .expand((line) => line.words)
+          .toList();
+      expect(words, isNotEmpty);
+      expect(words.first.atlasWidth, greaterThan(0));
+    } finally {
+      pdf.close();
+    }
+  });
+
+  test('a scanned page reports no text layer', () {
+    // A PDF with no content stream still has a page but no text layer.
+    final pdf = PdfBook(_makePdf('${tmp.path}/blank.pdf', ['']));
+    try {
+      final page = pdf.reflowPage(0);
+      expect(page.hasText, isFalse);
+      expect(page.atlasPng, isNull);
+      expect(page.message, contains('no text layer'));
+    } finally {
+      pdf.close();
+    }
   });
 
   test('garbage file throws FormatException', () {

@@ -10,6 +10,7 @@ import '../metadata/engine.dart';
 import '../metadata/metadata.dart';
 import '../metadata/sorting.dart';
 import '../metadata/universal.dart' show normalizeUrl;
+import 'theme.dart';
 import 'widgets/book_cover.dart';
 
 /// Modal dialog that searches metadata sources and applies a chosen result.
@@ -75,11 +76,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
     final serial = _beginRequest('Searching metadata sources…');
     try {
       final searches = await Future.wait([
-        app.engine.find(
-          title: book.title,
-          authors: authors,
-          isbn: book.isbn,
-        ),
+        app.engine.find(title: book.title, authors: authors, isbn: book.isbn),
         _searchPlugins(
           app,
           title: book.title,
@@ -113,10 +110,13 @@ class _MetadataDialogState extends State<MetadataDialog> {
         _searchPlugins(app, title: query, isbn: queryIsbn(query)),
       ]);
       if (!mounted || serial != _serial) return;
-      final builtIns =
-          searches[0].where((meta) => meta.sourceId != 'merged').toList();
-      final results =
-          MetadataEngine.combineQuery(query, [...builtIns, ...searches[1]]);
+      final builtIns = searches[0]
+          .where((meta) => meta.sourceId != 'merged')
+          .toList();
+      final results = MetadataEngine.combineQuery(query, [
+        ...builtIns,
+        ...searches[1],
+      ]);
       _showSearchResults(results, matchedQuery: true);
     } catch (error) {
       if (!mounted || serial != _serial) return;
@@ -184,7 +184,10 @@ class _MetadataDialogState extends State<MetadataDialog> {
     }
   }
 
-  void _showSearchResults(List<Metadata> results, {required bool matchedQuery}) {
+  void _showSearchResults(
+    List<Metadata> results, {
+    required bool matchedQuery,
+  }) {
     if (results.isEmpty) {
       setState(() {
         _results = [];
@@ -217,9 +220,9 @@ class _MetadataDialogState extends State<MetadataDialog> {
 
   /// Fetches cover bytes for [meta], preferring the plugin that produced it.
   Future<Uint8List?> _coverBytes(AppState app, Metadata meta) async {
-    final pluginResult = app.plugins
-        .metadataPlugins()
-        .any((plugin) => plugin.name == meta.sourceName);
+    final pluginResult = app.plugins.metadataPlugins().any(
+      (plugin) => plugin.name == meta.sourceName,
+    );
     if (pluginResult) {
       try {
         final data = await app.plugins.downloadCover(meta.toJson());
@@ -287,8 +290,8 @@ class _MetadataDialogState extends State<MetadataDialog> {
     return Dialog(
       insetPadding: const EdgeInsets.all(24),
       child: SizedBox(
-        width: 620,
-        height: 580,
+        width: 660,
+        height: 600,
         child: Column(
           children: [
             _buildHeader(context),
@@ -310,7 +313,12 @@ class _MetadataDialogState extends State<MetadataDialog> {
           Expanded(
             child: Text(
               'Fetch Metadata',
-              style: Theme.of(context).textTheme.titleLarge,
+              style: VellumType.display(
+                22,
+                weight: FontWeight.w600,
+                height: 1.2,
+                color: context.palette.text,
+              ),
             ),
           ),
           FilledButton(
@@ -346,10 +354,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
             ),
           ),
           const SizedBox(width: 8),
-          FilledButton(
-            onPressed: _runQuery,
-            child: const Text('Search'),
-          ),
+          FilledButton(onPressed: _runQuery, child: const Text('Search')),
           const SizedBox(width: 8),
           Tooltip(
             message: 'Sort results',
@@ -391,10 +396,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
             ),
           ),
           const SizedBox(width: 8),
-          OutlinedButton(
-            onPressed: _grabUrl,
-            child: const Text('Grab'),
-          ),
+          OutlinedButton(onPressed: _grabUrl, child: const Text('Grab')),
         ],
       ),
     );
@@ -416,8 +418,9 @@ class _MetadataDialogState extends State<MetadataDialog> {
               const SizedBox(height: 12),
               Text(
                 _busyMessage,
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
@@ -440,8 +443,9 @@ class _MetadataDialogState extends State<MetadataDialog> {
                 Text(
                   _emptyDescription,
                   textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -480,23 +484,28 @@ class _ResultTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final dim = theme.textTheme.bodySmall
-        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    final authors =
-        meta.authors.isEmpty ? 'Unknown author' : meta.authors.join(', ');
+    final dim = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    final authors = meta.authors.isEmpty
+        ? 'Unknown author'
+        : meta.authors.join(', ');
     final source = meta.sourceName.isNotEmpty
         ? meta.sourceName
         : (meta.sourceId.isNotEmpty ? meta.sourceId : 'Unknown source');
-    final origin =
-        meta.isbn.isEmpty ? source : '$source · ISBN ${meta.isbn}';
+    final origin = meta.isbn.isEmpty ? source : '$source · ISBN ${meta.isbn}';
 
+    final palette = context.palette;
     return Material(
-      color: selected
-          ? theme.colorScheme.secondaryContainer.withValues(alpha: 0.5)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
+      color: selected ? palette.surfaceHigh : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: VellumRadius.mediumAll,
+        side: BorderSide(
+          color: selected ? palette.accent.withValues(alpha: 0.45) : Colors.transparent,
+        ),
+      ),
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: VellumRadius.mediumAll,
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -532,7 +541,12 @@ class _ResultTile extends StatelessWidget {
               ),
               if (meta.rating > 0) ...[
                 const SizedBox(width: 8),
-                Text('★ ${meta.rating.toStringAsFixed(1)}'),
+                Icon(Icons.star_rounded, size: 14, color: palette.accentSoft),
+                const SizedBox(width: 3),
+                Text(
+                  meta.rating.toStringAsFixed(1),
+                  style: VellumType.ui(12, color: palette.textDim),
+                ),
               ],
             ],
           ),
@@ -556,7 +570,7 @@ class _ResultTile extends StatelessWidget {
       width: 48,
       height: 72,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(6),
         child: meta.coverUrl.isEmpty
             ? placeholder
             : Image.network(

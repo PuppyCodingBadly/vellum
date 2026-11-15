@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,10 +12,12 @@ import 'package:window_manager/window_manager.dart';
 import '../app_state.dart';
 import '../core/gestures.dart';
 import '../core/models.dart';
+import '../formats/pdf_reflow.dart';
 import '../reader/document_model.dart';
 import '../reader/reader_controller.dart';
+import 'theme.dart';
 
-const double _baseFontSize = 16.0;
+const double _baseFontSize = 17.0;
 const double _minFontScale = 0.8;
 const double _maxFontScale = 1.6;
 const Duration _animationDuration = Duration(milliseconds: 200);
@@ -23,11 +26,7 @@ const Duration _selectionDebounce = Duration(milliseconds: 350);
 /// Reader page for a single [Book].
 class ReaderPage extends StatefulWidget {
   /// Creates a reader for [book], optionally starting at [initialChapter].
-  const ReaderPage({
-    super.key,
-    required this.book,
-    this.initialChapter,
-  });
+  const ReaderPage({super.key, required this.book, this.initialChapter});
 
   /// Book to render.
   final Book book;
@@ -71,6 +70,7 @@ class _ReaderPageState extends State<ReaderPage> {
         library: appState.library,
         stats: appState.stats,
         initialChapter: widget.initialChapter,
+        pdfReflow: appState.pdfReflow,
         onToast: appState.showToast,
       );
       _controller = created;
@@ -85,6 +85,7 @@ class _ReaderPageState extends State<ReaderPage> {
       }
     } else {
       controller.setFontScale(appState.readerFontScale);
+      controller.setPdfReflow(appState.pdfReflow);
     }
   }
 
@@ -147,7 +148,9 @@ class _ReaderPageState extends State<ReaderPage> {
     if (!position.hasContentDimensions) return;
     final target = position.maxScrollExtent * fraction.clamp(0.0, 1.0);
     _scrollController.jumpTo(
-      target.clamp(position.minScrollExtent, position.maxScrollExtent).toDouble(),
+      target
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble(),
     );
   }
 
@@ -164,12 +167,16 @@ class _ReaderPageState extends State<ReaderPage> {
       textScaler: TextScaler.noScaling,
     )..layout(maxWidth: _contentWidth);
     final renderedOffset = document.documentStartToRendered(documentOffset);
-    final caret =
-        painter.getOffsetForCaret(TextPosition(offset: renderedOffset), Rect.zero);
+    final caret = painter.getOffsetForCaret(
+      TextPosition(offset: renderedOffset),
+      Rect.zero,
+    );
     final position = _scrollController.position;
     final target = caret.dy - position.viewportDimension / 3;
     _scrollController.jumpTo(
-      target.clamp(position.minScrollExtent, position.maxScrollExtent).toDouble(),
+      target
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble(),
     );
   }
 
@@ -218,6 +225,27 @@ class _ReaderPageState extends State<ReaderPage> {
     controller.setFontScale(next);
   }
 
+  void _togglePdfReflow() {
+    final controller = _controller;
+    final appState = _appState;
+    if (controller == null || appState == null || !controller.isPdf) return;
+    final next = !controller.pdfReflow;
+    appState.pdfReflow = next;
+    controller.setPdfReflow(next);
+  }
+
+  Future<void> _copyPageText() async {
+    final page = _controller?.pdfReflowPage;
+    if (page == null) return;
+    final text = page.blocks
+        .whereType<PdfReflowParagraph>()
+        .map((paragraph) => paragraph.text)
+        .join('\n\n');
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    _appState?.showToast('Page text copied');
+  }
+
   Future<void> _toggleFullscreen() async {
     try {
       final fullscreen = await windowManager.isFullScreen();
@@ -249,6 +277,7 @@ class _ReaderPageState extends State<ReaderPage> {
     final controller = _controller;
     if (controller != null &&
         controller.isPdf &&
+        !controller.pdfReflow &&
         HardwareKeyboard.instance.isControlPressed) {
       if (key == LogicalKeyboardKey.equal ||
           key == LogicalKeyboardKey.numpadAdd) {
@@ -266,7 +295,10 @@ class _ReaderPageState extends State<ReaderPage> {
 
   // -- selection / highlights ------------------------------------------------
 
-  void _onSelectionChanged(TextSelection selection, SelectionChangedCause? cause) {
+  void _onSelectionChanged(
+    TextSelection selection,
+    SelectionChangedCause? cause,
+  ) {
     final controller = _controller;
     final document = controller?.document;
     if (controller == null ||
@@ -366,11 +398,7 @@ class _ReaderPageState extends State<ReaderPage> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        for (final color in const [
-                          'yellow',
-                          'green',
-                          'pink',
-                        ])
+                        for (final color in const ['yellow', 'green', 'pink'])
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 2),
                             child: Tooltip(
@@ -523,7 +551,10 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
-  List<Widget> _definitionWidgets(List<dynamic> meanings, _ReaderColors colors) {
+  List<Widget> _definitionWidgets(
+    List<dynamic> meanings,
+    _ReaderColors colors,
+  ) {
     final widgets = <Widget>[];
     for (final raw in meanings) {
       if (raw is Map) {
@@ -533,31 +564,38 @@ class _ReaderPageState extends State<ReaderPage> {
     return widgets;
   }
 
-  List<Widget> _meaningWidgets(Map<dynamic, dynamic> meaning, _ReaderColors colors) {
+  List<Widget> _meaningWidgets(
+    Map<dynamic, dynamic> meaning,
+    _ReaderColors colors,
+  ) {
     final widgets = <Widget>[];
     final part = (meaning['partOfSpeech'] as String? ?? '').trim();
     if (part.isNotEmpty) {
-      widgets.add(Padding(
-        padding: const EdgeInsets.only(top: 6, bottom: 2),
-        child: Text(
-          part,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: colors.foreground,
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 6, bottom: 2),
+          child: Text(
+            part,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: colors.foreground,
+            ),
           ),
         ),
-      ));
+      );
     }
     final definitions = meaning['definitions'] as List? ?? const [];
     for (final definition in definitions) {
       if (definition is String) {
-        widgets.add(Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: SelectableText(
-            '• $definition',
-            style: TextStyle(color: colors.foreground, height: 1.35),
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: SelectableText(
+              '• $definition',
+              style: TextStyle(color: colors.foreground, height: 1.35),
+            ),
           ),
-        ));
+        );
       }
     }
     return widgets;
@@ -567,10 +605,12 @@ class _ReaderPageState extends State<ReaderPage> {
 
   PopupMenuButton<int> _buildTocMenu(
     ReaderController controller,
-    _ReaderColors colors,
-  ) {
+    _ReaderColors colors, {
+    bool compact = false,
+  }) {
     return PopupMenuButton<int>(
       tooltip: 'Table of contents',
+      icon: compact ? const Icon(Icons.menu_book_outlined) : null,
       enabled: controller.items.isNotEmpty,
       position: PopupMenuPosition.under,
       constraints: const BoxConstraints(maxWidth: 380, maxHeight: 400),
@@ -586,18 +626,87 @@ class _ReaderPageState extends State<ReaderPage> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontWeight:
-                      i == controller.index ? FontWeight.bold : FontWeight.normal,
+                  fontWeight: i == controller.index
+                      ? FontWeight.bold
+                      : FontWeight.normal,
                   color: colors.foreground,
                 ),
               ),
             ),
           ),
       ],
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Text('Chapters', style: TextStyle(color: colors.foreground)),
-      ),
+      child: compact
+          ? null
+          : Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child:
+                  Text('Chapters', style: TextStyle(color: colors.foreground)),
+            ),
+    );
+  }
+
+  /// Narrow-window reader options: text size, theme, and fullscreen.
+  ///
+  /// The wide header keeps those as direct controls. Below the wide
+  /// breakpoint they would push the title and page count off the row, so they
+  /// move behind one menu instead of overflowing.
+  PopupMenuButton<String> _buildCompactMenu(
+    ReaderController controller,
+    AppState appState,
+  ) {
+    const themes = <String, String>{
+      'follow': 'Follow System',
+      'light': 'Light',
+      'sepia': 'Sepia',
+      'dark': 'Dark',
+    };
+    return PopupMenuButton<String>(
+      tooltip: 'Reader options',
+      icon: const Icon(Icons.more_horiz),
+      position: PopupMenuPosition.under,
+      onSelected: (value) {
+        switch (value) {
+          case 'font-down':
+            _changeFontScale(-0.1);
+          case 'font-up':
+            _changeFontScale(0.1);
+          case 'fullscreen':
+            unawaited(_toggleFullscreen());
+          case 'copy-page':
+            unawaited(_copyPageText());
+          default:
+            appState.readerTheme = value;
+        }
+      },
+      itemBuilder: (context) => <PopupMenuEntry<String>>[
+        if (controller.isPdf && controller.pdfReflow) ...[
+          const PopupMenuItem<String>(
+            value: 'copy-page',
+            child: Text('Copy page text'),
+          ),
+          const PopupMenuDivider(),
+        ],
+        const PopupMenuItem<String>(
+          value: 'font-down',
+          child: Text('Decrease text size'),
+        ),
+        const PopupMenuItem<String>(
+          value: 'font-up',
+          child: Text('Increase text size'),
+        ),
+        const PopupMenuDivider(),
+        for (final entry in themes.entries)
+          CheckedPopupMenuItem<String>(
+            value: entry.key,
+            checked: appState.readerTheme == entry.key,
+            child: Text(entry.value),
+          ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'fullscreen',
+          child: Text('Fullscreen'),
+        ),
+      ],
     );
   }
 
@@ -792,101 +901,165 @@ class _ReaderPageState extends State<ReaderPage> {
     _ReaderColors colors,
   ) {
     final hasItems = controller.items.isNotEmpty;
-    return IconTheme(
-      data: IconThemeData(color: colors.foreground),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        child: Row(
-          children: [
-            IconButton(
-              tooltip: 'Back',
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-            IconButton(
-              tooltip: 'Previous',
-              icon: const Icon(Icons.chevron_left),
-              onPressed:
-                  hasItems && controller.index > 0 ? _previous : null,
-            ),
-            IconButton(
-              tooltip: 'Next',
-              icon: const Icon(Icons.chevron_right),
-              onPressed: hasItems && controller.index < controller.items.length - 1
-                  ? _next
-                  : null,
-            ),
-            Expanded(
-              child: Text(
-                controller.itemTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: colors.foreground,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            if (controller.counter.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  controller.counter,
-                  style: TextStyle(
-                    color: colors.foreground.withValues(alpha: 0.6),
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            IconButton(
-              tooltip: 'Decrease font size',
-              icon: const Icon(Icons.text_decrease),
-              onPressed: () => _changeFontScale(-0.1),
-            ),
-            IconButton(
-              tooltip: 'Increase font size',
-              icon: const Icon(Icons.text_increase),
-              onPressed: () => _changeFontScale(0.1),
-            ),
-            _buildTocMenu(controller, colors),
-            if (controller.supportsHighlights)
-              _buildHighlightsMenu(controller, colors),
-            _buildThemeMenu(appState),
-            IconButton(
-              tooltip: 'Toggle fullscreen (F11)',
-              icon: const Icon(Icons.fullscreen),
-              onPressed: () => unawaited(_toggleFullscreen()),
-            ),
-          ],
-        ),
+    final counter = controller.counter;
+    final title = Text(
+      controller.itemTitle,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: TextAlign.center,
+      style: VellumType.display(
+        15,
+        weight: FontWeight.w500,
+        height: 1.3,
+        color: colors.foreground,
       ),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 760;
+        return IconTheme(
+          data: IconThemeData(color: colors.foreground),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Back',
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+                IconButton(
+                  tooltip: 'Previous',
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed:
+                      hasItems && controller.index > 0 ? _previous : null,
+                ),
+                IconButton(
+                  tooltip: 'Next',
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed:
+                      hasItems && controller.index < controller.items.length - 1
+                      ? _next
+                      : null,
+                ),
+                Expanded(
+                  child: compact
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            title,
+                            if (counter.isNotEmpty)
+                              Text(
+                                counter,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: VellumType.mono(
+                                  10.5,
+                                  color: colors.foreground.withValues(
+                                    alpha: 0.55,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        )
+                      : title,
+                ),
+                if (!compact) ...[
+                  if (counter.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Text(
+                        counter,
+                        style: VellumType.mono(
+                          11.5,
+                          color: colors.foreground.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ),
+                  IconButton(
+                    tooltip: 'Decrease font size',
+                    icon: const Icon(Icons.text_decrease),
+                    onPressed: () => _changeFontScale(-0.1),
+                  ),
+                  IconButton(
+                    tooltip: 'Increase font size',
+                    icon: const Icon(Icons.text_increase),
+                    onPressed: () => _changeFontScale(0.1),
+                  ),
+                  if (controller.isPdf)
+                    IconButton(
+                      tooltip: controller.pdfReflow
+                          ? 'Show page image'
+                          : 'Reflow text',
+                      icon: Icon(
+                        controller.pdfReflow
+                            ? Icons.view_agenda_outlined
+                            : Icons.wrap_text,
+                      ),
+                      color: controller.pdfReflow ? colors.link : null,
+                      onPressed: _togglePdfReflow,
+                    ),
+                  if (controller.isPdf && controller.pdfReflow)
+                    IconButton(
+                      tooltip: 'Copy page text',
+                      icon: const Icon(Icons.copy_all_outlined),
+                      onPressed: () => unawaited(_copyPageText()),
+                    ),
+                  _buildTocMenu(controller, colors),
+                  if (controller.supportsHighlights)
+                    _buildHighlightsMenu(controller, colors),
+                  _buildThemeMenu(appState),
+                  IconButton(
+                    tooltip: 'Toggle fullscreen (F11)',
+                    icon: const Icon(Icons.fullscreen),
+                    onPressed: () => unawaited(_toggleFullscreen()),
+                  ),
+                ] else ...[
+                  if (controller.isPdf)
+                    IconButton(
+                      tooltip: controller.pdfReflow
+                          ? 'Show page image'
+                          : 'Reflow text',
+                      icon: Icon(
+                        controller.pdfReflow
+                            ? Icons.view_agenda_outlined
+                            : Icons.wrap_text,
+                      ),
+                      color: controller.pdfReflow ? colors.link : null,
+                      onPressed: _togglePdfReflow,
+                    ),
+                  _buildTocMenu(controller, colors, compact: true),
+                  if (controller.supportsHighlights)
+                    _buildHighlightsMenu(controller, colors),
+                  _buildCompactMenu(controller, appState),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
   Widget _buildBody(ReaderController controller, _ReaderColors colors) {
     if (controller.loading) {
-      return Center(
-        child: CircularProgressIndicator(color: colors.foreground),
-      );
+      return Center(child: CircularProgressIndicator(color: colors.foreground));
     }
-    if (controller.isPdf) return _buildPdfContent(controller, colors);
+    if (controller.isPdf) {
+      if (controller.pdfReflow) return _buildPdfReflow(controller, colors);
+      return _buildPdfContent(controller, colors);
+    }
     return _buildTextContent(controller, colors);
   }
 
-  Widget _buildTextContent(
-    ReaderController controller,
-    _ReaderColors colors,
-  ) {
+  Widget _buildTextContent(ReaderController controller, _ReaderColors colors) {
     final document = controller.document;
     if (document == null) {
-      return Center(
-        child: CircularProgressIndicator(color: colors.foreground),
-      );
+      return Center(child: CircularProgressIndicator(color: colors.foreground));
     }
     final fontSize = _baseFontSize * controller.fontScale;
-    _currentContentKey = 'text-${controller.documentSerial}-${controller.index}';
+    _currentContentKey =
+        'text-${controller.documentSerial}-${controller.index}';
     return GestureDetector(
       onHorizontalDragEnd: _onSwipe,
       child: Listener(
@@ -896,9 +1069,7 @@ class _ReaderPageState extends State<ReaderPage> {
           onNotification: (notification) {
             final metrics = notification.metrics;
             if (metrics.axis == Axis.vertical && metrics.maxScrollExtent > 0) {
-              controller.reportScroll(
-                metrics.pixels / metrics.maxScrollExtent,
-              );
+              controller.reportScroll(metrics.pixels / metrics.maxScrollExtent);
             }
             return false;
           },
@@ -910,11 +1081,11 @@ class _ReaderPageState extends State<ReaderPage> {
             ),
             child: Center(
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: 46 * fontSize),
+                constraints: BoxConstraints(maxWidth: 40 * fontSize),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final width = math
-                        .min(46 * fontSize, constraints.maxWidth)
+                        .min(40 * fontSize, constraints.maxWidth)
                         .toDouble();
                     _contentWidth = width;
                     return AnimatedSwitcher(
@@ -926,22 +1097,19 @@ class _ReaderPageState extends State<ReaderPage> {
                         key: ValueKey<String>(_currentContentKey),
                         width: width,
                         child: SelectableText.rich(
-                          _buildTextSpan(
-                            document,
-                            controller,
-                            colors,
-                            width,
-                          ),
+                          _buildTextSpan(document, controller, colors, width),
                           key: ValueKey<int>(_selectionEpoch),
                           maxLines: null,
                           style: TextStyle(
+                            fontFamily: kReaderFont,
                             color: colors.foreground,
                             fontSize: fontSize,
-                            height: 1.15,
+                            height: 1.62,
                           ),
                           textScaler: TextScaler.noScaling,
-                          selectionColor:
-                              colors.foreground.withValues(alpha: 0.25),
+                          selectionColor: colors.foreground.withValues(
+                            alpha: 0.25,
+                          ),
                           onSelectionChanged: _onSelectionChanged,
                           contextMenuBuilder: (context, editableTextState) =>
                               const SizedBox.shrink(),
@@ -958,53 +1126,54 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
-  Widget _buildPdfContent(
-    ReaderController controller,
-    _ReaderColors colors,
-  ) {
+  Widget _buildPdfContent(ReaderController controller, _ReaderColors colors) {
     final bytes = controller.pdfPageBytes;
     final error = controller.pdfRenderError;
-    _currentContentKey =
-        error == null ? 'pdf-${controller.index}' : 'pdf-${controller.index}-error';
+    _currentContentKey = error == null
+        ? 'pdf-${controller.index}'
+        : 'pdf-${controller.index}-error';
     return GestureDetector(
       onHorizontalDragEnd: _onSwipe,
       child: SizedBox.expand(
         child: AnimatedSwitcher(
-          duration:
-              _animationEnabled ? _animationDuration : Duration.zero,
+          duration: _animationEnabled ? _animationDuration : Duration.zero,
           transitionBuilder: _slideTransition,
           child: SizedBox.expand(
             key: ValueKey<String>(_currentContentKey),
             child: bytes == null
                 ? error == null
-                    ? Center(
-                        child:
-                            CircularProgressIndicator(color: colors.foreground),
-                      )
-                    : Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(32),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.broken_image_outlined,
-                                size: 56,
-                                color: colors.foreground.withValues(alpha: 0.7),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                error,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color:
-                                      colors.foreground.withValues(alpha: 0.8),
-                                ),
-                              ),
-                            ],
+                      ? Center(
+                          child: CircularProgressIndicator(
+                            color: colors.foreground,
                           ),
-                        ),
-                      )
+                        )
+                      : Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(32),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 56,
+                                  color: colors.foreground.withValues(
+                                    alpha: 0.7,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  error,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: colors.foreground.withValues(
+                                      alpha: 0.8,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
                 : Image.memory(
                     bytes,
                     fit: BoxFit.contain,
@@ -1017,9 +1186,46 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  Widget _buildPdfReflow(ReaderController controller, _ReaderColors colors) {
+    final page = controller.pdfReflowPage;
+    if (page == null) {
+      if (controller.pdfReflowLoading) {
+        return Center(
+          child: CircularProgressIndicator(color: colors.foreground),
+        );
+      }
+      final message =
+          controller.pdfReflowError ?? 'Reflow is unavailable for this page.';
+      return Column(
+        children: [
+          _ReflowNotice(colors: colors, message: message),
+          Expanded(child: _buildPdfContent(controller, colors)),
+        ],
+      );
+    }
+    if (!page.hasText) {
+      return Column(
+        children: [
+          if (page.message != null)
+            _ReflowNotice(colors: colors, message: page.message!),
+          Expanded(child: _buildPdfContent(controller, colors)),
+        ],
+      );
+    }
+    final appState = _appState;
+    return _PdfReflowView(
+      key: ValueKey<int>(controller.index),
+      page: page,
+      fontSize:
+          _baseFontSize * (appState?.readerFontScale ?? controller.fontScale),
+      foreground: colors.foreground,
+      background: colors.background,
+    );
+  }
+
   Widget _buildProgress(ReaderController controller, _ReaderColors colors) {
     return SizedBox(
-      height: 4,
+      height: 3,
       child: LinearProgressIndicator(
         value: controller.progress,
         backgroundColor: colors.foreground.withValues(alpha: 0.12),
@@ -1115,9 +1321,10 @@ class _ReaderPageState extends State<ReaderPage> {
     final fontSize = _baseFontSize * controller.fontScale;
     return document.buildSpan(
       baseStyle: TextStyle(
+        fontFamily: kReaderFont,
         color: colors.foreground,
         fontSize: fontSize,
-        height: 1.15,
+        height: 1.62,
       ),
       linkColor: colors.link,
       highlights: controller.currentHighlightRanges,
@@ -1132,6 +1339,370 @@ class _ReaderPageState extends State<ReaderPage> {
       Theme.of(context).brightness,
     );
   }
+}
+
+class _ReflowNotice extends StatelessWidget {
+  const _ReflowNotice({required this.colors, required this.message});
+
+  final _ReaderColors colors;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+      color: colors.foreground.withValues(alpha: 0.06),
+      child: Row(
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 16,
+            color: colors.foreground.withValues(alpha: 0.65),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontFamily: kUiFont,
+                fontSize: 12.5,
+                height: 1.4,
+                color: colors.foreground.withValues(alpha: 0.72),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Reflowed PDF page: word sprites in an atlas, tinted to the reader theme.
+class _PdfReflowView extends StatefulWidget {
+  const _PdfReflowView({
+    super.key,
+    required this.page,
+    required this.fontSize,
+    required this.foreground,
+    required this.background,
+  });
+
+  final PdfReflowPage page;
+  final double fontSize;
+  final Color foreground;
+  final Color background;
+
+  @override
+  State<_PdfReflowView> createState() => _PdfReflowViewState();
+}
+
+class _PdfReflowViewState extends State<_PdfReflowView> {
+  final ScrollController _scroll = ScrollController();
+  ui.Image? _atlas;
+  Uint8List? _atlasBytes;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAtlas();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PdfReflowView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.page.atlasPng, widget.page.atlasPng)) {
+      _loadAtlas();
+    }
+  }
+
+  Future<void> _loadAtlas() async {
+    final bytes = widget.page.atlasPng;
+    _atlasBytes = bytes;
+    _loading = true;
+    _error = null;
+    if (bytes == null) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'This page has no text atlas.';
+        });
+      }
+      return;
+    }
+    if (mounted) setState(() {});
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      final image = frame.image;
+      if (!mounted || !identical(_atlasBytes, bytes)) {
+        image.dispose();
+        return;
+      }
+      _atlas?.dispose();
+      setState(() {
+        _atlas = image;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted && identical(_atlasBytes, bytes)) {
+        setState(() {
+          _loading = false;
+          _error = 'This page could not be reflowed.';
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _atlas?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return Center(
+        child: CircularProgressIndicator(color: widget.foreground),
+      );
+    }
+    final atlas = _atlas;
+    if (atlas == null) {
+      return Center(
+        child: Text(
+          _error ?? 'This page could not be reflowed.',
+          style: TextStyle(color: widget.foreground.withValues(alpha: 0.72)),
+        ),
+      );
+    }
+    return Scrollbar(
+      controller: _scroll,
+      child: SingleChildScrollView(
+        controller: _scroll,
+        padding: EdgeInsets.symmetric(
+          horizontal: widget.fontSize,
+          vertical: widget.fontSize * 1.2,
+        ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: widget.fontSize * 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final block in widget.page.blocks)
+                  if (block is PdfReflowParagraph)
+                    _paragraph(block, atlas)
+                  else if (block is PdfReflowImageBlock)
+                    _image(block),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _paragraph(PdfReflowParagraph paragraph, ui.Image atlas) {
+    final page = widget.page;
+    final scale = widget.fontSize / page.medianFontSize;
+    final indent = (paragraph.indentPoints * scale).clamp(
+      0.0,
+      widget.fontSize * 6,
+    );
+    final quoteIndent = paragraph.kind == PdfReflowTextKind.quote
+        ? widget.fontSize * 0.8
+        : 0.0;
+    final heading = paragraph.kind == PdfReflowTextKind.heading;
+    final spans = <InlineSpan>[];
+    var first = true;
+    for (final line in paragraph.lines) {
+      for (final word in line.words) {
+        if (!first) {
+          // A real widget gap, not a text space: word sprites carry no
+          // trailing advance, and a tiny space glyph is too narrow to see.
+          spans.add(
+            WidgetSpan(
+              alignment: PlaceholderAlignment.bottom,
+              child: SizedBox(
+                width: widget.fontSize * 0.27,
+                height: 1,
+              ),
+            ),
+          );
+        }
+        first = false;
+        final width = word.widthPoints * scale;
+        final height = word.heightPoints * scale;
+        if (word.atlasWidth <= 0 || width <= 0 || height <= 0) {
+          spans.add(
+            TextSpan(
+              text: word.text,
+              style: TextStyle(
+                fontFamily: kReaderFont,
+                fontSize: widget.fontSize,
+                height: 1.35,
+                color: widget.foreground,
+              ),
+            ),
+          );
+          continue;
+        }
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.bottom,
+            child: _ReflowWordImage(
+              atlas: atlas,
+              x: word.atlasX,
+              y: word.atlasY,
+              width: word.atlasWidth,
+              height: word.atlasHeight,
+              displayWidth: width,
+              displayHeight: height,
+              color: widget.foreground,
+            ),
+          ),
+        );
+      }
+    }
+    return Padding(
+      padding: EdgeInsets.only(
+        left: indent + quoteIndent,
+        top: heading ? widget.fontSize * 1.1 : 0,
+        bottom: heading ? widget.fontSize * 0.55 : widget.fontSize * 0.8,
+      ),
+      child: Semantics(
+        label: paragraph.text,
+        child: Text.rich(
+          TextSpan(
+            style: TextStyle(
+              fontFamily: kReaderFont,
+              fontSize: widget.fontSize,
+              height: 1.28,
+              color: widget.foreground,
+            ),
+            children: spans,
+          ),
+          textAlign: TextAlign.left,
+        ),
+      ),
+    );
+  }
+
+  Widget _image(PdfReflowImageBlock block) {
+    final fraction = (block.widthPoints / widget.page.bodyWidth).clamp(
+      0.25,
+      1.0,
+    );
+    if (block.widthPoints <= 0 || block.heightPoints <= 0) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: widget.fontSize * 0.8),
+      child: Align(
+        alignment: Alignment.center,
+        child: FractionallySizedBox(
+          widthFactor: fraction.toDouble(),
+          child: AspectRatio(
+            aspectRatio: block.widthPoints / block.heightPoints,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: widget.foreground.withValues(alpha: 0.16),
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Image.memory(
+                block.png,
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.medium,
+                semanticLabel: 'Page image',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReflowWordImage extends StatelessWidget {
+  const _ReflowWordImage({
+    required this.atlas,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.displayWidth,
+    required this.displayHeight,
+    required this.color,
+  });
+
+  final ui.Image atlas;
+  final int x;
+  final int y;
+  final int width;
+  final int height;
+  final double displayWidth;
+  final double displayHeight;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: displayWidth,
+      height: displayHeight,
+      child: CustomPaint(
+        painter: _WordSpritePainter(
+          atlas: atlas,
+          source: Rect.fromLTWH(
+            x.toDouble(),
+            y.toDouble(),
+            width.toDouble(),
+            height.toDouble(),
+          ),
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+class _WordSpritePainter extends CustomPainter {
+  const _WordSpritePainter({
+    required this.atlas,
+    required this.source,
+    required this.color,
+  });
+
+  final ui.Image atlas;
+  final Rect source;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final paint = Paint()
+      ..colorFilter = ColorFilter.mode(color, BlendMode.srcIn)
+      ..filterQuality = FilterQuality.medium;
+    canvas.drawImageRect(
+      atlas,
+      source,
+      Offset.zero & size,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _WordSpritePainter oldDelegate) =>
+      oldDelegate.atlas != atlas ||
+      oldDelegate.source != source ||
+      oldDelegate.color != color;
 }
 
 class _PendingSelection {
@@ -1155,19 +1726,19 @@ class _ReaderColors {
 }
 
 const _ReaderColors _lightColors = _ReaderColors(
-  Color(0xFFFFFFFF),
-  Color(0xFF1A1A1A),
-  Color(0xFF1A5FB4),
+  Color(0xFFFBF7EF),
+  Color(0xFF221F1A),
+  Color(0xFF1B6C7A),
 );
 const _ReaderColors _sepiaColors = _ReaderColors(
-  Color(0xFFF4ECD8),
-  Color(0xFF5B4636),
+  Color(0xFFF3E8D0),
+  Color(0xFF4A3A29),
   Color(0xFF7A5A2E),
 );
 const _ReaderColors _darkColors = _ReaderColors(
-  Color(0xFF1E1E1E),
-  Color(0xFFE8E8E8),
-  Color(0xFF8AB4F8),
+  Color(0xFF171512),
+  Color(0xFFE7DED0),
+  Color(0xFF8FC7D0),
 );
 
 _ReaderColors _resolveReaderColors(String theme, Brightness brightness) {

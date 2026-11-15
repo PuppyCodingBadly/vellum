@@ -4,7 +4,7 @@ Original source (authoritative, readable): /tmp/vellum/src/vellum/app.py and /tm
 
 ## 0. Application shell (app.py)
 - application_id "io.github.vellum.Vellum", name "Vellum", version 0.1.20, GPL-3.0, "A calibre-like ebook library manager."
-- Config: plain JSON at `~/.local/share/vellum/config.json`. Keys (defaults): library_path (default `<data_dir>/library.db`), color_scheme ∈ {system(default), light, dark}, accent_color ("blue" default; palette name or #rrggbb), show_hidden (false), sort_key (∈ SORT_KEYS, default "title"), reader_animation (true), reader_font_scale (0.8–1.6, default 1.0), reader_theme ("follow" default), legacy_demo_books_purged (one-shot). Saved on every change.
+- Config: plain JSON at `~/.local/share/vellum/config.json`. Keys (defaults): library_path (default `<data_dir>/library.db`), color_scheme ∈ {system(default), light, dark}, accent_color ("blue" default; palette name or #rrggbb), show_hidden (false), sort_key (∈ SORT_KEYS, default "title"), reader_animation (true), reader_font_scale (0.8–1.6, default 1.0), reader_theme ("follow" default), pdf_reflow (false), legacy_demo_books_purged (one-shot). Saved on every change.
 - Accent palette (name → bg/fg): blue #3584e4/#fff, teal #2190a4, green #3a944a, yellow #c88800, orange #ed5b00, red #e62d42, pink #d56199, purple #9141ac, slate #6f8396 (all fg #ffffff). Custom accent = any #rrggbb, white fg.
 - Data dir `~/.local/share/vellum/` (+ covers/, plugins/); fallback to default db with toast "Could not open {path}; using the default library".
 - Metadata sources registered: GoogleBooks, OpenLibrary, InternetArchive, LibraryOfCongress, Inventaire (English-only). PluginManager loads calibre plugin zips from <data_dir>/plugins; store zips loaded separately.
@@ -47,7 +47,7 @@ Tokens AND; per-token case-insensitive LIKE %token% on title, ISBN, author name,
 One page:
 **Library**: "Library directory" row (subtitle current dir) + "Choose…" → validate writable, swap to <dir>/library.db with rollback (toast "Cannot use that directory"), persist library_path, toast "Library location changed to {dir}". "Import calibre library" ("Add books from a folder containing metadata.db") + "Import…" → app.import-calibre. "Show hidden books" switch ("Hidden books stay in the library but are left out of the grid").
 **Appearance**: "Color scheme" System/Light/Dark → config color_scheme. "Accent color": 9 circular swatches (40×40, checked ring) + custom color picker → config accent_color, applies immediately.
-**Reader**: "Page turn animation" switch ("Slide between pages (disable on low-end hardware)") → reader_animation (default true).
+**Reader**: "Reflow PDF pages" switch ("Wrap the original type to the window; pages without a text layer stay as images") → pdf_reflow (default false). "Page turn animation" switch ("Slide between pages (disable on low-end hardware)") → reader_animation (default true).
 
 ## 5. Metadata dialog (metadata_dialog.py)
 Dialog "Fetch Metadata" 620×580. Header: title + "Apply" (primary, insensitive until selection; "Applying…" during) + close.

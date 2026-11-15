@@ -245,6 +245,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Whether PDF pages are reflowed as text instead of shown as page images.
+  bool get pdfReflow => config.getBool('pdf_reflow');
+
+  set pdfReflow(bool value) {
+    config.set('pdf_reflow', value);
+    notifyListeners();
+  }
+
   /// Reader theme: `follow`|`light`|`sepia`|`dark`.
   String get readerTheme {
     final value = config.getString('reader_theme');

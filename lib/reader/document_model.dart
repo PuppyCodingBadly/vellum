@@ -502,7 +502,17 @@ void _walkInline(
       _walkInlineChildren(current, style.copyWith(code: true), baseDirectory, out);
       break;
     case 'a':
-      _walkInlineChildren(current, style.copyWith(link: true), baseDirectory, out);
+      // A named target (`<a id="..."/>`) is not a hyperlink. Gutenberg's
+      // XHTML uses these bare anchors before headings; the HTML5 parser
+      // treats the self-closing form as an open tag, so propagating the link
+      // style here would paint the chapter and everything after it as a link.
+      final href = (current.attributes['href'] ?? '').trim();
+      _walkInlineChildren(
+        current,
+        href.isEmpty ? style : style.copyWith(link: true),
+        baseDirectory,
+        out,
+      );
       break;
     case 'pre':
       out.add(_RawText(

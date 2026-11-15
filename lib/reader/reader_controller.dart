@@ -15,6 +15,7 @@ import '../formats/dictionary.dart' as dictionary;
 import '../formats/epub.dart';
 import '../formats/mobi.dart';
 import '../formats/pdf_book.dart';
+import '../formats/pdf_reflow.dart';
 import '../stats/reading_stats.dart';
 import 'document_model.dart';
 
@@ -124,12 +125,14 @@ class ReaderController extends ChangeNotifier {
     required Library library,
     required ReadingStatsTracker stats,
     this.initialChapter,
+    bool pdfReflow = false,
     void Function(String message)? onToast,
   })  : _library = library,
         _stats = stats,
         _onToast = onToast,
         _kind = _selectFormat(book),
         _pdfWorker = _PdfWorker(book.path),
+        _pdfReflow = pdfReflow,
         _zoom = defaultScale;
 
   /// The book being read.
@@ -147,6 +150,7 @@ class ReaderController extends ChangeNotifier {
   final List<ReaderItem> _items = <ReaderItem>[];
   final List<ReaderHighlight> _highlights = <ReaderHighlight>[];
   final Map<int, Uint8List> _pdfCache = <int, Uint8List>{};
+  final Map<int, PdfReflowPage> _pdfReflowCache = <int, PdfReflowPage>{};
 
   int _index = 0;
   int _direction = 0;
@@ -156,8 +160,12 @@ class ReaderController extends ChangeNotifier {
   double _fontScale = 1.0;
   double _zoom;
   int _pdfSerial = 0;
+  int _pdfReflowSerial = 0;
   bool _pdfPageLoading = false;
+  bool _pdfReflowLoading = false;
+  bool _pdfReflow;
   String? _pdfRenderError;
+  String? _pdfReflowError;
   bool _loaded = false;
   bool _sessionStarted = false;
   bool _disposed = false;
@@ -240,6 +248,41 @@ class ReaderController extends ChangeNotifier {
   /// Human-readable reason the current PDF page failed to render, if any.
   String? get pdfRenderError => isPdf ? _pdfRenderError : null;
 
+  /// Whether PDF pages are laid out as reflowed text.
+  bool get pdfReflow => isPdf && _pdfReflow;
+
+  /// Layout for the current PDF page, or null while it is being built.
+  PdfReflowPage? get pdfReflowPage =>
+      isPdf && _pdfReflow ? _pdfReflowCache[_index] : null;
+
+  /// True while the current reflow layout is still being built.
+  bool get pdfReflowLoading =>
+      isPdf && _pdfReflow && _pdfReflowLoading;
+
+  /// Human-readable reason reflow failed for the current page, if any.
+  String? get pdfReflowError =>
+      isPdf && _pdfReflow ? _pdfReflowError : null;
+
+  /// Switches PDF pages between the page bitmap and reflowed text.
+  ///
+  /// The page bitmap stays available for pages with no text layer, and the
+  /// font size changes only re-lay out sprites; it does not refetch a page.
+  void setPdfReflow(bool enabled) {
+    if (isPdf && _pdfReflow == enabled) return;
+    _pdfReflow = enabled;
+    if (isPdf) {
+      if (enabled) {
+        _renderPdfReflow();
+      } else {
+        _pdfReflowLoading = false;
+        _pdfReflowError = null;
+        _pdfReflowCache.clear();
+        _renderPdf();
+      }
+    }
+    notifyListeners();
+  }
+
   /// Title of the current item.
   String get itemTitle {
     if (_items.isEmpty) return book.title;
@@ -319,7 +362,7 @@ class ReaderController extends ChangeNotifier {
     final clamped = scale.clamp(_minFontScale, _maxFontScale).toDouble();
     if ((clamped - _fontScale).abs() < 1e-9) return;
     _fontScale = clamped;
-    if (isPdf) {
+    if (isPdf && !_pdfReflow) {
       _pdfCache.clear();
       _renderPdf();
     }
@@ -436,6 +479,7 @@ class ReaderController extends ChangeNotifier {
     }
     _pdf?.close();
     _pdf = null;
+    _pdfReflowCache.clear();
     _pdfWorker.dispose();
     super.dispose();
   }
@@ -608,6 +652,8 @@ class ReaderController extends ChangeNotifier {
     if (isPdf) {
       _touchPdfCache(_index);
       _pdfPageLoading = !_pdfCache.containsKey(_index);
+      _pdfReflowLoading =
+          _pdfReflow && !_pdfReflowCache.containsKey(_index);
     } else {
       try {
         _loadCurrentDocument();
@@ -659,12 +705,64 @@ class ReaderController extends ChangeNotifier {
     _pdfRenderError = null;
     notifyListeners();
 
+    // In reflow the page bitmap is only the fallback for pages without a
+    // text layer, so prefetching its neighbours would delay the words.
+    final targets = <int>[current];
+    if (!_pdfReflow) {
+      if (current > 0) targets.add(current - 1);
+      if (current < _items.length - 1) targets.add(current + 1);
+    }
+    for (final target in targets) {
+      if (_pdfCache.containsKey(target)) continue;
+      unawaited(_renderPdfPage(serial, target, scale));
+    }
+    if (_pdfReflow) _renderPdfReflow();
+  }
+
+  void _renderPdfReflow() {
+    if (_disposed || !isPdf || !_pdfReflow || _items.isEmpty) return;
+    final serial = ++_pdfReflowSerial;
+    final current = _index;
+    _pdfReflowLoading = !_pdfReflowCache.containsKey(current);
+    _pdfReflowError = null;
+    notifyListeners();
+
     final targets = <int>[current];
     if (current > 0) targets.add(current - 1);
     if (current < _items.length - 1) targets.add(current + 1);
     for (final target in targets) {
-      if (_pdfCache.containsKey(target)) continue;
-      unawaited(_renderPdfPage(serial, target, scale));
+      if (_pdfReflowCache.containsKey(target)) continue;
+      unawaited(_renderPdfReflowPage(serial, target));
+    }
+  }
+
+  Future<void> _renderPdfReflowPage(int serial, int target) async {
+    PdfReflowPage? page;
+    String? failure;
+    try {
+      page = await _pdfWorker.reflow(target, 3.0);
+    } catch (error) {
+      if (_disposed) return;
+      failure = error is PdfRenderException
+          ? error.message
+          : 'Could not reflow this page';
+    }
+    if (_disposed || serial != _pdfReflowSerial) return;
+    if (page != null) {
+      _putPdfReflowCache(target, page);
+      if (target == _index) _pdfReflowLoading = false;
+    } else if (target == _index) {
+      _pdfReflowLoading = false;
+      _pdfReflowError = failure ?? 'Could not reflow this page';
+    }
+    notifyListeners();
+  }
+
+  void _putPdfReflowCache(int index, PdfReflowPage page) {
+    _pdfReflowCache.remove(index);
+    _pdfReflowCache[index] = page;
+    while (_pdfReflowCache.length > _pdfCacheSize) {
+      _pdfReflowCache.remove(_pdfReflowCache.keys.first);
     }
   }
 
@@ -721,8 +819,8 @@ class _PdfWorker {
   SendPort? _sendPort;
   final Completer<SendPort> _ready = Completer<SendPort>();
   Future<void>? _startFuture;
-  final Map<int, Completer<Uint8List>> _pending =
-      <int, Completer<Uint8List>>{};
+  final Map<int, Completer<Object>> _pending =
+      <int, Completer<Object>>{};
   int _nextId = 0;
   bool _closed = false;
   bool _tornDown = false;
@@ -734,13 +832,25 @@ class _PdfWorker {
   static const Duration _closeTimeout = Duration(seconds: 2);
 
   Future<Uint8List> render(int index, double scale) async {
+    final result = await _request(index, scale, null);
+    if (result is Uint8List) return result;
+    throw const PdfRenderException('PDF render failed');
+  }
+
+  Future<PdfReflowPage> reflow(int index, double scale) async {
+    final result = await _request(index, scale, 'reflow');
+    if (result is PdfReflowPage) return result;
+    throw const PdfRenderException('PDF reflow failed');
+  }
+
+  Future<Object> _request(int index, double scale, String? operation) async {
     if (_closed) throw StateError('PDF renderer is closed');
     await _start();
     if (_closed) throw StateError('PDF renderer is closed');
     final id = _nextId++;
-    final completer = Completer<Uint8List>();
+    final completer = Completer<Object>();
     _pending[id] = completer;
-    _sendPort!.send(<Object>[id, index, scale]);
+    _sendPort!.send(<Object?>[id, index, scale, operation]);
     return completer.future;
   }
 
@@ -816,7 +926,7 @@ class _PdfWorker {
       if (id is! int) return;
       final completer = _pending.remove(id);
       if (completer == null || completer.isCompleted) return;
-      if (bytes is Uint8List) {
+      if (bytes is Uint8List || bytes is PdfReflowPage) {
         completer.complete(bytes);
       } else {
         // Keep the failure typed and readable: the reader shows this text.
@@ -850,10 +960,13 @@ class _PdfWorker {
         final id = request[0] as int;
         final index = request[1] as int;
         final scale = (request[2] as num).toDouble();
+        final operation = request.length > 3 ? request[3] : null;
         try {
           pdf ??= PdfBook(path);
-          final bytes = await pdf!.renderPage(index, scale: scale);
-          replyPort.send(<Object?>[id, bytes, null]);
+          final result = operation == 'reflow'
+              ? pdf!.reflowPage(index, renderScale: scale)
+              : await pdf!.renderPage(index, scale: scale);
+          replyPort.send(<Object?>[id, result, null]);
         } catch (error) {
           // Release native FPDF handles; the next request reopens the file.
           pdf?.close();

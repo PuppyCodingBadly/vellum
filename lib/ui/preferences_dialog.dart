@@ -2,6 +2,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import 'theme.dart';
 
 /// Application preferences: library location, appearance, and reader options.
 class PreferencesDialog extends StatefulWidget {
@@ -13,10 +14,12 @@ class PreferencesDialog extends StatefulWidget {
 
 class _PreferencesDialogState extends State<PreferencesDialog> {
   final TextEditingController _hexController = TextEditingController();
+  final ScrollController _scroll = ScrollController();
 
   @override
   void dispose() {
     _hexController.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -50,8 +53,9 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   }
 
   Future<void> _showCustomAccent(AppState app) async {
-    _hexController.text =
-        app.accentName.startsWith('#') ? app.accentName : '#3584e4';
+    _hexController.text = app.accentName.startsWith('#')
+        ? app.accentName
+        : '#3584e4';
     String? error;
     final color = await showDialog<String>(
       context: context,
@@ -93,40 +97,64 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   @override
   Widget build(BuildContext context) {
     final app = AppState.of(context);
-    final theme = Theme.of(context);
+    final palette = context.palette;
 
     return Dialog(
-      insetPadding: const EdgeInsets.all(24),
+      insetPadding: const EdgeInsets.all(VellumSpace.md),
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: 640,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+          maxWidth: 680,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.92,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(24, 16, 12, 16),
+              padding: const EdgeInsets.fromLTRB(
+                VellumSpace.lg,
+                VellumSpace.md,
+                VellumSpace.sm,
+                VellumSpace.md,
+              ),
               child: Row(
                 children: [
                   Expanded(
-                    child: Text('Preferences', style: theme.textTheme.titleLarge),
+                    child: Text(
+                      'Preferences',
+                      style: VellumType.display(
+                        24,
+                        weight: FontWeight.w600,
+                        height: 1.15,
+                        letterSpacing: -0.3,
+                        color: palette.text,
+                      ),
+                    ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close),
+                    icon: const Icon(Icons.close, size: 18),
                     tooltip: 'Close',
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1),
+            Divider(height: 1, color: palette.line),
             Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-                child: ListenableBuilder(
-                  listenable: app,
-                  builder: (context, _) => _buildBody(context, app),
+              child: Scrollbar(
+                controller: _scroll,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _scroll,
+                  padding: const EdgeInsets.fromLTRB(
+                  VellumSpace.lg,
+                  0,
+                  VellumSpace.lg,
+                  VellumSpace.xl,
+                ),
+                  child: ListenableBuilder(
+                    listenable: app,
+                    builder: (context, _) => _buildBody(context, app),
+                  ),
                 ),
               ),
             ),
@@ -137,7 +165,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   }
 
   Widget _buildBody(BuildContext context, AppState app) {
-    final theme = Theme.of(context);
+    final palette = context.palette;
     final scheme = switch (app.config.get('color_scheme')) {
       'light' => 'light',
       'dark' => 'dark',
@@ -147,11 +175,16 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('Library', theme),
+        _sectionTitle('Library', palette, first: true),
         ListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Library directory'),
-          subtitle: Text(app.libraryDir),
+          subtitle: Text(
+            app.libraryDir,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: VellumType.mono(11.5, color: palette.textDim),
+          ),
           trailing: TextButton(
             onPressed: () => _chooseLibraryDirectory(app),
             child: const Text('Choose…'),
@@ -164,8 +197,9 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             'Add books from a folder containing metadata.db',
           ),
           trailing: TextButton(
-            onPressed:
-                app.calibreImportRunning ? null : () => _importCalibre(app),
+            onPressed: app.calibreImportRunning
+                ? null
+                : () => _importCalibre(app),
             child: const Text('Import…'),
           ),
         ),
@@ -178,12 +212,15 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
           value: app.showHidden,
           onChanged: (value) => app.setShowHidden(value),
         ),
-        _sectionTitle('Appearance', theme),
-        const SizedBox(height: 4),
+        _sectionTitle('Appearance', palette),
+        const SizedBox(height: VellumSpace.xs),
         Row(
           children: [
             Expanded(
-              child: Text('Color scheme', style: theme.textTheme.bodyLarge),
+              child: Text(
+                'Color scheme',
+                style: VellumType.ui(13.5, color: palette.text),
+              ),
             ),
             SegmentedButton<String>(
               segments: const [
@@ -198,24 +235,34 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             ),
           ],
         ),
-        const SizedBox(height: 16),
-        Text('Accent color', style: theme.textTheme.bodyLarge),
-        const SizedBox(height: 8),
+        const SizedBox(height: VellumSpace.md),
+        Text('Accent color', style: VellumType.ui(13.5, color: palette.text)),
+        const SizedBox(height: VellumSpace.sm),
         Wrap(
-          spacing: 12,
-          runSpacing: 12,
+          spacing: 10,
+          runSpacing: 10,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             for (final entry in AppState.accentPalette.entries)
-              _buildSwatch(app, theme, entry.key, entry.value),
+              _buildSwatch(app, palette, entry.key, entry.value),
             OutlinedButton.icon(
               onPressed: () => _showCustomAccent(app),
-              icon: const Icon(Icons.palette_outlined, size: 18),
+              icon: const Icon(Icons.palette_outlined, size: 17),
               label: const Text('Custom…'),
             ),
           ],
         ),
-        _sectionTitle('Reader', theme),
+        _sectionTitle('Reader', palette),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Reflow PDF pages'),
+          subtitle: const Text(
+            'Wrap the original type to the window; pages without a text '
+            'layer stay as images',
+          ),
+          value: app.pdfReflow,
+          onChanged: (value) => app.pdfReflow = value,
+        ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Page turn animation'),
@@ -229,18 +276,35 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
     );
   }
 
-  Widget _sectionTitle(String title, ThemeData theme) => Padding(
-        padding: const EdgeInsets.only(top: 20, bottom: 4),
-        child: Text(
+  Widget _sectionTitle(
+    String title,
+    VellumPalette palette, {
+    bool first = false,
+  }) => Padding(
+    padding: const EdgeInsets.only(top: VellumSpace.md, bottom: 2),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (!first) ...[
+          Divider(height: 1, color: palette.line),
+          const SizedBox(height: VellumSpace.md),
+        ],
+        Text(
           title,
-          style: theme.textTheme.titleMedium
-              ?.copyWith(color: theme.colorScheme.primary),
+          style: VellumType.ui(
+            12.5,
+            weight: FontWeight.w600,
+            height: 1.2,
+            color: palette.text,
+          ),
         ),
-      );
+      ],
+    ),
+  );
 
   Widget _buildSwatch(
     AppState app,
-    ThemeData theme,
+    VellumPalette palette,
     String name,
     Color color,
   ) {
@@ -248,28 +312,39 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
     final label = name.isEmpty
         ? name
         : '${name[0].toUpperCase()}${name.substring(1)}';
+    final onColor = color.computeLuminance() > 0.5
+        ? Colors.black
+        : Colors.white;
     return Tooltip(
       message: label,
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: () => app.setAccentColor(name),
         child: SizedBox(
-          width: 40,
-          height: 40,
+          width: 34,
+          height: 34,
           child: Stack(
             alignment: Alignment.center,
             children: [
               Container(
+                width: 34,
+                height: 34,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: color,
-                  border: selected
-                      ? Border.all(color: theme.colorScheme.onSurface, width: 3)
-                      : null,
+                  border: Border.all(
+                    color: selected ? palette.text : Colors.transparent,
+                    width: 1.5,
+                  ),
                 ),
               ),
-              if (selected)
-                const Icon(Icons.check, size: 20, color: Colors.white),
+              Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+                child: selected
+                    ? Icon(Icons.check, size: 15, color: onColor)
+                    : null,
+              ),
             ],
           ),
         ),

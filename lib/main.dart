@@ -26,6 +26,7 @@ import 'metadata/sources/openlibrary.dart';
 import 'plugins/plugin_controller.dart';
 import 'stats/reading_stats.dart';
 import 'ui/home_page.dart';
+import 'ui/theme.dart';
 
 /// Boots the services and starts the Flutter application.
 Future<void> main() async {
@@ -52,20 +53,22 @@ Future<void> _start(String dataDir, CrashLog crashLog) async {
   );
 
   await windowManager.ensureInitialized();
-  unawaited(windowManager.waitUntilReadyToShow(
-    const WindowOptions(
-      title: 'Vellum',
-      size: Size(1100, 750),
-      minimumSize: Size(480, 600),
-      center: true,
-      titleBarStyle: TitleBarStyle.normal,
+  unawaited(
+    windowManager.waitUntilReadyToShow(
+      const WindowOptions(
+        title: 'Vellum',
+        size: Size(1100, 750),
+        minimumSize: Size(480, 600),
+        center: true,
+        titleBarStyle: TitleBarStyle.normal,
+      ),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+        crashLog.stage('window-ready');
+      },
     ),
-    () async {
-      await windowManager.show();
-      await windowManager.focus();
-      crashLog.stage('window-ready');
-    },
-  ));
+  );
 
   Directory(dataDir).createSync(recursive: true);
   Directory(p.join(dataDir, 'covers')).createSync(recursive: true);
@@ -84,8 +87,7 @@ Future<void> _start(String dataDir, CrashLog crashLog) async {
   } catch (error, stackTrace) {
     crashLog.recordError('library-open', error, stackTrace);
     debugPrint('Vellum: could not open $configuredPath: $error');
-    pendingToast =
-        'Could not open $configuredPath; using the default library';
+    pendingToast = 'Could not open $configuredPath; using the default library';
     library = Library(p.join(dataDir, 'library.db'));
   }
 
@@ -236,14 +238,6 @@ class _VellumAppState extends State<VellumApp> {
     }
   }
 
-  ThemeData _theme(Color accent, Brightness brightness) => ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: accent,
-          brightness: brightness,
-        ),
-      );
-
   @override
   Widget build(BuildContext context) {
     return AppStateScope(
@@ -256,16 +250,20 @@ class _VellumAppState extends State<VellumApp> {
           scaffoldMessengerKey: _state.messengerKey,
           navigatorKey: _navigatorKey,
           themeMode: _state.themeMode,
-          theme: _theme(_state.accentColor, Brightness.light),
-          darkTheme: _theme(_state.accentColor, Brightness.dark),
+          theme: VellumTheme.themeFor(Brightness.light, _state.accentColor),
+          darkTheme: VellumTheme.themeFor(Brightness.dark, _state.accentColor),
+          themeAnimationDuration: const Duration(milliseconds: 180),
           builder: (context, child) => CallbackShortcuts(
             bindings: <ShortcutActivator, VoidCallback>{
               const SingleActivator(LogicalKeyboardKey.keyQ, control: true):
                   _quit,
               const SingleActivator(LogicalKeyboardKey.keyF, control: true):
                   _focusLibrarySearch,
-              const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
-                  () => _navigatorKey.currentState?.maybePop(),
+              const SingleActivator(
+                LogicalKeyboardKey.arrowLeft,
+                alt: true,
+              ): () =>
+                  _navigatorKey.currentState?.maybePop(),
             },
             child: child ?? const SizedBox.shrink(),
           ),
@@ -291,8 +289,9 @@ class _TitleBarTheme extends StatefulWidget {
 }
 
 class _TitleBarThemeState extends State<_TitleBarTheme> {
-  static const MethodChannel _channel =
-      MethodChannel('io.github.vellum/window');
+  static const MethodChannel _channel = MethodChannel(
+    'io.github.vellum/window',
+  );
 
   bool? _dark;
 

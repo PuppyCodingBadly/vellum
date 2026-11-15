@@ -2,6 +2,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import 'theme.dart';
 
 /// Plugins tab: lists loaded metadata and store plugins and lets the user
 /// install or remove plugin archives.
@@ -79,69 +80,110 @@ class _PluginsPageState extends State<PluginsPage> {
     return ListenableBuilder(
       listenable: appState,
       builder: (context, _) {
+        final palette = context.palette;
         final metadata = appState.plugins.metadataPlugins();
         final stores = appState.plugins.storePlugins();
         final isEmpty = metadata.isEmpty && stores.isEmpty;
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
+        return ColoredBox(
+          color: palette.background,
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 900),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Installed Plugins',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      FilledButton(
-                        onPressed: _adding ? null : _addPlugin,
-                        child: const Text('Add Plugin…'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: isEmpty
-                        ? const _StatusPage(
-                            icon: Icons.extension_outlined,
-                            title: 'No Plugins Installed',
-                            description:
-                                'Add a plugin archive (.zip) to extend Vellum.',
-                          )
-                        : ListView(
-                            padding: const EdgeInsets.only(bottom: 18),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  VellumSpace.xl,
+                  VellumSpace.lg,
+                  VellumSpace.xl,
+                  0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              for (final info in metadata)
-                                _PluginRow(
-                                  name: info.name.isEmpty
-                                      ? 'Unnamed plugin'
-                                      : info.name,
-                                  subtitle: info.version.isEmpty
-                                      ? info.description
-                                      : 'v${info.version} · '
-                                          '${info.description}',
-                                  onRemove: () => _removePlugin(info.name),
+                              Text(
+                                'Installed Plugins',
+                                style: VellumType.display(
+                                  30,
+                                  weight: FontWeight.w600,
+                                  height: 1.1,
+                                  letterSpacing: -0.5,
+                                  color: palette.text,
                                 ),
-                              for (final store in stores)
-                                _PluginRow(
-                                  name: store.name.isEmpty
-                                      ? 'Unnamed store'
-                                      : store.name,
-                                  subtitle: store.description.isEmpty
-                                      ? 'Store plugin'
-                                      : 'Store plugin · '
-                                          '${store.description}',
+                              ),
+                              const SizedBox(height: 5),
+                              Text(
+                                'Calibre-compatible sources for metadata and stores.',
+                                style: VellumType.ui(
+                                  12.5,
+                                  color: palette.textDim,
                                 ),
+                              ),
                             ],
                           ),
-                  ),
-                ],
+                        ),
+                        const SizedBox(width: VellumSpace.md),
+                        FilledButton.icon(
+                          onPressed: _adding ? null : _addPlugin,
+                          icon: const Icon(Icons.add, size: 17),
+                          label: const Text('Add Plugin…'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: VellumSpace.lg),
+                    Expanded(
+                      child: isEmpty
+                          ? _empty(palette)
+                          : SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (metadata.isNotEmpty) ...[
+                                    _section('Metadata sources', palette),
+                                    const SizedBox(height: VellumSpace.xs),
+                                    _pluginList(palette, [
+                                      for (final info in metadata)
+                                        _PluginRow(
+                                          name: info.name.isEmpty
+                                              ? 'Unnamed plugin'
+                                              : info.name,
+                                          subtitle: info.version.isEmpty
+                                              ? info.description
+                                              : 'v${info.version} · '
+                                                    '${info.description}',
+                                          onRemove: () =>
+                                              _removePlugin(info.name),
+                                        ),
+                                    ]),
+                                  ],
+                                  if (stores.isNotEmpty) ...[
+                                    if (metadata.isNotEmpty)
+                                      const SizedBox(height: VellumSpace.lg),
+                                    _section('Stores', palette),
+                                    const SizedBox(height: VellumSpace.xs),
+                                    _pluginList(palette, [
+                                      for (final store in stores)
+                                        _PluginRow(
+                                          name: store.name.isEmpty
+                                              ? 'Unnamed store'
+                                              : store.name,
+                                          subtitle: store.description.isEmpty
+                                              ? 'Store plugin'
+                                              : 'Store plugin · '
+                                                    '${store.description}',
+                                        ),
+                                    ]),
+                                  ],
+                                ],
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -149,16 +191,90 @@ class _PluginsPageState extends State<PluginsPage> {
       },
     );
   }
+
+  Widget _section(String title, VellumPalette palette) {
+    return Text(
+      title,
+      style: VellumType.display(
+        19,
+        weight: FontWeight.w600,
+        height: 1.2,
+        color: palette.text,
+      ),
+    );
+  }
+
+  Widget _pluginList(VellumPalette palette, List<Widget> rows) {
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: VellumRadius.largeAll,
+        border: Border.all(color: palette.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          for (var i = 0; i < rows.length; i++) ...[
+            if (i > 0) Divider(height: 1, color: palette.line),
+            rows[i],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _empty(VellumPalette palette) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(VellumSpace.xl),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 430),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  color: palette.surfaceHigh,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: palette.line),
+                ),
+                child: Icon(
+                  Icons.extension_outlined,
+                  size: 23,
+                  color: palette.textDim,
+                ),
+              ),
+              const SizedBox(height: VellumSpace.md),
+              Text(
+                'No Plugins Installed',
+                textAlign: TextAlign.center,
+                style: VellumType.display(
+                  22,
+                  weight: FontWeight.w600,
+                  height: 1.2,
+                  color: palette.text,
+                ),
+              ),
+              const SizedBox(height: VellumSpace.xs),
+              Text(
+                'Add a plugin archive (.zip) to extend Vellum.',
+                textAlign: TextAlign.center,
+                style: VellumType.ui(13, height: 1.55, color: palette.textDim),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// One plugin list row; metadata plugins carry a remove button, store
 /// plugins carry none.
 class _PluginRow extends StatelessWidget {
-  const _PluginRow({
-    required this.name,
-    required this.subtitle,
-    this.onRemove,
-  });
+  const _PluginRow({required this.name, required this.subtitle, this.onRemove});
 
   final String name;
   final String subtitle;
@@ -166,61 +282,67 @@ class _PluginRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        title: Text(name),
-        subtitle: subtitle.isEmpty ? null : Text(subtitle),
-        trailing: onRemove == null
-            ? null
-            : IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Remove plugin',
-                onPressed: onRemove,
-              ),
+    final palette = context.palette;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: VellumSpace.md,
+        vertical: 10,
       ),
-    );
-  }
-}
-
-/// Centered icon/title/description page used for empty plugin state.
-class _StatusPage extends StatelessWidget {
-  const _StatusPage({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
-
-  final IconData icon;
-  final String title;
-  final String description;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: theme.textTheme.headlineSmall,
-              textAlign: TextAlign.center,
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: palette.surfaceHigh,
+              borderRadius: VellumRadius.smallAll,
+              border: Border.all(color: palette.line),
             ),
-            const SizedBox(height: 8),
-            Text(
-              description,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
+            child: Icon(
+              onRemove == null
+                  ? Icons.storefront_outlined
+                  : Icons.extension_outlined,
+              size: 15,
+              color: palette.textDim,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: VellumSpace.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: VellumType.ui(
+                    13.5,
+                    weight: FontWeight.w600,
+                    height: 1.35,
+                    color: palette.text,
+                  ),
+                ),
+                if (subtitle.isNotEmpty)
+                  Text(
+                    subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: VellumType.ui(
+                      12,
+                      height: 1.45,
+                      color: palette.textDim,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (onRemove != null)
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 18),
+              tooltip: 'Remove plugin',
+              onPressed: onRemove,
+            ),
+        ],
       ),
     );
   }

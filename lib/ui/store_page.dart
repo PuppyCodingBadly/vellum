@@ -7,6 +7,7 @@ import '../app_state.dart';
 import '../import/importer.dart';
 import '../plugins/plugin_controller.dart' show PluginInfo;
 import '../store/store_download.dart';
+import 'theme.dart';
 
 /// "Get Books" tab: searches loaded calibre store plugins and downloads the
 /// selected result into the current library.
@@ -101,8 +102,8 @@ class _StorePageState extends State<StorePage> {
           .toString()
           .trim();
       final title = rawTitle.isEmpty ? 'book' : rawTitle;
-      final formats =
-          (fetched['formats'] ?? result['formats'] ?? 'epub').toString();
+      final formats = (fetched['formats'] ?? result['formats'] ?? 'epub')
+          .toString();
       final downloadsDir = p.join(appState.dataDir, 'downloads');
 
       String path;
@@ -148,74 +149,125 @@ class _StorePageState extends State<StorePage> {
     return ListenableBuilder(
       listenable: appState,
       builder: (context, _) {
+        final palette = context.palette;
         final stores = appState.plugins.storePlugins();
         if (stores.isEmpty) {
-          return const _StatusPage(
-            icon: Icons.download,
+          return _StatusPage(
+            icon: Icons.download_outlined,
             title: 'No store plugins',
-            description:
-                'Add a calibre store plugin zip from the Plugins page',
+            description: 'Add a calibre store plugin zip from the Plugins page',
           );
         }
         final selected = _effectiveStore(stores);
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        return ColoredBox(
+          color: palette.background,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _query,
-                      textInputAction: TextInputAction.search,
-                      onSubmitted: (_) => _search(appState),
-                      decoration: const InputDecoration(
-                        hintText: 'Search stores…',
-                        border: OutlineInputBorder(),
-                        isDense: true,
+              _header(palette),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  VellumSpace.xl,
+                  0,
+                  VellumSpace.xl,
+                  VellumSpace.md,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _query,
+                        textInputAction: TextInputAction.search,
+                        onSubmitted: (_) => _search(appState),
+                        decoration: const InputDecoration(
+                          hintText: 'Search stores…',
+                          prefixIcon: Icon(Icons.search, size: 18),
+                        ),
                       ),
                     ),
-                  ),
-                  if (stores.length > 1) ...[
-                    const SizedBox(width: 8),
-                    DropdownButton<String>(
-                      value: selected,
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() => _selectedStore = value);
-                        }
-                      },
-                      items: [
-                        for (final store in stores)
-                          DropdownMenuItem<String>(
-                            value: store.name,
-                            child: Text(store.name),
-                          ),
-                      ],
+                    if (stores.length > 1) ...[
+                      const SizedBox(width: VellumSpace.xs),
+                      DropdownButton<String>(
+                        value: selected,
+                        borderRadius: VellumRadius.largeAll,
+                        dropdownColor: palette.surface,
+                        style: VellumType.ui(12.5, color: palette.textDim),
+                        items: [
+                          for (final store in stores)
+                            DropdownMenuItem<String>(
+                              value: store.name,
+                              child: Text(store.name),
+                            ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() => _selectedStore = value);
+                          }
+                        },
+                      ),
+                    ],
+                    const SizedBox(width: VellumSpace.xs),
+                    FilledButton(
+                      onPressed: _searching ? null : () => _search(appState),
+                      child: const Text('Search'),
+                    ),
+                    const SizedBox(width: VellumSpace.sm),
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: _searching
+                          ? const CircularProgressIndicator(strokeWidth: 2)
+                          : null,
                     ),
                   ],
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _searching ? null : () => _search(appState),
-                    child: const Text('Search'),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: _searching
-                        ? const CircularProgressIndicator(strokeWidth: 2)
-                        : null,
-                  ),
-                ],
+                ),
               ),
-              const SizedBox(height: 12),
-              Expanded(child: _buildResults(_resultsStore ?? selected)),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    VellumSpace.xl,
+                    0,
+                    VellumSpace.xl,
+                    VellumSpace.xl,
+                  ),
+                  child: _buildResults(_resultsStore ?? selected),
+                ),
+              ),
             ],
           ),
         );
       },
+    );
+  }
+
+  Widget _header(VellumPalette palette) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        VellumSpace.xl,
+        VellumSpace.lg,
+        VellumSpace.xl,
+        VellumSpace.lg,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Get Books',
+            style: VellumType.display(
+              30,
+              weight: FontWeight.w600,
+              height: 1.1,
+              letterSpacing: -0.5,
+              color: palette.text,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Search the stores you have installed for a book to add.',
+            style: VellumType.ui(12.5, color: palette.textDim),
+          ),
+        ],
+      ),
     );
   }
 
@@ -244,20 +296,26 @@ class _StorePageState extends State<StorePage> {
         description: 'Try a different query or store.',
       );
     }
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 12),
-      itemCount: results.length,
-      itemBuilder: (context, index) =>
-          _buildRow(index, results[index], storeName),
+    final palette = context.palette;
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: VellumRadius.largeAll,
+        border: Border.all(color: palette.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ListView.separated(
+        padding: EdgeInsets.zero,
+        itemCount: results.length,
+        separatorBuilder: (_, __) => Divider(height: 1, color: palette.line),
+        itemBuilder: (context, index) =>
+            _buildRow(index, results[index], storeName),
+      ),
     );
   }
 
-  Widget _buildRow(
-    int index,
-    Map<String, Object?> result,
-    String storeName,
-  ) {
-    final theme = Theme.of(context);
+  Widget _buildRow(int index, Map<String, Object?> result, String storeName) {
+    final palette = context.palette;
     final title = (result['title'] ?? '').toString().trim();
     final author = (result['author'] ?? '').toString().trim();
     final formats = (result['formats'] ?? '').toString().trim();
@@ -267,80 +325,92 @@ class _StorePageState extends State<StorePage> {
         if (format.trim().isNotEmpty) format.trim(),
     ];
     final downloading = _downloading.contains(index);
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        title: Text(
-          title.isEmpty ? 'Untitled' : title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (author.isNotEmpty)
-              Text(
-                author,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: VellumSpace.md,
+        vertical: 10,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title.isEmpty ? 'Untitled' : title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: VellumType.ui(
+                    13.5,
+                    weight: FontWeight.w600,
+                    height: 1.35,
+                    color: palette.text,
+                  ),
                 ),
-              ),
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
-                children: [
-                  for (final chip in chips) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.secondaryContainer,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        chip,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSecondaryContainer,
+                if (author.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: VellumType.ui(12, color: palette.textDim),
+                  ),
+                ],
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final chip in chips)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1.5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: palette.surfaceHigh,
+                          borderRadius: VellumRadius.smallAll,
+                          border: Border.all(color: palette.line),
+                        ),
+                        child: Text(
+                          chip,
+                          style: VellumType.ui(
+                            10.5,
+                            weight: FontWeight.w500,
+                            color: palette.textDim,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                  ],
-                  Flexible(
-                    child: Text(
+                    Text(
                       resultStore.isEmpty ? storeName : resultStore,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
+                      style: VellumType.ui(11, color: palette.textDim),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
             ),
-          ],
-        ),
-        trailing: SizedBox(
-          width: 104,
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: downloading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : OutlinedButton(
-                    onPressed: () => _download(index, storeName),
-                    child: const Text('Download'),
-                  ),
           ),
-        ),
+          const SizedBox(width: VellumSpace.md),
+          SizedBox(
+            width: 106,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: downloading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : OutlinedButton(
+                      onPressed: () => _download(index, storeName),
+                      child: const Text('Download'),
+                    ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -360,29 +430,44 @@ class _StatusPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final palette = context.palette;
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: theme.textTheme.headlineSmall,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              description,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(VellumSpace.xl),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 430),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  color: palette.surfaceHigh,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: palette.line),
+                ),
+                child: Icon(icon, size: 23, color: palette.textDim),
               ),
-              textAlign: TextAlign.center,
-            ),
-          ],
+              const SizedBox(height: VellumSpace.md),
+              Text(
+                title,
+                style: VellumType.display(
+                  22,
+                  weight: FontWeight.w600,
+                  height: 1.2,
+                  color: palette.text,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: VellumSpace.xs),
+              Text(
+                description,
+                style: VellumType.ui(13, height: 1.55, color: palette.textDim),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -49,6 +49,7 @@ class VellumConfig {
     'reader_animation': true,
     'reader_font_scale': 1.0,
     'reader_theme': 'follow',
+    'pdf_reflow': false,
     'legacy_demo_books_purged': false,
   };
 

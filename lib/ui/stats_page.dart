@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../core/db.dart';
 import '../core/models.dart';
+import 'theme.dart';
 
 /// Reading statistics page: library totals, recent sessions, and per-book
 /// totals sourced from the reading-session log.
@@ -25,89 +26,98 @@ class _StatsPageState extends State<StatsPage> {
     return ListenableBuilder(
       listenable: appState,
       builder: (context, _) {
-        final theme = Theme.of(context);
+        final palette = context.palette;
         final library = appState.library;
         final summary = library.libraryStats();
-        final totalSeconds =
-            (summary['totalSeconds'] as num?)?.toInt() ?? 0;
+        final totalSeconds = (summary['totalSeconds'] as num?)?.toInt() ?? 0;
         final booksRead = (summary['booksRead'] as num?)?.toInt() ?? 0;
         final sessionCount = (summary['sessions'] as num?)?.toInt() ?? 0;
         final recent = appState.stats.recentSessions(50);
-        final perBook = _perBookStats(
-          library,
-          sessionCount,
-          totalSeconds,
-        );
-        return Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
-            child: ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Reading Statistics',
-                        style: theme.textTheme.headlineSmall,
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Refresh statistics',
-                      onPressed: () => setState(() {}),
-                      icon: const Icon(Icons.refresh),
-                    ),
-                  ],
+        final perBook = _perBookStats(library, sessionCount, totalSeconds);
+        return ColoredBox(
+          color: palette.background,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 980),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(
+                  VellumSpace.xl,
+                  VellumSpace.lg,
+                  VellumSpace.xl,
+                  VellumSpace.xxl,
                 ),
-                const SizedBox(height: 16),
-                if (sessionCount == 0)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 64),
-                    child: Center(
-                      child: Text(
-                        'No reading sessions yet — open a book in the reader.',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Reading Statistics',
+                              style: VellumType.display(
+                                30,
+                                weight: FontWeight.w600,
+                                height: 1.1,
+                                letterSpacing: -0.5,
+                                color: palette.text,
+                              ),
+                            ),
+                            const SizedBox(height: 5),
+                            Text(
+                              'Time kept from the books you open.',
+                              style: VellumType.ui(
+                                12.5,
+                                color: palette.textDim,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  )
-                else ...[
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      _SummaryCard(
-                        label: 'Reading time',
-                        value: _formatDuration(totalSeconds),
-                      ),
-                      _SummaryCard(
-                        label: 'Books read',
-                        value: '$booksRead',
-                      ),
-                      _SummaryCard(
-                        label: 'Sessions',
-                        value: '$sessionCount',
+                      IconButton(
+                        tooltip: 'Refresh statistics',
+                        onPressed: () => setState(() {}),
+                        icon: const Icon(Icons.refresh, size: 18),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
-                  Text('Recent sessions', style: theme.textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  _RecentSessionsList(
-                    sessions: recent,
-                    bookTitle: (id) {
-                      final title = appState.bookById(id)?.title ?? '';
-                      return title.isEmpty ? 'Unknown book' : title;
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  Text('By book', style: theme.textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  _PerBookStatsList(stats: perBook),
+                  const SizedBox(height: VellumSpace.lg),
+                  if (sessionCount == 0)
+                    _empty(palette)
+                  else ...[
+                    _SummaryStrip(
+                      totalSeconds: totalSeconds,
+                      booksRead: booksRead,
+                      sessionCount: sessionCount,
+                    ),
+                    const SizedBox(height: VellumSpace.xl),
+                    _SectionHeader(
+                      title: 'Recent sessions',
+                      detail: recent.length == 1
+                          ? '1 session'
+                          : '${recent.length} sessions',
+                    ),
+                    const SizedBox(height: VellumSpace.xs),
+                    _RecentSessions(
+                      sessions: recent,
+                      bookTitle: (id) {
+                        final title = appState.bookById(id)?.title ?? '';
+                        return title.isEmpty ? 'Unknown book' : title;
+                      },
+                    ),
+                    const SizedBox(height: VellumSpace.xl),
+                    _SectionHeader(
+                      title: 'By book',
+                      detail: perBook.length == 1
+                          ? '1 book'
+                          : '${perBook.length} books',
+                    ),
+                    const SizedBox(height: VellumSpace.xs),
+                    _PerBookStats(stats: perBook),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         );
@@ -115,8 +125,40 @@ class _StatsPageState extends State<StatsPage> {
     );
   }
 
+  Widget _empty(VellumPalette palette) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 72),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: palette.surfaceHigh,
+                shape: BoxShape.circle,
+                border: Border.all(color: palette.line),
+              ),
+              child: Icon(Icons.schedule, size: 23, color: palette.textDim),
+            ),
+            const SizedBox(height: VellumSpace.md),
+            Text(
+              'No reading sessions yet — open a book in the reader.',
+              textAlign: TextAlign.center,
+              style: VellumType.ui(13, height: 1.5, color: palette.textDim),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<_BookStat> _perBookStats(
-      Library library, int sessionCount, int totalSeconds) {
+    Library library,
+    int sessionCount,
+    int totalSeconds,
+  ) {
     if (sessionCount == 0) return const <_BookStat>[];
     if (!identical(library, _cachedLibrary) ||
         sessionCount != _cachedSessions ||
@@ -184,71 +226,215 @@ class _BookStat {
   final String lastRead;
 }
 
-class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.label, required this.value});
+class _SummaryStrip extends StatelessWidget {
+  const _SummaryStrip({
+    required this.totalSeconds,
+    required this.booksRead,
+    required this.sessionCount,
+  });
+
+  final int totalSeconds;
+  final int booksRead;
+  final int sessionCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final metrics = [
+      ('Reading time', _formatDuration(totalSeconds)),
+      ('Books read', '$booksRead'),
+      ('Sessions', '$sessionCount'),
+    ];
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: VellumRadius.largeAll,
+        border: Border.all(color: palette.line),
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: VellumSpace.lg,
+        vertical: VellumSpace.lg,
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // A narrow window cannot hold three large numerals in one row
+          // without one of them breaking mid-number; use a ledger instead.
+          if (constraints.maxWidth < 520) {
+            return Column(
+              children: [
+                for (var i = 0; i < metrics.length; i++) ...[
+                  if (i > 0)
+                    Divider(height: VellumSpace.lg, color: palette.line),
+                  _MetricLine(label: metrics[i].$1, value: metrics[i].$2),
+                ],
+              ],
+            );
+          }
+          return IntrinsicHeight(
+            child: Row(
+              children: [
+                for (var i = 0; i < metrics.length; i++) ...[
+                  if (i > 0) _divider(palette),
+                  Expanded(
+                    child: _Metric(
+                      label: metrics[i].$1,
+                      value: metrics[i].$2,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _divider(VellumPalette palette) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: VellumSpace.lg),
+    child: VerticalDivider(width: 1, color: palette.line),
+  );
+}
+
+class _MetricLine extends StatelessWidget {
+  const _MetricLine({required this.label, required this.value});
 
   final String label;
   final String value;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return SizedBox(
-      width: 200,
-      child: Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: theme.textTheme.labelMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(value, style: theme.textTheme.headlineSmall),
-            ],
+    final palette = context.palette;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: VellumType.ui(
+              11,
+              weight: FontWeight.w500,
+              height: 1.2,
+              color: palette.textDim,
+            ),
           ),
         ),
-      ),
+        Text(
+          value,
+          textAlign: TextAlign.right,
+          style: VellumType.display(
+            24,
+            weight: FontWeight.w600,
+            height: 1,
+            letterSpacing: -0.3,
+            color: palette.text,
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _RecentSessionsList extends StatelessWidget {
-  const _RecentSessionsList({required this.sessions, required this.bookTitle});
+class _Metric extends StatelessWidget {
+  const _Metric({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: VellumType.ui(
+            11,
+            weight: FontWeight.w500,
+            height: 1.2,
+            color: palette.textDim,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          value,
+          style: VellumType.display(
+            30,
+            weight: FontWeight.w600,
+            height: 1,
+            letterSpacing: -0.4,
+            color: palette.text,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, required this.detail});
+
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: VellumType.display(
+              20,
+              weight: FontWeight.w600,
+              height: 1.2,
+              color: palette.text,
+            ),
+          ),
+        ),
+        Text(detail, style: VellumType.ui(11.5, color: palette.textDim)),
+      ],
+    );
+  }
+}
+
+class _RecentSessions extends StatelessWidget {
+  const _RecentSessions({required this.sessions, required this.bookTitle});
 
   final List<Map<String, Object?>> sessions;
   final String Function(int bookId) bookTitle;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final palette = context.palette;
     if (sessions.isEmpty) {
       return Text(
         'No recent sessions',
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
+        style: VellumType.ui(13, color: palette.textDim),
       );
     }
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Column(
-        children: [
-          for (var i = 0; i < sessions.length; i++) ...[
-            if (i > 0) const Divider(height: 1),
-            _RecentSessionTile(
-              session: sessions[i],
-              bookTitle: bookTitle(
-                (sessions[i]['book_id'] as num?)?.toInt() ?? -1,
-              ),
-            ),
-          ],
-        ],
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: VellumRadius.largeAll,
+        border: Border.all(color: palette.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.zero,
+        itemCount: sessions.length,
+        separatorBuilder: (_, __) => Divider(height: 1, color: palette.line),
+        itemBuilder: (context, index) {
+          final session = sessions[index];
+          return _RecentSessionTile(
+            session: session,
+            bookTitle: bookTitle((session['book_id'] as num?)?.toInt() ?? -1),
+          );
+        },
       ),
     );
   }
@@ -262,57 +448,76 @@ class _RecentSessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final palette = context.palette;
     final started = _formatDateTime(session['started'] as String? ?? '');
     final duration = _formatDuration(
       (session['duration_seconds'] as num?)?.toInt() ?? 0,
     );
-    final locator = session['end_locator'] as String? ?? '';
-    return ListTile(
-      dense: true,
-      title: Text(
-        bookTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: VellumSpace.md,
+        vertical: 11,
       ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Text('$started · $duration'),
-          if (locator.isNotEmpty)
-            Text(
-              locator,
+          SizedBox(
+            width: 138,
+            child: Text(
+              started,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+              style: VellumType.ui(11.5, color: palette.textDim),
+            ),
+          ),
+          const SizedBox(width: VellumSpace.sm),
+          Expanded(
+            child: Text(
+              bookTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: VellumType.ui(
+                13,
+                weight: FontWeight.w500,
+                color: palette.text,
               ),
             ),
+          ),
+          const SizedBox(width: VellumSpace.sm),
+          Text(duration, style: VellumType.ui(12.5, color: palette.textDim)),
         ],
       ),
     );
   }
 }
 
-class _PerBookStatsList extends StatelessWidget {
-  const _PerBookStatsList({required this.stats});
+class _PerBookStats extends StatelessWidget {
+  const _PerBookStats({required this.stats});
 
   final List<_BookStat> stats;
 
   @override
   Widget build(BuildContext context) {
+    final palette = context.palette;
     if (stats.isEmpty) {
-      return const Text('No per-book statistics');
+      return Text(
+        'No per-book statistics',
+        style: VellumType.ui(13, color: palette.textDim),
+      );
     }
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Column(
-        children: [
-          for (var i = 0; i < stats.length; i++) ...[
-            if (i > 0) const Divider(height: 1),
-            _PerBookStatTile(stat: stats[i]),
-          ],
-        ],
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: VellumRadius.largeAll,
+        border: Border.all(color: palette.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.zero,
+        itemCount: stats.length,
+        separatorBuilder: (_, __) => Divider(height: 1, color: palette.line),
+        itemBuilder: (context, index) => _PerBookStatTile(stat: stats[index]),
       ),
     );
   }
@@ -325,6 +530,7 @@ class _PerBookStatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = context.palette;
     final parts = <String>[
       _formatDuration(stat.totalSeconds),
       '${stat.sessions} sessions',
@@ -332,14 +538,32 @@ class _PerBookStatTile extends StatelessWidget {
     if (stat.lastRead.isNotEmpty) {
       parts.add('Last read ${_formatDateTime(stat.lastRead)}');
     }
-    return ListTile(
-      dense: true,
-      title: Text(
-        stat.book.title.isEmpty ? 'Untitled' : stat.book.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: VellumSpace.md,
+        vertical: 11,
       ),
-      subtitle: Text(parts.join(' · ')),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              stat.book.title.isEmpty ? 'Untitled' : stat.book.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: VellumType.ui(
+                13,
+                weight: FontWeight.w500,
+                color: palette.text,
+              ),
+            ),
+          ),
+          const SizedBox(width: VellumSpace.sm),
+          Text(
+            parts.join(' · '),
+            style: VellumType.ui(12, color: palette.textDim),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -356,7 +580,21 @@ String _formatDateTime(String iso) {
   final parsed = DateTime.tryParse(iso);
   if (parsed == null) return iso;
   final local = parsed.toLocal();
-  String two(int value) => value.toString().padLeft(2, '0');
-  return '${local.year}-${two(local.month)}-${two(local.day)} '
-      '${two(local.hour)}:${two(local.minute)}';
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final hh = local.hour.toString().padLeft(2, '0');
+  final mm = local.minute.toString().padLeft(2, '0');
+  return '${months[local.month - 1]} ${local.day}, $hh:$mm';
 }
