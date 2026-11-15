@@ -530,6 +530,7 @@ run git tag -a "$TAG" -m "Vellum $VERSION" "$RELEASE_COMMIT"
 run git push "$PUSH_URL" master
 run git push "$PUSH_URL" "refs/tags/$TAG"
 run gh release create "$TAG" "$BUNDLE_FILE" \
+  "$ROOT/$APP_ID.flatpakref" "$ROOT/$APP_ID.flatpakrepo" \
   --title "Vellum $VERSION" --notes-file "$NOTES_PATH" --latest
 
 if [ "$DRY_RUN" = true ]; then

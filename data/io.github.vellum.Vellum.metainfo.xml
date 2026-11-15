@@ -25,6 +25,15 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.2" date="2026-11-14">
+      <description>
+        <p>Handwriting anchoring follows each line instead of one bounding
+        box, so notes drawn across several lines stay on those lines when the
+        text reflows or the font size changes.</p>
+        <p>Stroke width now scales with the line height, and erasing uses the
+        same per-line mapping.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-14">
       <description>
         <p>Handwriting annotations anchored to the content: ink stays on its
