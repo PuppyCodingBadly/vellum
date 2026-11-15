@@ -4,7 +4,6 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../app_state.dart';
@@ -40,18 +39,27 @@ class HomePageState extends State<HomePage> {
 
   /// Switches to the Library tab and focuses the search field.
   ///
-  /// Called from the app-level Ctrl+F shortcut in `main.dart`.
+  /// The only owner of search focus; called from the app-wide Ctrl+F shortcut
+  /// in `main.dart`. When the Library tab is already active the field is
+  /// focused without waiting for a frame; only a tab switch has to wait for
+  /// the frame that shows the library.
   void focusLibrarySearch() {
-    if (_tabIndex != _libraryTab) {
-      setState(() => _tabIndex = _libraryTab);
+    if (_tabIndex == _libraryTab) {
+      _libraryKey.currentState?.focusSearch(selectAll: true);
+      return;
     }
+    setState(() => _tabIndex = _libraryTab);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _libraryKey.currentState?.focusSearch(selectAll: true);
     });
   }
 
-  Future<void> _toggleFullscreen() async {
+  /// Switches the window between windowed and fullscreen.
+  ///
+  /// Installed app-wide by `main.dart` as F11 so it also works on pushed
+  /// routes; the menu calls it directly.
+  Future<void> toggleFullscreen() async {
     try {
       final fullScreen = await windowManager.isFullScreen();
       await windowManager.setFullScreen(!fullScreen);
@@ -60,7 +68,10 @@ class HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _quit() async {
+  /// Quits the application.
+  ///
+  /// Installed app-wide by `main.dart` as Ctrl+Q; the menu calls it directly.
+  Future<void> quit() async {
     try {
       await windowManager.destroy();
     } catch (error) {
@@ -100,13 +111,13 @@ class HomePageState extends State<HomePage> {
       case 'hidden':
         unawaited(state.setShowHidden(!state.showHidden));
       case 'fullscreen':
-        unawaited(_toggleFullscreen());
+        unawaited(toggleFullscreen());
       case 'about':
         _showAbout();
       case 'close':
         unawaited(_closeWindow());
       case 'quit':
-        unawaited(_quit());
+        unawaited(quit());
     }
   }
 
@@ -126,11 +137,7 @@ class HomePageState extends State<HomePage> {
           SizedBox(
             width: 18,
             child: state.showHidden
-                ? Icon(
-                    Icons.check,
-                    size: 16,
-                    color: context.palette.accent,
-                  )
+                ? Icon(Icons.check, size: 16, color: context.palette.accent)
                 : null,
           ),
           const SizedBox(width: 8),
@@ -293,31 +300,20 @@ class HomePageState extends State<HomePage> {
     ];
     final body = IndexedStack(index: _tabIndex, children: pages);
 
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        // Ctrl+F and Alt+Left are handled app-wide in main.dart's builder.
-        const SingleActivator(LogicalKeyboardKey.f11): () =>
-            unawaited(_toggleFullscreen()),
-        const SingleActivator(LogicalKeyboardKey.keyQ, control: true): () =>
-            unawaited(_quit()),
-      },
-      child: Focus(
-        autofocus: true,
-        child: Scaffold(
-          appBar: wide ? null : _appBar(state),
-          body: wide
-              ? Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _sidebar(state),
-                    Expanded(child: body),
-                  ],
-                )
-              : body,
-          bottomNavigationBar: wide
-              ? null
-              : _navigationBar(selected: _tabIndex),
-        ),
+    return Focus(
+      autofocus: true,
+      child: Scaffold(
+        appBar: wide ? null : _appBar(state),
+        body: wide
+            ? Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _sidebar(state),
+                  Expanded(child: body),
+                ],
+              )
+            : body,
+        bottomNavigationBar: wide ? null : _navigationBar(selected: _tabIndex),
       ),
     );
   }

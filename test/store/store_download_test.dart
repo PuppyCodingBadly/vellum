@@ -1,9 +1,23 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 import 'package:vellum/store/store_download.dart';
+
+/// A client whose response is scripted, including failures mid-stream.
+class _ScriptedClient extends http.BaseClient {
+  _ScriptedClient(this.handler);
+
+  final Future<http.StreamedResponse> Function(http.BaseRequest request)
+  handler;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) =>
+      handler(request);
+}
 
 void main() {
   group('sanitizeDownloadFileName', () {
@@ -64,7 +78,7 @@ void main() {
     });
   });
 
-  group('downloadToFile', () {
+  group('downloadBook', () {
     late Directory tmp;
 
     setUp(() async {
@@ -75,46 +89,126 @@ void main() {
       if (await tmp.exists()) await tmp.delete(recursive: true);
     });
 
-    test('streams bytes to the destination file', () async {
+    Future<File> download(
+      http.Client client, {
+      String title = 'book',
+      String url = 'https://example.com/book.epub',
+    }) => downloadBook(
+      url: url,
+      title: title,
+      formats: 'epub',
+      directory: tmp.path,
+      client: client,
+    );
+
+    /// Every file under [tmp] with its relative name.
+    List<String> files() => [
+      for (final entry in tmp.listSync(recursive: true))
+        if (entry is File) p.relative(entry.path, from: tmp.path),
+    ];
+
+    test('streams bytes to the published file and leaves no partial', () async {
       // > 64 KiB so multiple chunks cross the stream.
       final body = List<int>.generate(200 * 1024, (i) => i % 251);
       final client = MockClient((request) async {
         expect(request.url.toString(), 'https://example.com/book.epub');
-        return http.Response.bytes(body, 200);
+        return http.Response.bytes(
+          body,
+          200,
+          headers: {'content-type': 'application/epub+zip'},
+        );
       });
-      final dest = '${tmp.path}/book.epub';
-      final result =
-          await downloadToFile('https://example.com/book.epub', dest,
-              client: client);
-      expect(result, dest);
-      expect(await File(dest).readAsBytes(), body);
+      final file = await download(client);
+      expect(p.basename(file.path), 'book.epub');
+      expect(await file.readAsBytes(), body);
+      expect(files(), ['book.epub']);
     });
 
-    test('decodes text bodies correctly', () async {
-      final client = MockClient((request) async =>
-          http.Response('hello vellum', 200));
-      final dest = '${tmp.path}/x.txt';
-      await downloadToFile('https://example.com/x', dest, client: client);
-      expect(await File(dest).readAsString(), 'hello vellum');
-    });
-
-    test('throws on non-2xx status', () async {
-      final client =
-          MockClient((request) async => http.Response('nope', 404));
-      expect(
-        () => downloadToFile('https://example.com/missing',
-            '${tmp.path}/missing.epub',
-            client: client),
-        throwsA(isA<HttpException>()),
+    test('dedups an existing title with (N)', () async {
+      File(p.join(tmp.path, 'book.epub')).writeAsStringSync('old');
+      final client = MockClient(
+        (request) async => http.Response.bytes([1, 2, 3], 200),
       );
+      final file = await download(client);
+      expect(p.basename(file.path), 'book (1).epub');
+      expect(files()..sort(), ['book (1).epub', 'book.epub']);
     });
 
-    test('creates missing parent directories', () async {
-      final client =
-          MockClient((request) async => http.Response.bytes([1, 2, 3], 200));
-      final dest = '${tmp.path}/nested/deep/book.epub';
-      await downloadToFile('https://example.com/b', dest, client: client);
-      expect(await File(dest).readAsBytes(), [1, 2, 3]);
+    test('throws on non-2xx status and leaves no final path', () async {
+      final client = MockClient((request) async => http.Response('nope', 404));
+      await expectLater(download(client), throwsA(isA<HttpException>()));
+      expect(files(), isEmpty);
+    });
+
+    test('rejects a markup body instead of saving a web page', () async {
+      final client = MockClient(
+        (request) async => http.Response(
+          '<html>error</html>',
+          200,
+          headers: {'content-type': 'text/html'},
+        ),
+      );
+      await expectLater(download(client), throwsA(isA<HttpException>()));
+      expect(files(), isEmpty);
+    });
+
+    test('rejects a declared body over the size cap', () async {
+      final client = _ScriptedClient(
+        (request) async => http.StreamedResponse(
+          const Stream<List<int>>.empty(),
+          200,
+          contentLength: maxDownloadBytes + 1,
+        ),
+      );
+      await expectLater(download(client), throwsA(isA<HttpException>()));
+      expect(files(), isEmpty);
+    });
+
+    test('removes the partial when the body fails mid-stream', () async {
+      Stream<List<int>> failingBody() async* {
+        yield [1, 2, 3];
+        throw const SocketException('connection reset');
+      }
+
+      final client = _ScriptedClient(
+        (request) async => http.StreamedResponse(failingBody(), 200),
+      );
+      await expectLater(download(client), throwsA(isA<SocketException>()));
+      expect(files(), isEmpty);
+    });
+
+    test('concurrent downloads of one title reserve different files', () async {
+      final gates = <Completer<void>>[];
+      final client = _ScriptedClient((request) async {
+        final gate = Completer<void>();
+        gates.add(gate);
+        final body = StreamController<List<int>>();
+        gate.future.then((_) {
+          body
+            ..add([1, 2, 3])
+            ..close();
+        });
+        return http.StreamedResponse(body.stream, 200);
+      });
+      final first = download(client);
+      final second = download(client);
+      // Wait until both reservations exist as distinct partials.
+      while (gates.length < 2) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(files().where((name) => name.endsWith('.part')).toSet(), {
+        'book.epub.part',
+        'book (1).epub.part',
+      });
+      for (final gate in gates) {
+        gate.complete();
+      }
+      final published = await Future.wait([first, second]);
+      expect(published.map((file) => p.basename(file.path)).toSet(), {
+        'book.epub',
+        'book (1).epub',
+      });
+      expect(files().where((name) => name.endsWith('.part')), isEmpty);
     });
   });
 }

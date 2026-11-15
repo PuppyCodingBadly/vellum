@@ -16,6 +16,42 @@ const int maxHtmlBytes = 4 * 1024 * 1024;
 const int maxCoverBytes = 10 * 1024 * 1024;
 const _bookTypes = {'book', 'audiobook', 'product', 'creativework'};
 
+/// Bytes read from one HTTP body by [readBodyCapped].
+class BodyRead {
+  const BodyRead(this.length, {required this.truncated});
+
+  /// Number of bytes handed to the caller's chunk sink.
+  final int length;
+
+  /// Whether the body continued past the byte cap.
+  final bool truncated;
+}
+
+/// Reads [response]'s body into [onChunk], the single capped reader shared by
+/// every HTTP fetch (pages, covers and store downloads).
+///
+/// A deadline on the headers does not bound the transfer: a server can stall
+/// mid-body or stream forever, so this re-arms [idleTimeout] per chunk and
+/// stops as soon as [maxBytes] would be exceeded.  Throws [TimeoutException]
+/// when the body stalls; callers decide whether [BodyRead.truncated] is an
+/// error or a truncation.
+Future<BodyRead> readBodyCapped(
+  http.StreamedResponse response, {
+  required void Function(List<int> chunk) onChunk,
+  required int maxBytes,
+  required Duration idleTimeout,
+}) async {
+  var length = 0;
+  await for (final chunk in response.stream.timeout(idleTimeout)) {
+    if (length + chunk.length > maxBytes) {
+      return BodyRead(length, truncated: true);
+    }
+    length += chunk.length;
+    onChunk(chunk);
+  }
+  return BodyRead(length, truncated: false);
+}
+
 class UniversalGrabber extends MetadataSource {
   @override
   String get id => 'universal-url';
@@ -29,12 +65,13 @@ class UniversalGrabber extends MetadataSource {
     String isbn = '',
     http.Client? client,
     Duration timeout = const Duration(seconds: 15),
-  }) async =>
-      [];
+  }) async => [];
 
-  Future<Metadata?> grab(String url,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 20)}) async {
+  Future<Metadata?> grab(
+    String url, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
     final normalized = normalizeUrl(url);
     if (normalized.isEmpty) {
       throw FormatException('enter a valid http(s) URL');
@@ -50,12 +87,18 @@ class UniversalGrabber extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (meta.coverUrl.isEmpty) return null;
     try {
-      return await _fetchCover(meta.coverUrl, client, timeout);
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
     }
@@ -84,8 +127,11 @@ String normalizeUrl(String url) {
   return url;
 }
 
-Future<(String, String)> _fetchHtml(String url, http.Client? client,
-    [Duration timeout = const Duration(seconds: 20)]) async {
+Future<(String, String)> _fetchHtml(
+  String url,
+  http.Client? client, [
+  Duration timeout = const Duration(seconds: 20),
+]) async {
   final httpClient = client ?? http.Client();
   try {
     final request = http.Request('GET', Uri.parse(url))
@@ -101,18 +147,32 @@ Future<(String, String)> _fetchHtml(String url, http.Client? client,
       throw FormatException('not an HTML page ($contentType)');
     }
     final builder = BytesBuilder();
-    var size = 0;
-    await for (final chunk in resp.stream) {
-      size += chunk.length;
-      if (size > maxHtmlBytes) break; // truncate, don't fail
-      builder.add(chunk);
-    }
-    final body = builder.takeBytes();
-    return (_decodeBody(body, contentType),
-        resp.request?.url.toString() ?? url);
+    await readBodyCapped(
+      resp,
+      onChunk: builder.add,
+      maxBytes: maxHtmlBytes,
+      idleTimeout: timeout,
+    );
+    // A long page is truncated rather than failed: the parsers only need the
+    // head, and the cap keeps a hostile body from filling memory.
+    return (
+      _decodeBody(builder.takeBytes(), contentType),
+      _finalUrl(resp, url),
+    );
   } finally {
     if (client == null) httpClient.close();
   }
+}
+
+/// URL that actually served [response].
+///
+/// Redirects are only visible through [http.BaseResponseWithUrl]; plain
+/// [http.StreamedResponse] clients expose the request they were handed.
+String _finalUrl(http.StreamedResponse response, String requested) {
+  final url = response is http.BaseResponseWithUrl
+      ? (response as http.BaseResponseWithUrl).url
+      : response.request?.url;
+  return url?.toString() ?? requested;
 }
 
 /// Decode resp.encoding or utf-8, errors=replace.
@@ -131,8 +191,16 @@ String _decodeBody(List<int> body, String contentType) {
   return utf8.decode(body, allowMalformed: true);
 }
 
-Future<Uint8List?> _fetchCover(String url, http.Client? client,
-    [Duration timeout = const Duration(seconds: 15)]) async {
+/// Fetch [url] as cover image bytes, rejecting non-image content types and
+/// bodies over [maxCoverBytes].
+///
+/// Returns null when the response is not a usable image; transport failures
+/// throw so callers can fail over to another source.
+Future<Uint8List?> fetchCoverBytes(
+  String url, {
+  http.Client? client,
+  Duration timeout = const Duration(seconds: 15),
+}) async {
   if (!RegExp('^https?://', caseSensitive: false).hasMatch(url)) return null;
   final httpClient = client ?? http.Client();
   try {
@@ -145,12 +213,13 @@ Future<Uint8List?> _fetchCover(String url, http.Client? client,
       return null;
     }
     final builder = BytesBuilder();
-    var size = 0;
-    await for (final chunk in resp.stream) {
-      size += chunk.length;
-      if (size > maxCoverBytes) return null;
-      builder.add(chunk);
-    }
+    final read = await readBodyCapped(
+      resp,
+      onChunk: builder.add,
+      maxBytes: maxCoverBytes,
+      idleTimeout: timeout,
+    );
+    if (read.truncated) return null;
     return builder.takeBytes();
   } finally {
     if (client == null) httpClient.close();
@@ -178,8 +247,7 @@ Metadata? parseBookPage(String html, [String baseUrl = '']) {
 
   return Metadata(
     title: title,
-    authors:
-        (fields['authors'] as List<String>?) ?? [],
+    authors: (fields['authors'] as List<String>?) ?? [],
     isbn: (fields['isbn'] as String?) ?? '',
     publisher: (fields['publisher'] as String?) ?? '',
     pubdate: (fields['pubdate'] as String?) ?? '',
@@ -196,8 +264,9 @@ Metadata? parseBookPage(String html, [String baseUrl = '']) {
 
 List<Map<String, Object?>> _jsonldObjects(Document document) {
   final objects = <Map<String, Object?>>[];
-  for (final script
-      in document.querySelectorAll('script[type="application/ld+json"]')) {
+  for (final script in document.querySelectorAll(
+    'script[type="application/ld+json"]',
+  )) {
     final raw = script.text;
     if (raw.trim().isEmpty) continue;
     Object? data;
@@ -250,12 +319,16 @@ bool _isBookType(Map<String, Object?> obj) {
   var types = obj['@type'] ?? obj['type'] ?? '';
   if (types is String) types = [types];
   if (types is! List) return false;
-  return types.any((value) => _bookTypes
-      .contains(value.toString().split('/').last.toLowerCase()));
+  return types.any(
+    (value) =>
+        _bookTypes.contains(value.toString().split('/').last.toLowerCase()),
+  );
 }
 
 Map<String, Object> _fieldsFromJsonld(
-    Map<String, Object?> obj, String baseUrl) {
+  Map<String, Object?> obj,
+  String baseUrl,
+) {
   final fields = <String, Object>{};
   void put(String key, Object? value) {
     if (value == null) return;
@@ -270,9 +343,9 @@ Map<String, Object> _fieldsFromJsonld(
   put('isbn', _jsonldIsbn(obj));
   put('publisher', _asText(obj['publisher']));
   put(
-      'pubdate',
-      _asText(
-          obj['datePublished'] ?? obj['dateCreated'] ?? obj['releaseDate']));
+    'pubdate',
+    _asText(obj['datePublished'] ?? obj['dateCreated'] ?? obj['releaseDate']),
+  );
   put('language', _asText(obj['inLanguage']));
   put('description', _clean(_asText(obj['description'])));
   put('cover_url', _firstUrl(obj['image'] ?? obj['thumbnailUrl'], baseUrl));
@@ -355,27 +428,39 @@ Map<String, Object> _fieldsFromMeta(Document document, String baseUrl) {
   final fields = <String, Object>{};
   final title = content(['og:title', 'twitter:title']);
   if (title.isNotEmpty) fields['title'] = title;
-  final authors =
-      _splitList(values(['book:author', 'og:book:author', 'author']));
+  final authors = _splitList(
+    values(['book:author', 'og:book:author', 'author']),
+  );
   if (authors.isNotEmpty) fields['authors'] = authors;
   final isbn = content(['book:isbn', 'og:book:isbn', 'isbn']);
   if (isbn.isNotEmpty) fields['isbn'] = isbn;
-  final publisher = content(['book:publisher', 'og:book:publisher', 'publisher']);
+  final publisher = content([
+    'book:publisher',
+    'og:book:publisher',
+    'publisher',
+  ]);
   if (publisher.isNotEmpty) fields['publisher'] = publisher;
   final pubdate = content([
     'book:release_date',
     'og:book:release_date',
     'article:published_time',
-    'date'
+    'date',
   ]);
   if (pubdate.isNotEmpty) fields['pubdate'] = pubdate;
   final language = content(['og:locale', 'language']);
   if (language.isNotEmpty) fields['language'] = language;
-  final description =
-      content(['og:description', 'twitter:description', 'description']);
+  final description = content([
+    'og:description',
+    'twitter:description',
+    'description',
+  ]);
   if (description.isNotEmpty) fields['description'] = description;
-  var cover =
-      content(['og:image:secure_url', 'og:image', 'twitter:image', 'image']);
+  var cover = content([
+    'og:image:secure_url',
+    'og:image',
+    'twitter:image',
+    'image',
+  ]);
   if (cover.isNotEmpty) {
     cover = _absolute(cover, baseUrl);
     if (cover.isNotEmpty) fields['cover_url'] = cover;
@@ -391,16 +476,19 @@ Map<String, Object> _fieldsFromMeta(Document document, String baseUrl) {
 
 Map<String, Object> _fieldsFromMicrodata(Document document, String baseUrl) {
   final scopes = document.querySelectorAll(
-      '[itemtype*="Book"], [itemtype*="Product"], [itemtype*="CreativeWork"]');
+    '[itemtype*="Book"], [itemtype*="Product"], [itemtype*="CreativeWork"]',
+  );
   final Element scope = scopes.isEmpty ? document.documentElement! : scopes[0];
 
   String value(String name) {
     final tag = scope.querySelector('[itemprop="$name"]');
     if (tag == null) return '';
-    return _clean(tag.attributes['content'] ??
-        tag.attributes['href'] ??
-        tag.attributes['src'] ??
-        tag.text.trim());
+    return _clean(
+      tag.attributes['content'] ??
+          tag.attributes['href'] ??
+          tag.attributes['src'] ??
+          tag.text.trim(),
+    );
   }
 
   final fields = <String, Object>{};
@@ -431,7 +519,8 @@ Map<String, Object> _fieldsFromMicrodata(Document document, String baseUrl) {
 void _mergeMissing(Map<String, Object> target, Map<String, Object> source) {
   source.forEach((key, value) {
     final existing = target[key];
-    final missing = existing == null ||
+    final missing =
+        existing == null ||
         (existing is String && existing.isEmpty) ||
         (existing is List && existing.isEmpty);
     if (missing) target[key] = value;
@@ -491,7 +580,7 @@ String _firstUrl(Object? value, String baseUrl) {
   for (final item in values) {
     final Object? raw = item is Map
         ? (item.cast<String, Object?>()['url'] ??
-            item.cast<String, Object?>()['contentUrl'])
+              item.cast<String, Object?>()['contentUrl'])
         : item;
     final url = _absolute(_asText(raw), baseUrl);
     if (url.isNotEmpty) return url;
@@ -520,13 +609,14 @@ String _clean(Object? value) {
 }
 
 double _clampRating(Object? value) {
-  final rating =
-      value is num ? value.toDouble() : double.tryParse(value?.toString() ?? '');
+  final rating = value is num
+      ? value.toDouble()
+      : double.tryParse(value?.toString() ?? '');
   if (rating == null) return 0.0;
   final clamped = rating < 0.0
       ? 0.0
       : rating > 5.0
-          ? 5.0
-          : rating;
+      ? 5.0
+      : rating;
   return (clamped * 10).round() / 10;
 }

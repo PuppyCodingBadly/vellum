@@ -63,14 +63,9 @@ class AppState extends ChangeNotifier {
   void showToast(String message);
 
   // --- accent palette ---
-  static const Map<String, Color> accentPalette = {
-    'blue': Color(0xFF3584E4), 'teal': Color(0xFF2190A4),
-    'green': Color(0xFF3A944A), 'yellow': Color(0xFFC88800),
-    'orange': Color(0xFFED5B00), 'red': Color(0xFFE62D42),
-    'pink': Color(0xFFD56199), 'purple': Color(0xFF9141AC),
-    'slate': Color(0xFF6F8396),
-  };
-  static Color resolveAccent(String nameOrHex); // '#rrggbb' or palette name
+  // Names and parsing live in the visual system: `VellumAccents.named` and
+  // `VellumAccents.resolve` in lib/ui/theme.dart. `accentColor` resolves the
+  // stored setting through them.
 
   static AppState of(BuildContext context); // throws if absent
 }

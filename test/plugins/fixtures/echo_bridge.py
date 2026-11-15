@@ -10,6 +10,10 @@ Protocol behaviours:
                "survived"
   slow      -> sleeps params["seconds"] (float), then answers "awake"
   delayed   -> sleeps params["seconds"], then answers params["value"]
+  stderr    -> writes params["lines"] lines to stderr, then answers "ok"
+  stall     -> creates the marker file (argv[1]) on the FIRST invocation only
+               and never answers, as a wedged process does; after a restart
+               it answers "awake"
 """
 
 import json
@@ -18,6 +22,9 @@ import sys
 import time
 
 MARKER = sys.argv[1] if len(sys.argv) > 1 else None
+# A process started before the marker existed is the wedged one; a process
+# started after it behaves normally, so a restart is observable.
+WEDGED = MARKER is not None and not os.path.exists(MARKER)
 
 
 def respond(req_id, *, result=None, error=None):
@@ -64,6 +71,16 @@ def main():
             elif method in ("slow", "delayed"):
                 time.sleep(float(params.get("seconds", 1.0)))
                 respond(req_id, result=params.get("value", "awake"))
+            elif method == "stderr":
+                for i in range(int(params.get("lines", 1))):
+                    sys.stderr.write(f"noise {i}\n")
+                sys.stderr.flush()
+                respond(req_id, result="ok")
+            elif method == "stall":
+                if WEDGED:
+                    open(MARKER, "w").close()
+                    continue  # wedged: deliberately no answer
+                respond(req_id, result="awake")
             else:
                 respond(req_id, error=f"unknown method: {method}")
         except SystemExit:

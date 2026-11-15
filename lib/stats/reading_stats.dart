@@ -2,34 +2,28 @@ import '../core/db.dart';
 
 /// Tracks reading sessions and exposes reading statistics.
 ///
-/// [startSession] records the current UTC time; [endSession] persists the
-/// session via [Library.addReadingSession]. Calling [endSession] without an
-/// active session is a no-op.
+/// Sessions are keyed by book id, so each open reader owns its own session:
+/// [endSession] ends exactly the book it is given, never another book's.
 class ReadingStatsTracker {
   ReadingStatsTracker(this._library, {DateTime Function()? now})
-      : _now = now ?? DateTime.now;
+    : _now = now ?? DateTime.now;
 
   final Library _library;
   final DateTime Function() _now;
 
   final Map<int, DateTime> _active = <int, DateTime>{};
-  int? _lastBookId;
 
-  /// Records the start of a reading session for [bookId].
+  /// Records the start of a reading session for [bookId], replacing any
+  /// session already open for it.
   void startSession(int bookId) {
     _active[bookId] = _now().toUtc();
-    _lastBookId = bookId;
   }
 
-  /// Ends the session for the most recently started book (or [bookId] if
-  /// provided implicitly by an active session) and persists it. No-op when
-  /// no session is active.
-  void endSession(String endLocator) {
-    final bookId = _lastBookId;
-    if (bookId == null) return;
+  /// Ends the session for [bookId] and persists it via
+  /// [Library.addReadingSession]. No-op when [bookId] has no active session.
+  void endSession(int bookId, String endLocator) {
     final started = _active.remove(bookId);
     if (started == null) return;
-    _lastBookId = _active.isEmpty ? null : _active.keys.last;
     final elapsed = _now().toUtc().difference(started);
     final seconds = elapsed.inSeconds < 0 ? 0 : elapsed.inSeconds;
     _library.addReadingSession(
@@ -48,8 +42,7 @@ class ReadingStatsTracker {
   }
 
   /// Per-book statistics; delegates to [Library.statsForBook].
-  Map<String, Object?> bookSummary(int bookId) =>
-      _library.statsForBook(bookId);
+  Map<String, Object?> bookSummary(int bookId) => _library.statsForBook(bookId);
 
   /// Library-wide statistics; delegates to [Library.libraryStats].
   Map<String, Object?> librarySummary() => _library.libraryStats();

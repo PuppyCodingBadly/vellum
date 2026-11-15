@@ -29,6 +29,13 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   late Book _book;
   AppState? _appState;
 
+  /// Whether the Read action is available for [_book].
+  ///
+  /// Resolved in [didChangeDependencies] once per book id/path/formats, so
+  /// build never touches the filesystem.
+  bool _canRead = false;
+  String? _readableKey;
+
   @override
   void initState() {
     super.initState();
@@ -41,21 +48,30 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
     final app = AppState.of(context);
     _appState = app;
     // AppState is provided via InheritedNotifier, so this runs on every
-    // notification: keep the local book in sync with the database.
+    // notification. That is also how the page picks up the reading position
+    // the reader saves while disposing: no refresh on the pop future, which
+    // completes before that save lands.
     final id = _book.id;
-    if (id == null) return;
-    final fresh = app.bookById(id);
-    if (fresh != null && !identical(fresh, _book)) {
-      _book = fresh;
+    if (id != null) {
+      final fresh = app.bookById(id);
+      if (fresh != null && !identical(fresh, _book)) _book = fresh;
     }
+    _refreshReadable();
   }
 
-  bool get _canRead =>
-      _book.formats.any(
-        (format) => _readableFormats.contains(format.toLowerCase()),
-      ) &&
-      _book.path.isNotEmpty &&
-      File(_book.path).existsSync();
+  /// Resolves [_canRead] when the book's identity or file availability inputs
+  /// change; the check is skipped on every later notification.
+  void _refreshReadable() {
+    final key = '${_book.id}:${_book.path}:${_book.formats.join(',')}';
+    if (key == _readableKey) return;
+    _readableKey = key;
+    _canRead =
+        _book.formats.any(
+          (format) => _readableFormats.contains(format.toLowerCase()),
+        ) &&
+        _book.path.isNotEmpty &&
+        File(_book.path).existsSync();
+  }
 
   Future<void> _fetchMetadata() async {
     final applied = await showDialog<bool>(
@@ -72,16 +88,12 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   }
 
   Future<void> _openReader() async {
+    // The reader saves its position while disposing and refreshes AppState
+    // itself; didChangeDependencies picks the new progress up from that
+    // notification. Refreshing on the pop future would run before the save.
     await Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => ReaderPage(book: _book)));
-    if (!mounted) return;
-    final app = _appState;
-    final id = _book.id;
-    if (app == null || id == null) return;
-    await app.refresh();
-    final fresh = app.bookById(id);
-    if (fresh != null && mounted) setState(() => _book = fresh);
   }
 
   Future<void> _generateCover() async {
@@ -350,16 +362,17 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   }
 
   Widget _facts(VellumPalette palette) {
-    final progress = _book.progress.clamp(0.0, 1.0).toDouble();
-    final percent = (progress * 100).round().clamp(1, 100);
     final rows = <(String, String)>[
       ('Publisher', _book.publisher),
       ('Published', _book.pubdate),
       ('Language', _book.language),
       ('ISBN', _book.isbn),
       ('Format', _book.formats.join(', ').toUpperCase()),
-      if (progress > 0)
-        ('Progress', progress >= 1 ? 'Finished' : '$percent%'),
+      if (_book.progress > 0)
+        (
+          'Progress',
+          _book.isFinished ? 'Finished' : '${_book.progressPercent}%',
+        ),
     ].where((row) => row.$2.isNotEmpty).toList();
     if (rows.isEmpty) return const SizedBox.shrink();
 

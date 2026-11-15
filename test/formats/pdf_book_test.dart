@@ -18,8 +18,12 @@ String _makePdf(
 ]) {
   final objects = <List<int>>[];
   objects.add('<< /Type /Catalog /Pages 2 0 R >>'.codeUnits);
-  final kids = [for (var i = 0; i < texts.length; i++) '${3 + i * 2} 0 R'].join(' ');
-  objects.add('<< /Type /Pages /Kids [$kids] /Count ${texts.length} >>'.codeUnits);
+  final kids = [
+    for (var i = 0; i < texts.length; i++) '${3 + i * 2} 0 R',
+  ].join(' ');
+  objects.add(
+    '<< /Type /Pages /Kids [$kids] /Count ${texts.length} >>'.codeUnits,
+  );
   final fontObj = 3 + texts.length * 2;
   for (var i = 0; i < texts.length; i++) {
     final content = 'BT /F1 24 Tf 72 700 Td (${texts[i]}) Tj ET';
@@ -35,7 +39,9 @@ String _makePdf(
       ...'\nendstream'.codeUnits,
     ]);
   }
-  objects.add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'.codeUnits);
+  objects.add(
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'.codeUnits,
+  );
 
   final out = BytesBuilder()..add('%PDF-1.4\n'.codeUnits);
   final offsets = <int>[0];
@@ -82,14 +88,18 @@ void main() {
     final pdf = PdfBook(_makePdf('${tmp.path}/book.pdf'));
     await pdf.renderPage(0);
     expect(pdf.titleAt(0), isNotEmpty);
-    expect(pdf.titleAt(1) != pdf.titleAt(0) || pdf.titleAt(0) == 'Page 1',
-        isTrue);
+    expect(
+      pdf.titleAt(1) != pdf.titleAt(0) || pdf.titleAt(0) == 'Page 1',
+      isTrue,
+    );
   });
 
   test('reflow reads the PDF text layer without OCR', () {
-    final pdf = PdfBook(_makePdf('${tmp.path}/reflow.pdf', [
-      'Hello reflow page with several words',
-    ]));
+    final pdf = PdfBook(
+      _makePdf('${tmp.path}/reflow.pdf', [
+        'Hello reflow page with several words',
+      ]),
+    );
     try {
       final page = pdf.reflowPage(0);
       expect(page.hasText, isTrue);
@@ -131,8 +141,10 @@ void main() {
   });
 
   test('zero-page PDF throws FormatException', () {
-    expect(() => PdfBook(_makePdf('${tmp.path}/empty.pdf', [])),
-        throwsFormatException);
+    expect(
+      () => PdfBook(_makePdf('${tmp.path}/empty.pdf', [])),
+      throwsFormatException,
+    );
   });
 
   test('close is idempotent', () {
@@ -151,7 +163,7 @@ void main() {
   });
 
   test('rejects rasters above the pixel budget before allocating', () {
-    // 20000×20000 = 400 MP, four times the budget.
+    // 20000×20000 = 400 MP, far above the budget.
     expect(
       () => PdfBook.rasterSize(20000, 20000, 1),
       throwsA(isA<PdfRenderException>()),
@@ -161,14 +173,48 @@ void main() {
       () => PdfBook.rasterSize(595, 842, 20.0),
       throwsA(isA<PdfRenderException>()),
     );
-    expect(PdfBook.rasterSize(595, 842, defaultScale),
-        (width: 1041, height: 1474));
+    expect(PdfBook.rasterSize(595, 842, defaultScale), (
+      width: 1041,
+      height: 1474,
+    ));
     expect(PdfBook.rasterSize(0, 0, 1), (width: 1, height: 1));
   });
 
+  test('the render budget covers every copy the encoder holds', () {
+    // A render holds PDFium's bitmap, the RGBA copy and the encoder buffers at
+    // once, so the cap follows a byte budget rather than bitmap pixels alone.
+    expect(
+      PdfBook.maxRasterPixels,
+      PdfBook.maxRasterBytes ~/ PdfBook.bytesPerRasterPixel,
+    );
+    // 8000×8000 sits exactly on the 64 MP budget; one row more does not.
+    expect(PdfBook.rasterSize(8000, 8000, 1), (width: 8000, height: 8000));
+    expect(
+      () => PdfBook.rasterSize(8000, 8001, 1),
+      throwsA(isA<PdfRenderException>()),
+    );
+  });
+
+  test('no code destroys process-global PDFium', () {
+    // The library cache is a static, so it is isolate-local, while
+    // FPDF_DestroyLibrary is process-global: a worker calling it breaks the
+    // isolate that still holds cached documents.
+    final offenders = <String>[];
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+      final source = entity.readAsStringSync();
+      if (source.contains('FPDF_DestroyLibrary') ||
+          source.contains('shutdownLibrary')) {
+        offenders.add(entity.path);
+      }
+    }
+    expect(offenders, isEmpty);
+  });
+
   test('huge MediaBox render fails with a typed error, no allocation', () {
-    final pdf = PdfBook(_makePdf('${tmp.path}/huge.pdf', const ['x'],
-        '0 0 20000 20000'));
+    final pdf = PdfBook(
+      _makePdf('${tmp.path}/huge.pdf', const ['x'], '0 0 20000 20000'),
+    );
 
     expect(
       pdf.renderPage(0),

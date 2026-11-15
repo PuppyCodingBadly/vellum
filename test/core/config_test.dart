@@ -25,8 +25,10 @@ void main() {
     expect(config.getDouble('reader_font_scale'), 1.0);
     expect(config.getString('reader_theme'), 'follow');
     expect(config.getBool('legacy_demo_books_purged'), isFalse);
-    expect(config.getString('library_path'),
-        '${VellumConfig.dataDir()}/library.db');
+    expect(
+      config.getString('library_path'),
+      '${VellumConfig.dataDir()}/library.db',
+    );
   });
 
   test('set saves on change and reloads', () {
@@ -55,13 +57,36 @@ void main() {
     expect(config.getString('color_scheme'), 'system');
   });
 
+  test('a partial write is kept aside and the next save is atomic', () {
+    final path = '${tmp.path}/config.json';
+    // Simulate a crash mid-write: truncated JSON.
+    File(path).writeAsStringSync('{"color_scheme": "dark", "sort_');
+
+    final config = VellumConfig(path);
+    expect(config.getString('color_scheme'), 'system');
+    expect(
+      File('$path.corrupt').existsSync(),
+      isTrue,
+      reason: 'the unparseable bytes must be preserved, not discarded',
+    );
+
+    config.set('color_scheme', 'light');
+    expect(File('$path.tmp').existsSync(), isFalse);
+    // The real file is complete JSON again after the rename.
+    final onDisk = jsonDecode(File(path).readAsStringSync()) as Map;
+    expect(onDisk['color_scheme'], 'light');
+    expect(VellumConfig(path).getString('color_scheme'), 'light');
+  });
+
   test('wrong-typed values fall back to defaults', () {
     final path = '${tmp.path}/config.json';
-    File(path).writeAsStringSync(jsonEncode({
-      'show_hidden': 1,
-      'color_scheme': 42,
-      'reader_font_scale': 'huge',
-    }));
+    File(path).writeAsStringSync(
+      jsonEncode({
+        'show_hidden': 1,
+        'color_scheme': 42,
+        'reader_font_scale': 'huge',
+      }),
+    );
     final config = VellumConfig(path);
     expect(config.getBool('show_hidden'), isFalse);
     expect(config.getString('color_scheme'), 'system');

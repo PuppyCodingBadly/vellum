@@ -81,18 +81,17 @@ class LibraryPageState extends State<LibraryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final state = AppState.of(context);
-    return ListenableBuilder(
-      listenable: state,
-      builder: (context, _) => _buildContent(context, state),
-    );
+    // AppStateScope is an InheritedNotifier: depending on it here rebuilds
+    // this page once per change. A second ListenableBuilder would run build
+    // twice for the same notification.
+    return _buildContent(context, AppState.of(context));
   }
 
   Widget _buildContent(BuildContext context, AppState state) {
     final palette = context.palette;
     final query = state.searchQuery.trim();
     final hasQuery = query.isNotEmpty;
-    final hits = hasQuery ? _contentHits(state, query) : const <_ContentHit>[];
+    final hits = state.contentHits;
 
     return ColoredBox(
       color: palette.background,
@@ -160,51 +159,53 @@ class LibraryPageState extends State<LibraryPage> {
     final search = SizedBox(
       width: 320,
       height: 38,
-      child: TextField(
-        controller: _search,
-        focusNode: _searchFocus,
-        textInputAction: TextInputAction.search,
-        onChanged: (value) {
-          setState(() {});
-          _onSearchChanged(value);
-        },
-        onSubmitted: _submitSearch,
-        style: VellumType.ui(13, height: 1.35, color: palette.text),
-        cursorHeight: 16,
-        decoration: InputDecoration(
-          hintText: 'Search library…',
-          hintStyle: VellumType.ui(13, color: palette.textDim),
-          prefixIconColor: palette.textDim,
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 10,
-            vertical: 10,
-          ),
-          prefixIcon: const Icon(Icons.search, size: 17),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 38,
-            minHeight: 38,
-          ),
-          suffixIcon: _search.text.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: Text(
-                    'Ctrl F',
-                    style: VellumType.ui(
-                      10.5,
-                      weight: FontWeight.w500,
-                      color: palette.textDim.withValues(alpha: 0.75),
+      // Only the field rebuilds per keystroke (for the clear affordance);
+      // the page rebuilds when the debounced AppState refresh lands.
+      child: ValueListenableBuilder<TextEditingValue>(
+        valueListenable: _search,
+        builder: (context, value, _) => TextField(
+          controller: _search,
+          focusNode: _searchFocus,
+          textInputAction: TextInputAction.search,
+          onChanged: _onSearchChanged,
+          onSubmitted: _submitSearch,
+          style: VellumType.ui(13, height: 1.35, color: palette.text),
+          cursorHeight: 16,
+          decoration: InputDecoration(
+            hintText: 'Search library…',
+            hintStyle: VellumType.ui(13, color: palette.textDim),
+            prefixIconColor: palette.textDim,
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 10,
+            ),
+            prefixIcon: const Icon(Icons.search, size: 17),
+            prefixIconConstraints: const BoxConstraints(
+              minWidth: 38,
+              minHeight: 38,
+            ),
+            suffixIcon: value.text.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: Text(
+                      'Ctrl F',
+                      style: VellumType.ui(
+                        10.5,
+                        weight: FontWeight.w500,
+                        color: palette.textDim.withValues(alpha: 0.75),
+                      ),
                     ),
+                  )
+                : IconButton(
+                    tooltip: 'Clear search',
+                    icon: const Icon(Icons.close, size: 15),
+                    onPressed: () {
+                      _search.clear();
+                      unawaited(state.setSearchQuery(''));
+                    },
                   ),
-                )
-              : IconButton(
-                  tooltip: 'Clear search',
-                  icon: const Icon(Icons.close, size: 15),
-                  onPressed: () {
-                    _search.clear();
-                    unawaited(state.setSearchQuery(''));
-                  },
-                ),
+          ),
         ),
       ),
     );
@@ -277,7 +278,7 @@ class LibraryPageState extends State<LibraryPage> {
     AppState state, {
     required String query,
     required bool hasQuery,
-    required List<_ContentHit> hits,
+    required List<ContentHit> hits,
   }) {
     final palette = context.palette;
     final heading = hasQuery
@@ -344,59 +345,13 @@ class LibraryPageState extends State<LibraryPage> {
       ),
     );
   }
-
-  /// Up to 20 full-text hits restricted to books in the library.
-  List<_ContentHit> _contentHits(AppState state, String query) {
-    final allBooks = state.library.allBooks(includeHidden: state.showHidden);
-    final visible = <int, Book>{
-      for (final book in allBooks)
-        if (book.id != null) book.id!: book,
-    };
-    final hits = <_ContentHit>[];
-    for (final row in state.searchBookContents(query)) {
-      if (hits.length >= 20) break;
-      final id = row['book_id'];
-      if (id is! int) continue;
-      final book = visible[id];
-      if (book == null) continue;
-      if (book.hidden && !state.showHidden) continue;
-      final chapter = row['chapter'];
-      hits.add(
-        _ContentHit(
-          book: book,
-          chapter: chapter is int ? chapter : int.tryParse('$chapter'),
-          chapterTitle: (row['title'] ?? '').toString(),
-          snippet: (row['snippet'] ?? '')
-              .toString()
-              .replaceAll('<b>', '')
-              .replaceAll('</b>', ''),
-        ),
-      );
-    }
-    return hits;
-  }
-}
-
-/// One full-text search hit inside a book.
-class _ContentHit {
-  const _ContentHit({
-    required this.book,
-    required this.chapter,
-    required this.chapterTitle,
-    required this.snippet,
-  });
-
-  final Book book;
-  final int? chapter;
-  final String chapterTitle;
-  final String snippet;
 }
 
 /// "In book text" results shown above the cover wall while a query is active.
 class _ContentSection extends StatefulWidget {
   const _ContentSection({required this.hits});
 
-  final List<_ContentHit> hits;
+  final List<ContentHit> hits;
 
   @override
   State<_ContentSection> createState() => _ContentSectionState();
@@ -471,8 +426,9 @@ class _ContentSectionState extends State<_ContentSection> {
                 ),
                 itemBuilder: (context, index) {
                   final hit = hits[index];
-                  final title =
-                      hit.book.title.isEmpty ? 'Untitled' : hit.book.title;
+                  final title = hit.book.title.isEmpty
+                      ? 'Untitled'
+                      : hit.book.title;
                   return InkWell(
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(

@@ -1,7 +1,8 @@
 /// Widget tests for [StorePage]: searching dispatches to the store plugin
-/// through the sidecar and results render.
+/// through the sidecar, results render, and downloads survive a new search.
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -56,6 +57,33 @@ class _StoreSidecar extends SidecarClient {
       },
     ];
   }
+
+  @override
+  Future<Map<String, Object?>?> storeFetchDownload(
+    String store,
+    Map<String, Object?> result, {
+    double timeout = 60.0,
+  }) async => {
+    'download_url': 'https://store.example/book.epub',
+    'title': (result['title'] ?? '').toString(),
+    'formats': (result['formats'] ?? '').toString(),
+  };
+}
+
+/// A scripted downloader: records calls and completes when the test says so.
+class _Downloads {
+  final List<String> calls = [];
+  final Completer<File> pending = Completer<File>();
+
+  Future<File> download({
+    required String url,
+    required String title,
+    required String formats,
+    required String directory,
+  }) {
+    calls.add('$title|$formats|$url');
+    return pending.future;
+  }
 }
 
 void main() {
@@ -86,13 +114,28 @@ void main() {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
-  Widget wrap() => AppStateScope(
-        state: state,
-        child: const MaterialApp(home: Scaffold(body: StorePage())),
-      );
+  Widget wrap({StoreDownload? download}) => AppStateScope(
+    state: state,
+    child: MaterialApp(
+      scaffoldMessengerKey: state.messengerKey,
+      home: Scaffold(
+        body: download == null
+            ? const StorePage()
+            : StorePage(download: download),
+      ),
+    ),
+  );
 
-  testWidgets('search dispatches to the store plugin and renders results',
-      (tester) async {
+  Future<void> search(WidgetTester tester) async {
+    await tester.enterText(find.byType(TextField), 'lantern');
+    await tester.tap(find.text('Search'));
+    await tester.pump();
+    await tester.pump();
+  }
+
+  testWidgets('search dispatches to the store plugin and renders results', (
+    tester,
+  ) async {
     // Load the fake plugin registry before the page reads it.
     await tester.runAsync(() => state.plugins.start());
 
@@ -100,10 +143,7 @@ void main() {
     await tester.pump();
     expect(find.text('Search for books'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField), 'lantern');
-    await tester.tap(find.text('Search'));
-    await tester.pump();
-    await tester.pump();
+    await search(tester);
 
     // The query went through the plugin controller to the sidecar.
     expect(sidecar.searches, [('Test Shop', 'lantern')]);
@@ -116,8 +156,9 @@ void main() {
     expect(find.text('Download'), findsOneWidget);
   });
 
-  testWidgets('a failing store surfaces an error, not an empty result list',
-      (tester) async {
+  testWidgets('a failing store surfaces an error, not an empty result list', (
+    tester,
+  ) async {
     await tester.runAsync(() => state.plugins.start());
 
     await tester.pumpWidget(wrap());
@@ -130,5 +171,64 @@ void main() {
 
     expect(sidecar.searches, [('Test Shop', 'boom')]);
     expect(find.text('Search failed'), findsOneWidget);
+  });
+
+  testWidgets('a new search keeps an in-flight download in flight', (
+    tester,
+  ) async {
+    await tester.runAsync(() => state.plugins.start());
+    final downloads = _Downloads();
+    await tester.pumpWidget(wrap(download: downloads.download));
+    await tester.pump();
+    await search(tester);
+
+    await tester.tap(find.text('Download'));
+    await tester.pump();
+    expect(downloads.calls, hasLength(1));
+    expect(find.text('Download'), findsNothing);
+
+    // Same query, same row: the guard must survive the new result list.
+    await search(tester);
+    expect(find.text('Download'), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(downloads.calls, hasLength(1));
+
+    // Finishing the download releases the row again.
+    downloads.pending.complete(File(p.join(tmp.path, 'missing.epub')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Download'), findsOneWidget);
+    expect(
+      find.textContaining('could not add it to the library'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a library switch mid-download reports failure, not success', (
+    tester,
+  ) async {
+    await tester.runAsync(() => state.plugins.start());
+    final downloads = _Downloads();
+    await tester.pumpWidget(wrap(download: downloads.download));
+    await tester.pump();
+    await search(tester);
+
+    await tester.tap(find.text('Download'));
+    await tester.pump();
+
+    final otherDir = p.join(tmp.path, 'other-library');
+    await tester.runAsync(() => state.switchLibraryDirectory(otherDir));
+    expect(state.libraryDir, otherDir);
+
+    downloads.pending.complete(File(p.join(tmp.path, 'book.epub')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.textContaining('Library changed during download'),
+      findsOneWidget,
+    );
+    expect(find.text('Added Store Result Book to library'), findsNothing);
+    expect(state.library.allBooks(), isEmpty);
   });
 }

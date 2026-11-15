@@ -4,9 +4,19 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import 'theme.dart';
 
+/// Picks a library directory; injectable so tests avoid the platform dialog.
+typedef DirectoryPicker =
+    Future<String?> Function({
+      String? initialDirectory,
+      String? confirmButtonText,
+    });
+
 /// Application preferences: library location, appearance, and reader options.
 class PreferencesDialog extends StatefulWidget {
-  const PreferencesDialog({super.key});
+  const PreferencesDialog({super.key, this.chooseDirectory = getDirectoryPath});
+
+  /// Directory picker used by "Choose…"; production uses the platform dialog.
+  final DirectoryPicker chooseDirectory;
 
   @override
   State<PreferencesDialog> createState() => _PreferencesDialogState();
@@ -26,7 +36,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   Future<void> _chooseLibraryDirectory(AppState app) async {
     String? directory;
     try {
-      directory = await getDirectoryPath(
+      directory = await widget.chooseDirectory(
         initialDirectory: app.libraryDir,
         confirmButtonText: 'Choose',
       );
@@ -35,13 +45,15 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       return;
     }
     if (directory == null || directory.isEmpty || !mounted) return;
-    final error = await app.switchLibraryDirectory(directory);
-    if (!mounted) return;
-    if (error != null) {
-      app.showToast('Cannot use that directory');
-    } else {
-      app.showToast('Library location changed to $directory');
+    String? error;
+    try {
+      error = await app.switchLibraryDirectory(directory);
+    } catch (failure) {
+      // The switch can throw before it returns its own message.
+      error = '$failure';
     }
+    if (!mounted) return;
+    app.showToast(error ?? 'Library location changed to $directory');
   }
 
   Future<void> _importCalibre(AppState app) => app.chooseAndImportCalibre();
@@ -146,11 +158,11 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
                 child: SingleChildScrollView(
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(
-                  VellumSpace.lg,
-                  0,
-                  VellumSpace.lg,
-                  VellumSpace.xl,
-                ),
+                    VellumSpace.lg,
+                    0,
+                    VellumSpace.lg,
+                    VellumSpace.xl,
+                  ),
                   child: ListenableBuilder(
                     listenable: app,
                     builder: (context, _) => _buildBody(context, app),
@@ -243,8 +255,12 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
           runSpacing: 10,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            for (final entry in AppState.accentPalette.entries)
+            for (final entry in VellumAccents.named.entries)
               _buildSwatch(app, palette, entry.key, entry.value),
+            // A custom accent is not one of the named swatches; show it so the
+            // colour in effect stays visible and checkmarked.
+            if (app.accentName.startsWith('#'))
+              _buildSwatch(app, palette, app.accentName, app.accentColor),
             OutlinedButton.icon(
               onPressed: () => _showCustomAccent(app),
               icon: const Icon(Icons.palette_outlined, size: 17),
@@ -312,9 +328,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
     final label = name.isEmpty
         ? name
         : '${name[0].toUpperCase()}${name.substring(1)}';
-    final onColor = color.computeLuminance() > 0.5
-        ? Colors.black
-        : Colors.white;
+    final onColor = readableInkOn(color);
     return Tooltip(
       message: label,
       child: InkWell(

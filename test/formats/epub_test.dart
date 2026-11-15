@@ -7,8 +7,11 @@ import 'package:archive/archive.dart';
 import 'package:test/test.dart';
 import 'package:vellum/formats/epub.dart';
 
-String _makeEpub(String path,
-    {bool withNcx = true, Map<String, String> extraFiles = const {}}) {
+String _makeEpub(
+  String path, {
+  bool withNcx = true,
+  Map<String, String> extraFiles = const {},
+}) {
   const container = '''<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -49,11 +52,25 @@ String _makeEpub(String path,
     archive.addFile(ArchiveFile.string('OEBPS/toc.ncx', ncx));
   }
   for (final name in ['ch1', 'ch2', 'ch3']) {
-    archive.addFile(ArchiveFile.string(
-        'OEBPS/$name.xhtml', '<html><body><p>$name</p></body></html>'));
+    archive.addFile(
+      ArchiveFile.string(
+        'OEBPS/$name.xhtml',
+        '<html><body><p>$name</p></body></html>',
+      ),
+    );
   }
-  archive.addFile(ArchiveFile('OEBPS/cover.png', 8,
-      [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+  archive.addFile(
+    ArchiveFile('OEBPS/cover.png', 8, [
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ]),
+  );
   extraFiles.forEach((name, content) {
     archive.addFile(ArchiveFile.string(name, content));
   });
@@ -69,17 +86,23 @@ void main() {
   test('chapters order and titles', () {
     final epub = EpubBook(_makeEpub('${tmp.path}/book.epub'));
     final chapters = epub.chapters();
-    expect([for (final c in chapters) c.$1],
-        ['ch2.xhtml', 'ch1.xhtml', 'ch3.xhtml']);
-    expect([for (final c in chapters) c.$2],
-        ['Chapter Two', 'Chapter One', 'Chapter Three']);
+    expect(
+      [for (final c in chapters) c.$1],
+      ['ch2.xhtml', 'ch1.xhtml', 'ch3.xhtml'],
+    );
+    expect(
+      [for (final c in chapters) c.$2],
+      ['Chapter Two', 'Chapter One', 'Chapter Three'],
+    );
   });
 
   test('chapters fall back to stems without ncx', () {
     final epub = EpubBook(_makeEpub('${tmp.path}/book.epub', withNcx: false));
     final chapters = epub.chapters();
-    expect([for (final c in chapters) c.$1],
-        ['ch2.xhtml', 'ch1.xhtml', 'ch3.xhtml']);
+    expect(
+      [for (final c in chapters) c.$1],
+      ['ch2.xhtml', 'ch1.xhtml', 'ch3.xhtml'],
+    );
     expect([for (final c in chapters) c.$2], ['ch2', 'ch1', 'ch3']);
   });
 
@@ -99,11 +122,16 @@ void main() {
   });
 
   test('extractTo skips zip-slip entries', () {
-    final epub = EpubBook(_makeEpub('${tmp.path}/book.epub', extraFiles: {
-      '../../evil.txt': 'pwned',
-      '/abs/evil.txt': 'pwned',
-      'OEBPS/../../evil2.txt': 'pwned',
-    }));
+    final epub = EpubBook(
+      _makeEpub(
+        '${tmp.path}/book.epub',
+        extraFiles: {
+          '../../evil.txt': 'pwned',
+          '/abs/evil.txt': 'pwned',
+          'OEBPS/../../evil2.txt': 'pwned',
+        },
+      ),
+    );
     final dest = '${tmp.path}/extract';
 
     final opfDir = epub.extractTo(dest);
@@ -142,8 +170,12 @@ void main() {
     final archive = Archive()
       ..addFile(ArchiveFile.string('META-INF/container.xml', container))
       ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
-      ..addFile(ArchiveFile.string(
-          'OEBPS/chapter 1.xhtml', '<html><body>one</body></html>'));
+      ..addFile(
+        ArchiveFile.string(
+          'OEBPS/chapter 1.xhtml',
+          '<html><body>one</body></html>',
+        ),
+      );
     File(path).writeAsBytesSync(ZipEncoder().encode(archive));
 
     final book = EpubBook(path);
@@ -160,8 +192,124 @@ void main() {
 
   test('zip without container throws FormatException', () {
     final bad = '${tmp.path}/notepub.epub';
-    final archive = Archive()..addFile(ArchiveFile.string('random.txt', 'hello'));
+    final archive = Archive()
+      ..addFile(ArchiveFile.string('random.txt', 'hello'));
     File(bad).writeAsBytesSync(ZipEncoder().encode(archive));
     expect(() => EpubBook(bad), throwsFormatException);
+  });
+
+  group('container paths are untrusted', () {
+    String writeArchive(String path, Map<String, String> files) {
+      final archive = Archive();
+      files.forEach(
+        (name, content) => archive.addFile(ArchiveFile.string(name, content)),
+      );
+      File(path).writeAsBytesSync(ZipEncoder().encode(archive));
+      return path;
+    }
+
+    String container(String fullPath) =>
+        '''<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="$fullPath" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>''';
+
+    const opf = '''<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <manifest>
+    <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="../outside.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c3" href="/etc/passwd" media-type="application/xhtml+xml"/>
+    <item id="c4" href="%2E%2E/evil.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c5" href="missing.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+    <itemref idref="c3"/>
+    <itemref idref="c4"/>
+    <itemref idref="c5"/>
+  </spine>
+</package>''';
+
+    test('spine hrefs that are absolute or climb out are not chapters', () {
+      final book = EpubBook(
+        writeArchive('${tmp.path}/hostile.epub', {
+          'META-INF/container.xml': container('OEBPS/content.opf'),
+          'OEBPS/content.opf': opf,
+          'OEBPS/ch1.xhtml': '<html><body><p>safe</p></body></html>',
+        }),
+      );
+
+      // c2 (`../`), c3 (absolute) and c4 (percent-encoded `..`) are dropped;
+      // c5 stays in the spine but has no entry.
+      expect(
+        [for (final chapter in book.chapters()) chapter.$1],
+        ['ch1.xhtml', 'missing.xhtml'],
+      );
+      expect(book.chapterSource(0), contains('safe'));
+    });
+
+    test('a spine item with no archive entry throws', () {
+      final book = EpubBook(
+        writeArchive('${tmp.path}/missing.epub', {
+          'META-INF/container.xml': container('OEBPS/content.opf'),
+          'OEBPS/content.opf': opf,
+          'OEBPS/ch1.xhtml': '<html><body><p>safe</p></body></html>',
+        }),
+      );
+
+      expect(() => book.chapterSource(1), throwsFormatException);
+      expect(
+        () => book.chapterFile('${tmp.path}/extract', 1),
+        throwsFormatException,
+      );
+      // The legitimate chapter still extracts and resolves.
+      final chapter = book.chapterFile('${tmp.path}/extract', 0);
+      expect(File(chapter).existsSync(), isTrue);
+    });
+
+    test('container full-path that is absolute or climbs out is rejected', () {
+      for (final fullPath in ['/OEBPS/content.opf', '../content.opf']) {
+        final path = writeArchive(
+          '${tmp.path}/container-${fullPath.hashCode}.epub',
+          {
+            'META-INF/container.xml': container(fullPath),
+            // Either spelling exists in the zip; only a contained rootfile
+            // may be used as the OPF.
+            'OEBPS/content.opf': opf,
+            'content.opf': opf,
+          },
+        );
+        expect(() => EpubBook(path), throwsFormatException, reason: fullPath);
+      }
+    });
+
+    test('extractTo does not follow a symlink out of the destination', () {
+      final outside = Directory('${tmp.path}/outside')..createSync();
+      final dest = Directory('${tmp.path}/symlinked-dest')..createSync();
+      Link('${dest.path}/OEBPS').createSync(outside.path);
+
+      final epub = EpubBook(_makeEpub('${tmp.path}/book.epub'));
+      epub.extractTo(dest.path);
+
+      expect(File('${outside.path}/content.opf').existsSync(), isFalse);
+      expect(File('${outside.path}/ch1.xhtml').existsSync(), isFalse);
+    });
+  });
+
+  test('archive reads respect the byte caps', () {
+    final archive = Archive()
+      ..addFile(ArchiveFile.string('small.txt', 'ok'))
+      ..addFile(ArchiveFile.string('medium.txt', '12345678'))
+      ..addFile(ArchiveFile.string('big.txt', 'x' * 64));
+    final access = ArchiveAccess(archive, entryByteLimit: 8, totalByteLimit: 9);
+
+    expect(access.text('small.txt'), 'ok'); // 2 bytes spent
+    expect(access.bytes('big.txt'), isNull, reason: 'per-entry cap');
+    expect(access.bytes('medium.txt'), isNull, reason: 'total budget');
+    expect(access.bytes('missing.txt'), isNull);
   });
 }

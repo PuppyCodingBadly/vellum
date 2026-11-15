@@ -244,6 +244,33 @@ class BookCard extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
+  /// The vertical space the caption under the artwork occupies at [textScaler].
+  ///
+  /// The tile lays its caption out inside exactly this box, so the grid can
+  /// size its main-axis extent from one source of truth instead of guessing a
+  /// caption height that breaks as soon as the text grows.
+  static double captionExtent(TextScaler textScaler) =>
+      _captionGap +
+      _titleLines * _titleLineHeight(textScaler) +
+      _captionInnerGap +
+      textScaler.scale(_authorSize) * _authorHeight +
+      _captionSlack;
+
+  static const double _captionGap = 8;
+  static const double _captionInnerGap = 2;
+  static const double _titleSize = 14;
+  static const double _titleHeight = 1.24;
+  static const int _titleLines = 2;
+  static const double _authorSize = 11.5;
+  static const double _authorHeight = 1.35;
+
+  /// Slack inside the caption box, so a rounded line height can never make the
+  /// caption exactly as tall as its box and trip the overflow check.
+  static const double _captionSlack = 1;
+
+  static double _titleLineHeight(TextScaler textScaler) =>
+      textScaler.scale(_titleSize) * _titleHeight;
+
   @override
   State<BookCard> createState() => _BookCardState();
 }
@@ -260,6 +287,7 @@ class _BookCardState extends State<BookCard> {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
+    final textScaler = MediaQuery.textScalerOf(context);
     final book = widget.book;
     final rawTitle = book.title.trim();
     final fullTitle = rawTitle.isEmpty ? 'Untitled' : rawTitle;
@@ -267,16 +295,22 @@ class _BookCardState extends State<BookCard> {
         ? 'Unknown author'
         : book.authors.join(', ');
     final hidden = book.hidden;
-    final percent = (book.progress.clamp(0.0, 1.0) * 100).round();
+    final percent = book.progressPercent;
     final readState = percent <= 0
         ? ''
-        : percent >= 100
-            ? ', finished'
-            : ', $percent% read';
+        : book.isFinished
+        ? ', finished'
+        : ', $percent% read';
 
     return Semantics(
+      container: true,
       button: true,
+      // One explicit sentence for the whole tile: the visible title and author
+      // are excluded, or a screen reader reads them twice.
+      excludeSemantics: true,
       label: '$fullTitle, by $authors$readState${hidden ? ', hidden' : ''}',
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
       child: FocusableActionDetector(
         onShowFocusHighlight: (value) => setState(() => _focused = value),
         mouseCursor: SystemMouseCursors.click,
@@ -375,33 +409,43 @@ class _BookCardState extends State<BookCard> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
                   SizedBox(
-                    height: 35,
-                    child: Align(
-                      alignment: Alignment.topLeft,
-                      child: Text(
-                        fullTitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: VellumType.display(
-                          14,
-                          weight: FontWeight.w500,
-                          height: 1.24,
-                          color: palette.text,
+                    height: BookCard.captionExtent(textScaler),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: BookCard._captionGap),
+                        SizedBox(
+                          height:
+                              BookCard._titleLines *
+                              BookCard._titleLineHeight(textScaler),
+                          child: Align(
+                            alignment: Alignment.topLeft,
+                            child: Text(
+                              fullTitle,
+                              maxLines: BookCard._titleLines,
+                              overflow: TextOverflow.ellipsis,
+                              style: VellumType.display(
+                                BookCard._titleSize,
+                                weight: FontWeight.w500,
+                                height: BookCard._titleHeight,
+                                color: palette.text,
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    authors,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: VellumType.ui(
-                      11.5,
-                      height: 1.35,
-                      color: palette.textDim,
+                        const SizedBox(height: BookCard._captionInnerGap),
+                        Text(
+                          authors,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: VellumType.ui(
+                            BookCard._authorSize,
+                            height: BookCard._authorHeight,
+                            color: palette.textDim,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],

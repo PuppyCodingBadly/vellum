@@ -5,13 +5,22 @@ import 'dart:convert';
 import 'dart:io';
 
 const _pdbHeaderLen = 78;
-const _mobiHeaderOff = 16; // MOBI header starts after the 16-byte PalmDOC header
+const _mobiHeaderOff =
+    16; // MOBI header starts after the 16-byte PalmDOC header
 const _firstImageOff = 0x6C;
 const _minMobiHeader = 0x70;
 
+/// Extra-data flags: where the MOBI header length must reach to contain them.
+const _extraDataFlagsOff = 0xE2;
+const _extraDataFlagsEnd = _extraDataFlagsOff + 2;
+
 final _pagebreakRe = RegExp(r'<mbp:pagebreak\s*/?>', caseSensitive: false);
 final _headingSplitRe = RegExp(r'(?=<h[12][^>]*>)', caseSensitive: false);
-final _headingRe = RegExp(r'<h[12][^>]*>(.*?)</h[12]>', caseSensitive: false, dotAll: true);
+final _headingRe = RegExp(
+  r'<h[12][^>]*>(.*?)</h[12]>',
+  caseSensitive: false,
+  dotAll: true,
+);
 final _tagRe = RegExp(r'<[^>]+>');
 final _recindexRe = RegExp(
   r'(<img\b[^>]*?)\brecindex="(\d+)"([^>]*)/?>',
@@ -56,6 +65,33 @@ List<int> _palmdocDecompress(List<int> data) {
     }
   }
   return out;
+}
+
+/// Byte count of the extra-data trailers at the end of one MOBI text record.
+///
+/// The compiler appends one entry per set bit of the MOBI header's extra-data
+/// flags, each ending in a backward varint that holds the entry's length.
+/// Those bytes must be removed before decompression, or they are decoded as
+/// text and corrupt the section.
+int _trailingDataSize(List<int> record, int flags) {
+  var end = record.length;
+  var size = 0;
+  for (var bits = flags; bits != 0; bits &= bits - 1) {
+    var value = 0;
+    var shift = 0;
+    var pos = end;
+    while (pos > 0) {
+      final byte = record[pos - 1];
+      pos--;
+      value |= (byte & 0x7F) << shift;
+      shift += 7;
+      if (byte & 0x80 == 0 || shift >= 28) break;
+    }
+    if (value <= 0 || value > end) break;
+    size += value;
+    end -= value;
+  }
+  return size;
 }
 
 String? _imageExt(List<int> data) {
@@ -139,6 +175,13 @@ class MobiBook {
     }
     final encoding = _be32(mobi, 0x0C);
     final firstImage = _be32(mobi, _firstImageOff);
+    // Older headers stop before the flags: the header length bounds the read.
+    final mobiHeaderLen = _be32(mobi, 4);
+    var extraDataFlags = 0;
+    if (mobiHeaderLen >= _extraDataFlagsEnd &&
+        mobi.length >= _extraDataFlagsEnd) {
+      extraDataFlags = _be16(mobi, _extraDataFlagsOff);
+    }
 
     _records = records;
     _firstImage = firstImage < numRecords ? firstImage : numRecords;
@@ -148,11 +191,14 @@ class MobiBook {
         ? records.length
         : 1 + textRecordCount;
     for (var i = 1; i < upper; i++) {
-      chunks.addAll(
-        compression == 2 ? _palmdocDecompress(records[i]) : records[i],
-      );
+      var record = records[i];
+      final trailer = _trailingDataSize(record, extraDataFlags);
+      if (trailer > 0) record = record.sublist(0, record.length - trailer);
+      chunks.addAll(compression == 2 ? _palmdocDecompress(record) : record);
     }
-    final text = chunks.length > textLength ? chunks.sublist(0, textLength) : chunks;
+    final text = chunks.length > textLength
+        ? chunks.sublist(0, textLength)
+        : chunks;
     if (encoding == 0 || encoding == 65001) {
       _html = utf8.decode(text, allowMalformed: true);
     } else {
@@ -164,18 +210,37 @@ class MobiBook {
   }
 
   static const _cp1252High = {
-    0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026,
-    0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160,
-    0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019,
-    0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
-    0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153,
-    0x9E: 0x017E, 0x9F: 0x0178,
+    0x80: 0x20AC,
+    0x82: 0x201A,
+    0x83: 0x0192,
+    0x84: 0x201E,
+    0x85: 0x2026,
+    0x86: 0x2020,
+    0x87: 0x2021,
+    0x88: 0x02C6,
+    0x89: 0x2030,
+    0x8A: 0x0160,
+    0x8B: 0x2039,
+    0x8C: 0x0152,
+    0x8E: 0x017D,
+    0x91: 0x2018,
+    0x92: 0x2019,
+    0x93: 0x201C,
+    0x94: 0x201D,
+    0x95: 0x2022,
+    0x96: 0x2013,
+    0x97: 0x2014,
+    0x98: 0x02DC,
+    0x99: 0x2122,
+    0x9A: 0x0161,
+    0x9B: 0x203A,
+    0x9C: 0x0153,
+    0x9E: 0x017E,
+    0x9F: 0x0178,
   };
 
   static String _decodeCp1252(List<int> bytes) {
-    final codes = [
-      for (final b in bytes) _cp1252High[b] ?? b,
-    ];
+    final codes = [for (final b in bytes) _cp1252High[b] ?? b];
     return String.fromCharCodes(codes);
   }
 
@@ -187,7 +252,10 @@ class MobiBook {
       bounds.addAll(breaks.map((m) => m.end));
     } else {
       bounds.addAll(
-        _headingSplitRe.allMatches(html).map((m) => m.start).where((s) => s > 0),
+        _headingSplitRe
+            .allMatches(html)
+            .map((m) => m.start)
+            .where((s) => s > 0),
       );
     }
     bounds = bounds.toSet().toList()..sort();
@@ -229,9 +297,7 @@ class MobiBook {
       throw RangeError.index(index, _chunks, 'section index out of range');
     }
     if (_imageDir.isEmpty) {
-      extractTo(Directory.systemTemp
-          .createTempSync('vellum-mobi-')
-          .path);
+      extractTo(Directory.systemTemp.createTempSync('vellum-mobi-').path);
     }
     final body = _chunks[index].replaceAllMapped(_recindexRe, _rewriteImg);
     return '<!DOCTYPE html>\n'
@@ -241,12 +307,17 @@ class MobiBook {
 
   String _rewriteImg(Match match) {
     final pre = match.group(1)!;
-    final recindex = int.parse(match.group(2)!);
+    // recindex comes from the book: an oversized value must leave the tag
+    // alone instead of making the whole section unopenable.
+    final recindex = int.tryParse(match.group(2)!);
+    if (recindex == null) return match.group(0)!;
     var attrs = match.group(3)!.trim();
     // MOBI recindex is 1-based and relative to the first image record.
     final record = _firstImage + recindex - 1;
     final filename = _imageFiles[record];
-    if (attrs.endsWith('/')) attrs = attrs.substring(0, attrs.length - 1).trimRight();
+    if (attrs.endsWith('/')) {
+      attrs = attrs.substring(0, attrs.length - 1).trimRight();
+    }
     var src = '';
     if (filename != null) {
       final uri = Uri.file('$_imageDir/$filename');
@@ -264,10 +335,11 @@ class MobiBook {
     _imageDir = destDir;
     if (File(marker).existsSync()) {
       _imageFiles = {
-        for (final name in Directory(destDir)
-            .listSync()
-            .map((e) => e.uri.pathSegments.last)
-            .where((n) => n.startsWith('img-') && n.contains('.')))
+        for (final name
+            in Directory(destDir)
+                .listSync()
+                .map((e) => e.uri.pathSegments.last)
+                .where((n) => n.startsWith('img-') && n.contains('.')))
           // Skip foreign img-*.* files with non-numeric stems.
           if (int.tryParse(name.substring(4, name.lastIndexOf('.')))
               case final index?)

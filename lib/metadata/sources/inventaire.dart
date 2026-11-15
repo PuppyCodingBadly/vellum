@@ -7,11 +7,11 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../metadata.dart';
+import '../universal.dart';
 
 const _apiUrl = 'https://inventaire.io/api/search';
 const _entitiesUrl = 'https://inventaire.io/api/entities';
 const _baseUrl = 'https://inventaire.io';
-const _maxCoverBytes = 10 * 1024 * 1024;
 const _batch = 40;
 
 class Inventaire extends MetadataSource {
@@ -38,36 +38,38 @@ class Inventaire extends MetadataSource {
   }
 
   @override
-  Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> searchFreeText(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     query = query.trim();
     if (query.isEmpty) return [];
     return _search(query, 'works', client, timeout);
   }
 
-  Future<List<Metadata>> _search(String query, String entityType,
-      http.Client? client, Duration timeout) async {
+  Future<List<Metadata>> _search(
+    String query,
+    String entityType,
+    http.Client? client,
+    Duration timeout,
+  ) async {
     final httpClient = client ?? http.Client();
     final ownsClient = client == null;
     try {
-      final searchUri = Uri.parse(_apiUrl).replace(queryParameters: {
-        'search': query,
-        'types': entityType,
-        'limit': '20',
-      });
+      final searchUri = Uri.parse(_apiUrl).replace(
+        queryParameters: {'search': query, 'types': entityType, 'limit': '20'},
+      );
       final resp = await httpClient.get(searchUri).timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final results = [
         for (final item in (data['results'] as List?) ?? const [])
-          if ((item as Map<String, Object?>)['uri'] != null) item
+          if ((item as Map<String, Object?>)['uri'] != null) item,
       ];
-      var entities = await _fetchEntities(
-        httpClient,
-        [for (final item in results) item['uri'] as String],
-        timeout,
-      );
+      var entities = await _fetchEntities(httpClient, [
+        for (final item in results) item['uri'] as String,
+      ], timeout);
 
       final related = <String>{};
       for (final entity in entities.values) {
@@ -79,13 +81,17 @@ class Inventaire extends MetadataSource {
       if (related.isNotEmpty) {
         entities = {
           ...entities,
-          ...await _fetchEntities(httpClient, related.toList()..sort(), timeout),
+          ...await _fetchEntities(
+            httpClient,
+            related.toList()..sort(),
+            timeout,
+          ),
         };
       }
 
       return [
         for (final result in results)
-          if (_parse(result, entities) case final meta?) meta
+          if (_parse(result, entities) case final meta?) meta,
       ];
     } catch (_) {
       return [];
@@ -95,24 +101,28 @@ class Inventaire extends MetadataSource {
   }
 
   Future<Map<String, Map<String, Object?>>> _fetchEntities(
-      http.Client httpClient, List<String> uris, Duration timeout) async {
+    http.Client httpClient,
+    List<String> uris,
+    Duration timeout,
+  ) async {
     final entities = <String, Map<String, Object?>>{};
     for (var start = 0; start < uris.length; start += _batch) {
       final chunk = uris.sublist(
-          start, start + _batch > uris.length ? uris.length : start + _batch);
+        start,
+        start + _batch > uris.length ? uris.length : start + _batch,
+      );
       if (chunk.isEmpty) continue;
       try {
-        final uri = Uri.parse(_entitiesUrl).replace(queryParameters: {
-          'action': 'by-uris',
-          'uris': chunk.join('|'),
-        });
+        final uri = Uri.parse(_entitiesUrl).replace(
+          queryParameters: {'action': 'by-uris', 'uris': chunk.join('|')},
+        );
         final resp = await httpClient.get(uri).timeout(timeout);
         if (resp.statusCode != 200) continue;
         final data = jsonDecode(resp.body) as Map<String, Object?>;
         final fetched = (data['entities'] as Map?) ?? {};
         for (final entry in fetched.entries) {
-          entities[entry.key as String] =
-              (entry.value as Map).cast<String, Object?>();
+          entities[entry.key as String] = (entry.value as Map)
+              .cast<String, Object?>();
         }
       } catch (_) {
         continue;
@@ -122,36 +132,27 @@ class Inventaire extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (meta.coverUrl.isEmpty) return null;
-    final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient
-          .send(http.Request('GET', Uri.parse(meta.coverUrl)))
-          .timeout(timeout);
-      final contentType = (resp.headers['content-type'] ?? '').toLowerCase();
-      if (contentType.isNotEmpty && !contentType.startsWith('image/')) {
-        return null;
-      }
-      final builder = BytesBuilder();
-      var size = 0;
-      await for (final chunk in resp.stream) {
-        size += chunk.length;
-        if (size > _maxCoverBytes) return null;
-        builder.add(chunk);
-      }
-      return builder.takeBytes();
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
-    } finally {
-      if (client == null) httpClient.close();
     }
   }
 
-  Metadata? _parse(Map<String, Object?> result,
-      Map<String, Map<String, Object?>> entities) {
+  Metadata? _parse(
+    Map<String, Object?> result,
+    Map<String, Map<String, Object?>> entities,
+  ) {
     final entity = entities[(result['uri'] as String?) ?? ''];
     if (entity == null) return null;
     Map<String, Object?>? work;
@@ -173,7 +174,7 @@ class Inventaire extends MetadataSource {
       if (uris.isEmpty) uris = _claims(second, prop);
       return [
         for (final uri in uris)
-          if (_labelEn(entities[uri]) case final label?) label
+          if (_labelEn(entities[uri]) case final label?) label,
       ].where((l) => l.isNotEmpty).toList();
     }
 
@@ -194,8 +195,8 @@ class Inventaire extends MetadataSource {
     final image = (result['image'] as String?)?.isNotEmpty == true
         ? result['image'] as String
         : (entity['image'] as String?)?.isNotEmpty == true
-            ? entity['image'] as String
-            : (work?['image'] as String?) ?? '';
+        ? entity['image'] as String
+        : (work?['image'] as String?) ?? '';
     return Metadata(
       title: title,
       authors: authors,

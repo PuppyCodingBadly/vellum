@@ -127,9 +127,24 @@ class PdfReflowParagraph extends PdfReflowBlock {
   final double top;
 
   /// The recognized text, used for semantics and a copy action.
-  String get text => lines
-      .map((line) => line.words.map((word) => word.text).join(' '))
-      .join(' ');
+  ///
+  /// Only a word gap inserts a space: wide characters break between glyphs
+  /// without one, so joining those with spaces would corrupt CJK text.
+  String get text {
+    final buffer = StringBuffer();
+    PdfReflowWord? previous;
+    for (final line in lines) {
+      for (final word in line.words) {
+        if (previous != null &&
+            word.breakBefore != PdfWordBreak.wideCharacter) {
+          buffer.write(' ');
+        }
+        buffer.write(word.text);
+        previous = word;
+      }
+    }
+    return buffer.toString();
+  }
 }
 
 /// One original line box; reflowing discards these break positions but keeps
@@ -146,10 +161,27 @@ class PdfReflowLine {
   final double heightPoints;
 }
 
+/// Why a word starts where it does.
+///
+/// Copy text and semantics rebuild the run of words, so they need to know
+/// whether the page had a word gap there or the break was internal to a script
+/// that does not use spaces.
+enum PdfWordBreak {
+  /// A space in the text layer, or the first word of the paragraph.
+  space,
+
+  /// A gap or baseline jump between glyphs.
+  gap,
+
+  /// A break between wide characters, which run together in the original.
+  wideCharacter,
+}
+
 /// One word cropped from the page raster.
 class PdfReflowWord {
   const PdfReflowWord({
     required this.text,
+    required this.breakBefore,
     required this.atlasX,
     required this.atlasY,
     required this.atlasWidth,
@@ -159,6 +191,10 @@ class PdfReflowWord {
   });
 
   final String text;
+
+  /// Why the word begins here; decides the separator when words are rejoined.
+  final PdfWordBreak breakBefore;
+
   final int atlasX;
   final int atlasY;
   final int atlasWidth;
@@ -198,7 +234,8 @@ PdfReflowPage buildPdfReflowPage({
   required double pageWidth,
   required double pageHeight,
 }) {
-  final glyphs = chars.where((char) => !char.isWhitespace).toList();
+  final textChars = _joinSurrogatePairs(chars);
+  final glyphs = textChars.where((char) => !char.isWhitespace).toList();
   if (glyphs.length < 6) {
     return PdfReflowPage.fallback(
       'This page has no text layer; showing the page image.',
@@ -217,16 +254,17 @@ PdfReflowPage buildPdfReflowPage({
     );
   }
 
-  final sizes = glyphs
-      .map((char) => char.fontSize)
-      .where((size) => size > 0 && size.isFinite)
-      .toList()
-    ..sort();
+  final sizes =
+      glyphs
+          .map((char) => char.fontSize)
+          .where((size) => size > 0 && size.isFinite)
+          .toList()
+        ..sort();
   final medianFontSize = sizes.isEmpty
       ? 12.0
       : sizes[sizes.length ~/ 2].clamp(5.0, 72.0).toDouble();
 
-  final words = _groupWords(chars);
+  final words = _groupWords(textChars);
   if (words.isEmpty) {
     return PdfReflowPage.fallback(
       'This page has no text layer; showing the page image.',
@@ -235,16 +273,22 @@ PdfReflowPage buildPdfReflowPage({
     );
   }
 
-  var lines = _groupLines(words);
-  lines = _readingOrder(lines, pageWidth);
-  lines = lines.where((line) {
-    // Page numbers and running heads live in the margins and are short.
+  var columns = _readingOrder(_groupLines(words), pageWidth);
+  // Page numbers and running heads live in the margins and are short.
+  bool keeps(_LineDraft line) {
     final width = line.right - line.left;
     final inTop = line.top > pageHeight * 0.955;
     final inBottom = line.bottom < pageHeight * 0.045;
     return !(inTop || inBottom) || width > pageWidth * 0.55;
-  }).toList();
-  if (lines.isEmpty) {
+  }
+
+  final keptColumns = <_Column>[];
+  for (final column in columns) {
+    final lines = column.lines.where(keeps).toList();
+    if (lines.isNotEmpty) keptColumns.add(_Column(lines));
+  }
+  columns = keptColumns;
+  if (columns.isEmpty) {
     return PdfReflowPage.fallback(
       'Only page furniture was found; showing the page image.',
       pageWidth: pageWidth,
@@ -252,19 +296,18 @@ PdfReflowPage buildPdfReflowPage({
     );
   }
 
-  final bodyLeft = lines.map((line) => line.left).reduce(math.min);
-  final bodyRight = lines.map((line) => line.right).reduce(math.max);
+  final bodyLines = columns.expand((column) => column.lines).toList();
+  final bodyLeft = bodyLines.map((line) => line.left).reduce(math.min);
+  final bodyRight = bodyLines.map((line) => line.right).reduce(math.max);
   final bodyWidth = math.max(1.0, bodyRight - bodyLeft);
   final paragraphDrafts = _groupParagraphs(
-    lines,
+    columns,
     medianFontSize: medianFontSize,
     pageWidth: pageWidth,
-    bodyLeft: bodyLeft,
-    bodyWidth: bodyWidth,
   );
 
   final lineByWord = <_WordDraft, _LineDraft>{};
-  for (final line in lines) {
+  for (final line in bodyLines) {
     for (final word in line.words) {
       lineByWord[word] = line;
     }
@@ -338,8 +381,7 @@ PdfReflowParagraph _paragraph(
       for (final line in draft.lines)
         PdfReflowLine(
           words: [
-            for (final word in line.words)
-              _spriteWord(word, sprites[word]),
+            for (final word in line.words) _spriteWord(word, sprites[word]),
           ],
           fontSize: line.fontSize,
           heightPoints: line.top - line.bottom,
@@ -355,6 +397,7 @@ PdfReflowWord _spriteWord(_WordDraft word, _Sprite? sprite) {
   if (sprite == null) {
     return PdfReflowWord(
       text: word.text,
+      breakBefore: word.breakBefore,
       atlasX: 0,
       atlasY: 0,
       atlasWidth: 0,
@@ -365,6 +408,7 @@ PdfReflowWord _spriteWord(_WordDraft word, _Sprite? sprite) {
   }
   return PdfReflowWord(
     text: word.text,
+    breakBefore: word.breakBefore,
     atlasX: sprite.x,
     atlasY: sprite.y,
     atlasWidth: sprite.width,
@@ -379,7 +423,7 @@ PdfReflowWord _spriteWord(_WordDraft word, _Sprite? sprite) {
 // ---------------------------------------------------------------------------
 
 class _WordDraft {
-  _WordDraft(this.chars)
+  _WordDraft(this.chars, this.breakBefore)
     : text = chars.map((char) => char.text).join(),
       left = chars.map((char) => char.left).reduce(math.min),
       right = chars.map((char) => char.right).reduce(math.max),
@@ -390,6 +434,7 @@ class _WordDraft {
 
   final List<PdfChar> chars;
   final String text;
+  final PdfWordBreak breakBefore;
   final double left;
   final double right;
   final double bottom;
@@ -430,27 +475,73 @@ class _ParagraphDraft {
   final double top;
 }
 
+/// Join UTF-16 surrogate pairs into one character.
+///
+/// PDFium's `FPDFText_GetUnicode` reports one UTF-16 code unit per text
+/// character, so a supplementary-plane CJK character arrives as two
+/// [PdfChar]s. Reflow detects scripts on runes, and a lone surrogate matches
+/// no range, so the pair must be joined before grouping.
+List<PdfChar> _joinSurrogatePairs(List<PdfChar> chars) {
+  final joined = <PdfChar>[];
+  for (var i = 0; i < chars.length; i++) {
+    final char = chars[i];
+    if (char.text.length == 1 &&
+        _isHighSurrogate(char.text.codeUnitAt(0)) &&
+        i + 1 < chars.length) {
+      final next = chars[i + 1];
+      if (next.text.length == 1 && _isLowSurrogate(next.text.codeUnitAt(0))) {
+        joined.add(
+          PdfChar(
+            text: String.fromCharCodes(<int>[
+              char.text.codeUnitAt(0),
+              next.text.codeUnitAt(0),
+            ]),
+            left: math.min(char.left, next.left),
+            bottom: math.min(char.bottom, next.bottom),
+            right: math.max(char.right, next.right),
+            top: math.max(char.top, next.top),
+            baseline: char.baseline,
+            fontSize: math.max(char.fontSize, next.fontSize),
+          ),
+        );
+        i++;
+        continue;
+      }
+    }
+    joined.add(char);
+  }
+  return joined;
+}
+
+bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
+bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
+
 List<_WordDraft> _groupWords(List<PdfChar> chars) {
   final words = <_WordDraft>[];
   var current = <PdfChar>[];
-  void close() {
-    if (current.isNotEmpty) {
-      words.add(_WordDraft(List<PdfChar>.of(current)));
-      current = <PdfChar>[];
-    }
+  // Why the word being collected started; the first word never needs a
+  // separator, so its value does not matter.
+  var breakBefore = PdfWordBreak.space;
+  void flush() {
+    if (current.isEmpty) return;
+    words.add(_WordDraft(List<PdfChar>.of(current), breakBefore));
+    current = <PdfChar>[];
   }
 
   for (final char in chars) {
     if (char.isWhitespace) {
-      close();
+      flush();
+      breakBefore = PdfWordBreak.space;
       continue;
     }
     // Scripts that do not put spaces between words still need line-break
-    // opportunities. Give each wide character its own sprite.
-    final code = char.text.codeUnitAt(0);
-    if (_isWideCharacter(code)) {
-      close();
-      words.add(_WordDraft(<PdfChar>[char]));
+    // opportunities. Give each wide character its own sprite and remember
+    // that the break was script-internal, so copy text adds no space.
+    if (_isWideCharacter(char.text.runes.first)) {
+      flush();
+      words.add(_WordDraft(<PdfChar>[char], breakBefore));
+      breakBefore = PdfWordBreak.wideCharacter;
       continue;
     }
     if (current.isEmpty) {
@@ -463,11 +554,12 @@ List<_WordDraft> _groupWords(List<PdfChar> chars) {
     final size = math.max(previous.fontSize, char.fontSize);
     if (gap > math.max(1.0, size * 0.5) ||
         baselineGap > math.max(1.0, size * 0.6)) {
-      close();
+      flush();
+      breakBefore = PdfWordBreak.gap;
     }
     current.add(char);
   }
-  close();
+  flush();
   return words;
 }
 
@@ -508,8 +600,27 @@ List<_LineDraft> _groupLines(List<_WordDraft> words) {
   return lines;
 }
 
-/// Put lines into reading order, including a basic two-column split.
-List<_LineDraft> _readingOrder(List<_LineDraft> lines, double pageWidth) {
+/// A vertical run of lines in reading order.
+///
+/// Indent is measured from the column's own left edge: the right column of a
+/// two-column page starts halfway across the page, and measuring it against
+/// the page margin would turn every one of its paragraphs into a quote.
+class _Column {
+  _Column(this.lines);
+
+  final List<_LineDraft> lines;
+
+  double get left => lines.map((line) => line.left).reduce(math.min);
+  double get right => lines.map((line) => line.right).reduce(math.max);
+}
+
+/// Put lines into reading order, one column at a time.
+///
+/// A basic two-column split (at least three lines on each side of the gutter)
+/// reads the left column before the right. Spanning lines such as a chapter
+/// title lead in a column of their own, which keeps them in reading order
+/// without lending their width to either side.
+List<_Column> _readingOrder(List<_LineDraft> lines, double pageWidth) {
   int compare(_LineDraft a, _LineDraft b) {
     final byTop = b.top.compareTo(a.top);
     if (byTop != 0) return byTop;
@@ -530,64 +641,68 @@ List<_LineDraft> _readingOrder(List<_LineDraft> lines, double pageWidth) {
     }
   }
   if (left.length >= 3 && right.length >= 3) {
-    left.sort(compare);
-    right.sort(compare);
-    spanning.sort(compare);
-    return <_LineDraft>[...spanning, ...left, ...right];
+    return <_Column>[
+      _Column(spanning..sort(compare)),
+      _Column(left..sort(compare)),
+      _Column(right..sort(compare)),
+    ];
   }
   lines.sort(compare);
-  return lines;
+  return <_Column>[_Column(lines)];
 }
 
 List<_ParagraphDraft> _groupParagraphs(
-  List<_LineDraft> lines, {
+  List<_Column> columns, {
   required double medianFontSize,
   required double pageWidth,
-  required double bodyLeft,
-  required double bodyWidth,
 }) {
   final paragraphs = <_ParagraphDraft>[];
-  var current = <_LineDraft>[];
 
-  void close() {
-    if (current.isEmpty) return;
-    final kind = _classify(current, medianFontSize, bodyLeft);
-    final indent = (current.map((line) => line.left).reduce(math.min) -
-            bodyLeft)
-        .clamp(0.0, bodyWidth)
-        .toDouble();
-    paragraphs.add(
-      _ParagraphDraft(
-        lines: List<_LineDraft>.of(current),
-        kind: kind,
-        indentPoints: indent,
-        top: current.map((line) => line.top).reduce(math.max),
-      ),
-    );
-    current = <_LineDraft>[];
-  }
+  for (final column in columns) {
+    final bodyLeft = column.left;
+    final columnWidth = math.max(1.0, column.right - bodyLeft);
+    var current = <_LineDraft>[];
 
-  for (final line in lines) {
-    if (current.isEmpty) {
+    void close() {
+      if (current.isEmpty) return;
+      final kind = _classify(current, medianFontSize, bodyLeft);
+      final indent =
+          (current.map((line) => line.left).reduce(math.min) - bodyLeft)
+              .clamp(0.0, columnWidth)
+              .toDouble();
+      paragraphs.add(
+        _ParagraphDraft(
+          lines: List<_LineDraft>.of(current),
+          kind: kind,
+          indentPoints: indent,
+          top: current.map((line) => line.top).reduce(math.max),
+        ),
+      );
+      current = <_LineDraft>[];
+    }
+
+    for (final line in column.lines) {
+      if (current.isEmpty) {
+        current.add(line);
+        continue;
+      }
+      final previous = current.last;
+      final baselineGap = (previous.baseline - line.baseline).abs();
+      final gap = previous.bottom - line.top;
+      final sizeChange =
+          (line.fontSize - previous.fontSize).abs() /
+          math.max(1, previous.fontSize);
+      final indented = line.left - previous.left > pageWidth * 0.025;
+      if (baselineGap > previous.fontSize * 1.8 ||
+          gap > previous.fontSize * 0.9 ||
+          sizeChange > 0.18 ||
+          indented) {
+        close();
+      }
       current.add(line);
-      continue;
     }
-    final previous = current.last;
-    final baselineGap = (previous.baseline - line.baseline).abs();
-    final gap = previous.bottom - line.top;
-    final sizeChange =
-        (line.fontSize - previous.fontSize).abs() /
-        math.max(1, previous.fontSize);
-    final indented = line.left - previous.left > pageWidth * 0.025;
-    if (baselineGap > previous.fontSize * 1.8 ||
-        gap > previous.fontSize * 0.9 ||
-        sizeChange > 0.18 ||
-        indented) {
-      close();
-    }
-    current.add(line);
+    close();
   }
-  close();
   return paragraphs;
 }
 
@@ -655,6 +770,13 @@ class _Crop {
   int get height => y1 - y0;
 }
 
+/// Widest sprite the atlas can hold.
+///
+/// A crop wider than this is clamped: the sprite rectangle has to cover
+/// exactly the pixels that were written, or the reader stretches a 6000 px
+/// glyph into a 4096 px rect and squashes it.
+const int _maxAtlasSpriteWidth = 4096;
+
 _AtlasResult? _buildAtlas({
   required List<_WordDraft> words,
   required Map<_WordDraft, _LineDraft> lineByWord,
@@ -672,27 +794,24 @@ _AtlasResult? _buildAtlas({
       0,
       bitmap.width - 1,
     );
-    final x1 = ((word.right * renderScale).ceil() + padding).clamp(
-      x0 + 1,
-      bitmap.width,
+    final x1 = math.min(
+      ((word.right * renderScale).ceil() + padding).clamp(x0 + 1, bitmap.width),
+      x0 + _maxAtlasSpriteWidth,
     );
-    final y0 =
-        (((pageHeight - line.top) * renderScale).floor() - padding).clamp(
-          0,
-          bitmap.height - 1,
-        );
-    final y1 =
-        (((pageHeight - line.bottom) * renderScale).ceil() + padding).clamp(
-          y0 + 1,
-          bitmap.height,
-        );
+    final y0 = (((pageHeight - line.top) * renderScale).floor() - padding)
+        .clamp(0, bitmap.height - 1);
+    final y1 = (((pageHeight - line.bottom) * renderScale).ceil() + padding)
+        .clamp(y0 + 1, bitmap.height);
     if (x1 - x0 < 1 || y1 - y0 < 1) continue;
     crops.add(_Crop(word: word, x0: x0, y0: y0, x1: x1, y1: y1));
     maxCropWidth = math.max(maxCropWidth, x1 - x0);
   }
   if (crops.isEmpty) return null;
 
-  final atlasWidth = math.min(4096, math.max(256, maxCropWidth + padding));
+  final atlasWidth = math.min(
+    _maxAtlasSpriteWidth,
+    math.max(256, maxCropWidth + padding),
+  );
   var cursorX = 0;
   var cursorY = 0;
   var rowHeight = 0;
@@ -740,14 +859,44 @@ _AtlasResult? _buildAtlas({
 // Bitmap helpers
 // ---------------------------------------------------------------------------
 
-img.Image? _wordMask(
-  img.Image page,
-  int x,
-  int y,
-  int width,
-  int height,
-) {
+/// Alpha mask of one word crop: 0 at the local background, 255 at full ink.
+///
+/// The crop carries a couple of pixels of its background around the glyph, and
+/// the corners stay background even when a neighbouring word reaches into the
+/// middle of an edge (CJK words are drawn with no gap). Their median is the
+/// local background; the polarity follows whichever side of it the crop
+/// departs from farther. A fixed white-background inversion turned every word
+/// over a dark panel or photo into an opaque bar.
+img.Image? _wordMask(img.Image page, int x, int y, int width, int height) {
   if (width <= 0 || height <= 0) return null;
+
+  final patchX = math.min(2, math.max(1, width - 1));
+  final patchY = math.min(2, math.max(1, height - 1));
+  final luminances = Uint8List(width * height);
+  final corners = <double>[];
+  var darkest = 255.0;
+  var brightest = 0.0;
+  for (var py = 0; py < height; py++) {
+    final sy = y + py;
+    if (sy < 0 || sy >= page.height) continue;
+    for (var px = 0; px < width; px++) {
+      final sx = x + px;
+      if (sx < 0 || sx >= page.width) continue;
+      final pixel = page.getPixel(sx, sy);
+      final luminance = 0.2126 * pixel.r + 0.7152 * pixel.g + 0.0722 * pixel.b;
+      luminances[py * width + px] = luminance.round();
+      darkest = math.min(darkest, luminance);
+      brightest = math.max(brightest, luminance);
+      final inCornerColumn = px < patchX || px >= width - patchX;
+      final inCornerRow = py < patchY || py >= height - patchY;
+      if (inCornerColumn && inCornerRow) corners.add(luminance);
+    }
+  }
+  if (corners.isEmpty) return null;
+  corners.sort();
+  final background = corners[corners.length ~/ 2];
+  final lightInk = brightest - background > background - darkest;
+
   final mask = img.Image(width: width, height: height, numChannels: 4);
   var opaque = false;
   for (var py = 0; py < height; py++) {
@@ -756,10 +905,10 @@ img.Image? _wordMask(
     for (var px = 0; px < width; px++) {
       final sx = x + px;
       if (sx < 0 || sx >= page.width) continue;
-      final pixel = page.getPixel(sx, sy);
-      final luminance =
-          0.2126 * pixel.r + 0.7152 * pixel.g + 0.0722 * pixel.b;
-      final alpha = (255 - luminance).clamp(0, 255).toInt();
+      final luminance = luminances[py * width + px].toDouble();
+      final alpha = (lightInk ? luminance - background : background - luminance)
+          .clamp(0, 255)
+          .toInt();
       if (alpha == 0) continue;
       opaque = true;
       mask.setPixelRgba(px, py, 255, 255, 255, alpha);
@@ -779,10 +928,7 @@ Uint8List? _cropPng(
 }) {
   final x0 = (left * scale).floor().clamp(0, page.width - 1);
   final x1 = (right * scale).ceil().clamp(x0 + 1, page.width);
-  final y0 = ((pageHeight - top) * scale).floor().clamp(
-    0,
-    page.height - 1,
-  );
+  final y0 = ((pageHeight - top) * scale).floor().clamp(0, page.height - 1);
   final y1 = ((pageHeight - bottom) * scale).ceil().clamp(y0 + 1, page.height);
   if (x1 - x0 < 2 || y1 - y0 < 2) return null;
   return img.encodePng(

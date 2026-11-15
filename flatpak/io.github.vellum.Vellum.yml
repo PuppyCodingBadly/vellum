@@ -20,9 +20,10 @@ finish-args:
   - --socket=wayland
   - --device=dri
   - --share=network
-  # Calibre libraries and folder pickers.
+  # Calibre libraries and folder pickers. Folder choices outside Documents go
+  # through the document portal; no whole-home grant, because installed plugin
+  # code runs in the sidecar and would inherit it.
   - --filesystem=xdg-documents
-  - --filesystem=home:ro
   # PDFium is bundled; the Dart loader honors this path first.
   - --env=PDFIUM_PATH=/app/lib/libpdfium.so
 

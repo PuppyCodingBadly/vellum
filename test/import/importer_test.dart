@@ -1,6 +1,6 @@
 /// Tests for EPUB metadata/cover extraction during import.
 ///
-/// Mirrors /tmp/vellum/tests/test_importer.py.
+/// Mirrors `tests/test_importer.py` in the original application's tree.
 library;
 
 import 'dart:convert';
@@ -118,7 +118,10 @@ void main() {
     final txt = p.join(tmp.path, 'notes.txt');
     File(txt).writeAsStringSync('hello');
     expect(await importPath(library, txt), isEmpty);
-    expect(await importPath(library, p.join(tmp.path, 'missing.epub')), isEmpty);
+    expect(
+      await importPath(library, p.join(tmp.path, 'missing.epub')),
+      isEmpty,
+    );
   });
 
   test('directory imports supported files recursively and sorted', () async {
@@ -128,10 +131,57 @@ void main() {
     File(p.join(tmp.path, 'library', 'a.pdf')).writeAsBytesSync([2]);
     File(p.join(sub.path, 'skip.txt')).writeAsStringSync('x');
 
-    final ids =
-        await importPath(library, p.join(tmp.path, 'library'));
+    final ids = await importPath(library, p.join(tmp.path, 'library'));
     expect(ids, hasLength(2));
     final titles = library.allBooks().map((b) => b.title).toSet();
     expect(titles, {'a', 'b'});
+  });
+
+  test('malformed cover percent-escape keeps title and author', () async {
+    const opf = '''<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <metadata>
+    <dc:title>Broken Cover</dc:title>
+    <dc:creator>Ann Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover%zz.png" media-type="image/png"/>
+  </manifest>
+</package>''';
+    final epub = p.join(tmp.path, 'broken-cover.epub');
+    writeEpub(epub, {'content.opf': utf8.encode(opf)});
+
+    final ids = await importPath(library, epub);
+    expect(ids, hasLength(1));
+    final book = library.getBook(ids.single)!;
+    expect(book.title, 'Broken Cover');
+    expect(book.authors, ['Ann Author']);
+    expect(book.coverPath, isEmpty);
+  });
+
+  test('importing the same file twice adds one row', () async {
+    const opf = '''<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <metadata><dc:title>Twice</dc:title></metadata>
+</package>''';
+    final epub = p.join(tmp.path, 'twice.epub');
+    writeEpub(epub, {'content.opf': utf8.encode(opf)});
+
+    final first = await importPath(library, epub);
+    expect(first, hasLength(1));
+    expect(await importPath(library, epub), isEmpty);
+
+    // A second path to the same file has the same source id too.
+    final alias = Link(p.join(tmp.path, 'alias.epub'))..createSync(epub);
+    expect(await importPath(library, alias.path), isEmpty);
+
+    final books = library.allBooks();
+    expect(books, hasLength(1));
+    expect(
+      books.single.sourceId,
+      'file:${File(epub).resolveSymbolicLinksSync()}',
+    );
   });
 }

@@ -31,8 +31,8 @@ const googlePayload = {
         'averageRating': 4.5,
         'imageLinks': {'thumbnail': 'http://books.google.com/img?zoom=1&id=x'},
       },
-    }
-  ]
+    },
+  ],
 };
 
 const openLibraryPayload = {
@@ -54,18 +54,21 @@ const openLibraryPayload = {
         'Mystery',
         'Romance',
         'Science',
-        'Travel'
+        'Travel',
       ],
       'cover_i': 12345,
-    }
-  ]
+    },
+  ],
 };
 
 http.Client jsonClient(Object? payload, {List<http.Request>? captured}) {
   return MockClient((request) async {
     captured?.add(request);
-    return http.Response(jsonEncode(payload), 200,
-        headers: {'content-type': 'application/json'});
+    return http.Response(
+      jsonEncode(payload),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
   });
 }
 
@@ -84,35 +87,60 @@ class _StubSource extends MetadataSource {
   List<Metadata>? freeTextResults;
   List<String> isbnSearches = [];
 
-  _StubSource(this.id, this.results,
-      {this.name = '', this.throws = false, this.cover, this.freeTextResults});
+  _StubSource(
+    this.id,
+    this.results, {
+    this.name = '',
+    this.throws = false,
+    this.cover,
+    this.freeTextResults,
+  });
 
   @override
-  Future<List<Metadata>> search(
-      {String title = '',
-      List<String>? authors,
-      String isbn = '',
-      http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> search({
+    String title = '',
+    List<String>? authors,
+    String isbn = '',
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (isbn.isNotEmpty) isbnSearches.add(isbn);
     if (throws) throw Exception('source exploded');
     return results;
   }
 
   @override
-  Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> searchFreeText(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     return freeTextResults ??
         super.searchFreeText(query, client: client, timeout: timeout);
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     coverCalls++;
     return cover;
+  }
+}
+
+/// A source whose cover download always fails.
+class _ThrowingCoverSource extends _StubSource {
+  _ThrowingCoverSource(super.id, super.results, {super.name});
+
+  @override
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    throw Exception('cover exploded');
   }
 }
 
@@ -122,9 +150,10 @@ void main() {
       final captured = <http.Request>[];
       final source = GoogleBooks();
       final results = await source.search(
-          title: 'Example Book',
-          authors: ['Jane Doe'],
-          client: jsonClient(googlePayload, captured: captured));
+        title: 'Example Book',
+        authors: ['Jane Doe'],
+        client: jsonClient(googlePayload, captured: captured),
+      );
       expect(results, hasLength(1));
       final meta = results[0];
       expect(meta.title, 'Example Book');
@@ -135,8 +164,10 @@ void main() {
       expect(meta.language, 'en');
       expect(meta.tags, ['Fiction', 'Adventure']); // from categories
       expect(meta.rating, 4.5);
-      expect(meta.coverUrl,
-          'http://books.google.com/img?zoom=0&id=x'); // zoom tweak
+      expect(
+        meta.coverUrl,
+        'http://books.google.com/img?zoom=0&id=x',
+      ); // zoom tweak
       expect(meta.sourceId, 'gb-1');
       expect(meta.sourceName, 'Google Books');
       final params = captured.single.url.queryParameters;
@@ -146,20 +177,26 @@ void main() {
     });
 
     test('error returns empty', () async {
-      expect(await GoogleBooks().search(title: 'x', client: failingClient()),
-          isEmpty);
+      expect(
+        await GoogleBooks().search(title: 'x', client: failingClient()),
+        isEmpty,
+      );
     });
 
     test('multiword uses free text', () async {
       final captured = <http.Request>[];
-      await GoogleBooks().searchFreeText('dune frank herbert',
-          client: jsonClient({'items': []}, captured: captured));
+      await GoogleBooks().searchFreeText(
+        'dune frank herbert',
+        client: jsonClient({'items': []}, captured: captured),
+      );
       expect(captured.single.url.queryParameters['q'], 'dune frank herbert');
     });
 
     test('download cover', () async {
-      final client = MockClient((request) async =>
-          http.Response.bytes(Uint8List.fromList('IMG'.codeUnits), 200));
+      final client = MockClient(
+        (request) async =>
+            http.Response.bytes(Uint8List.fromList('IMG'.codeUnits), 200),
+      );
       final meta = Metadata(coverUrl: 'http://x/cover.jpg');
       final bytes = await GoogleBooks().downloadCover(meta, client: client);
       expect(String.fromCharCodes(bytes!), 'IMG');
@@ -170,8 +207,9 @@ void main() {
     test('mapping', () async {
       final captured = <http.Request>[];
       final results = await OpenLibrary().search(
-          title: 'Example Book',
-          client: jsonClient(openLibraryPayload, captured: captured));
+        title: 'Example Book',
+        client: jsonClient(openLibraryPayload, captured: captured),
+      );
       expect(results, hasLength(1));
       final meta = results[0];
       expect(meta.title, 'Example Book');
@@ -181,34 +219,42 @@ void main() {
       expect(meta.pubdate, '2020');
       expect(meta.language, 'eng');
       expect(meta.tags, hasLength(8)); // subject[:8]
-      expect(
-          meta.coverUrl, 'https://covers.openlibrary.org/b/id/12345-L.jpg');
+      expect(meta.coverUrl, 'https://covers.openlibrary.org/b/id/12345-L.jpg');
       expect(meta.sourceId, '/works/OL1W');
       expect(meta.sourceName, 'Open Library');
       final params = captured.single.url.queryParameters;
       expect(params['title'], 'Example Book');
       expect(params['limit'], '20');
-      expect(params['fields'],
-          'key,title,author_name,first_publish_year,publisher,language,subject,cover_i,isbn');
+      expect(
+        params['fields'],
+        'key,title,author_name,first_publish_year,publisher,language,subject,cover_i,isbn',
+      );
     });
 
     test('error returns empty', () async {
-      expect(await OpenLibrary().search(title: 'x', client: failingClient()),
-          isEmpty);
+      expect(
+        await OpenLibrary().search(title: 'x', client: failingClient()),
+        isEmpty,
+      );
     });
 
     test('multiword uses free text', () async {
       final captured = <http.Request>[];
-      await OpenLibrary().searchFreeText('dune frank herbert',
-          client: jsonClient({'docs': []}, captured: captured));
+      await OpenLibrary().searchFreeText(
+        'dune frank herbert',
+        client: jsonClient({'docs': []}, captured: captured),
+      );
       expect(captured.single.url.queryParameters['q'], 'dune frank herbert');
     });
 
     test('download cover', () async {
-      final client = MockClient((request) async =>
-          http.Response.bytes(Uint8List.fromList('IMG'.codeUnits), 200));
+      final client = MockClient(
+        (request) async =>
+            http.Response.bytes(Uint8List.fromList('IMG'.codeUnits), 200),
+      );
       final meta = Metadata(
-          coverUrl: 'https://covers.openlibrary.org/b/id/1-L.jpg');
+        coverUrl: 'https://covers.openlibrary.org/b/id/1-L.jpg',
+      );
       final bytes = await OpenLibrary().downloadCover(meta, client: client);
       expect(String.fromCharCodes(bytes!), 'IMG');
     });
@@ -217,11 +263,26 @@ void main() {
   group('MetadataEngine', () {
     test('dedupes by isbn and sorts rating desc', () async {
       final low = Metadata(
-          title: 'Book', authors: ['A'], isbn: '111', rating: 3.0, sourceId: 's1');
+        title: 'Book',
+        authors: ['A'],
+        isbn: '111',
+        rating: 3.0,
+        sourceId: 's1',
+      );
       final high = Metadata(
-          title: 'Book', authors: ['A'], isbn: '111', rating: 4.5, sourceId: 's2');
+        title: 'Book',
+        authors: ['A'],
+        isbn: '111',
+        rating: 4.5,
+        sourceId: 's2',
+      );
       final other = Metadata(
-          title: 'Other', authors: ['B'], isbn: '222', rating: 4.0, sourceId: 's1');
+        title: 'Other',
+        authors: ['B'],
+        isbn: '222',
+        rating: 4.0,
+        sourceId: 's1',
+      );
       final engine = MetadataEngine()
         ..registerSource(_StubSource('s1', [low, other]))
         ..registerSource(_StubSource('s2', [high]));
@@ -247,7 +308,8 @@ void main() {
       final engine = MetadataEngine()
         ..registerSource(_StubSource('bad', [], throws: true))
         ..registerSource(
-            _StubSource('good', [Metadata(title: 'Ok', rating: 1.0)]));
+          _StubSource('good', [Metadata(title: 'Ok', rating: 1.0)]),
+        );
       final results = await engine.find(title: 'Ok');
       expect(results, hasLength(1));
       expect(results[0].title, 'Ok');
@@ -255,12 +317,20 @@ void main() {
 
     test('fetchCover returns bytes', () async {
       final meta = Metadata(
-          title: 'Book', sourceId: 'good', coverUrl: 'http://x/cover.jpg');
-      final source = _StubSource('good', [],
-          cover: Uint8List.fromList('JPEGDATA'.codeUnits));
+        title: 'Book',
+        sourceId: 'good',
+        coverUrl: 'http://x/cover.jpg',
+      );
+      final source = _StubSource(
+        'good',
+        [],
+        cover: Uint8List.fromList('JPEGDATA'.codeUnits),
+      );
       final engine = MetadataEngine()..registerSource(source);
-      expect(await engine.fetchCover(meta),
-          Uint8List.fromList('JPEGDATA'.codeUnits));
+      expect(
+        await engine.fetchCover(meta),
+        Uint8List.fromList('JPEGDATA'.codeUnits),
+      );
       expect(source.coverCalls, 1);
     });
 
@@ -270,8 +340,12 @@ void main() {
     });
 
     test('fetchCover matches by source name', () async {
-      final source = _StubSource('stub-src', [],
-          name: 'Stub Source', cover: Uint8List.fromList('img'.codeUnits));
+      final source = _StubSource(
+        'stub-src',
+        [],
+        name: 'Stub Source',
+        cover: Uint8List.fromList('img'.codeUnits),
+      );
       final engine = MetadataEngine()..registerSource(source);
       final meta = Metadata(
         title: 'Book',
@@ -279,9 +353,34 @@ void main() {
         sourceId: 'book-key-1',
         sourceName: 'Stub Source',
       );
-      expect(await engine.fetchCover(meta),
-          Uint8List.fromList('img'.codeUnits));
+      expect(
+        await engine.fetchCover(meta),
+        Uint8List.fromList('img'.codeUnits),
+      );
       expect(source.coverCalls, 1);
+    });
+
+    test('fetchCover fails over to the next matching source', () async {
+      final engine = MetadataEngine()
+        ..registerSource(_ThrowingCoverSource('bad', [], name: 'Stub Source'))
+        ..registerSource(
+          _StubSource(
+            'good',
+            [],
+            name: 'Stub Source',
+            cover: Uint8List.fromList('img'.codeUnits),
+          ),
+        );
+      final meta = Metadata(
+        title: 'Book',
+        coverUrl: 'http://x/cover.jpg',
+        sourceId: 'book-key-1',
+        sourceName: 'Stub Source',
+      );
+      expect(
+        await engine.fetchCover(meta),
+        Uint8List.fromList('img'.codeUnits),
+      );
     });
 
     test('fetchCover no match returns null', () async {
@@ -295,8 +394,7 @@ void main() {
       );
       // Engine-level URL fallback would try a network fetch; with no client
       // injected it must fail to null, but downloadCover must not be called.
-      final result = await engine.fetchCover(meta,
-          client: failingClient());
+      final result = await engine.fetchCover(meta, client: failingClient());
       expect(result, isNull);
       expect(source.coverCalls, 0);
     });
@@ -309,22 +407,38 @@ void main() {
     });
 
     test('findQuery ranks closest title first', () async {
-      final exact =
-          Metadata(title: 'Dune', authors: ['Frank Herbert'], rating: 4.0, sourceId: 'a');
+      final exact = Metadata(
+        title: 'Dune',
+        authors: ['Frank Herbert'],
+        rating: 4.0,
+        sourceId: 'a',
+      );
       final sequel = Metadata(
-          title: 'Dune Messiah',
-          authors: ['Frank Herbert'],
-          rating: 5.0,
-          sourceId: 'b');
-      final unrelated =
-          Metadata(title: 'Cooking', authors: ['Someone'], rating: 5.0, sourceId: 'c');
-      final source = _StubSource('stub', [],
-          name: 'Stub', freeTextResults: [unrelated, sequel, exact]);
+        title: 'Dune Messiah',
+        authors: ['Frank Herbert'],
+        rating: 5.0,
+        sourceId: 'b',
+      );
+      final unrelated = Metadata(
+        title: 'Cooking',
+        authors: ['Someone'],
+        rating: 5.0,
+        sourceId: 'c',
+      );
+      final source = _StubSource(
+        'stub',
+        [],
+        name: 'Stub',
+        freeTextResults: [unrelated, sequel, exact],
+      );
       final engine = MetadataEngine()..registerSource(source);
       final results = await engine.findQuery('dune frank herbert');
       expect(results[0].sourceId, 'merged');
-      expect(results.sublist(1).map((m) => m.title),
-          ['Dune', 'Dune Messiah', 'Cooking']);
+      expect(results.sublist(1).map((m) => m.title), [
+        'Dune',
+        'Dune Messiah',
+        'Cooking',
+      ]);
     });
 
     test('findQuery empty returns empty', () async {
@@ -333,11 +447,51 @@ void main() {
 
     test('filters non-english results', () async {
       final english = Metadata(title: 'Dune', language: 'en', sourceId: 'en');
-      final french = Metadata(title: 'Le Dune', language: 'fre', sourceId: 'fr');
+      final french = Metadata(
+        title: 'Le Dune',
+        language: 'fre',
+        sourceId: 'fr',
+      );
       final engine = MetadataEngine()
         ..registerSource(_StubSource('stub', [french, english], name: 'Stub'));
       final results = await engine.find(title: 'Dune');
       expect(results.map((m) => m.sourceId), ['en']);
+    });
+
+    test('a non-english duplicate cannot evict the english row', () async {
+      // Same ISBN: dedupe alone would keep the higher-rated German row and the
+      // English filter would then drop the pair.  Filtering must come first.
+      final german = Metadata(
+        title: 'Dune',
+        authors: const ['Frank Herbert'],
+        isbn: '9780441013593',
+        language: 'de',
+        rating: 4.9,
+        sourceId: 'de',
+      );
+      final english = Metadata(
+        title: 'Dune',
+        authors: const ['Frank Herbert'],
+        isbn: '9780441013593',
+        language: 'en',
+        rating: 4.0,
+        sourceId: 'en',
+      );
+      final engine = MetadataEngine()
+        ..registerSource(_StubSource('stub', [german, english], name: 'Stub'));
+      final results = await engine.find(title: 'Dune');
+      expect(results.map((m) => m.sourceId), ['en']);
+      expect(
+        MetadataEngine.combineSources([german, english]).map((m) => m.sourceId),
+        ['en'],
+      );
+      expect(
+        MetadataEngine.combineQuery('dune', [
+          german,
+          english,
+        ]).map((m) => m.sourceId),
+        ['en'],
+      );
     });
   });
 }

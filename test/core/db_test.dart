@@ -53,15 +53,23 @@ void main() {
 
     test('updateBook unknown id throws StateError', () {
       final lib = Library(':memory:');
-      expect(() => lib.updateBook(Book(id: 4242, title: 'x')),
-          throwsStateError);
+      expect(
+        () => lib.updateBook(Book(id: 4242, title: 'x')),
+        throwsStateError,
+      );
       lib.close();
     });
 
     test('updateBook replaces links', () {
       final lib = Library(':memory:');
-      final id = lib.addBook(Book(
-          title: 'T', authors: ['A1', 'A2'], tags: ['t1'], formats: ['epub']));
+      final id = lib.addBook(
+        Book(
+          title: 'T',
+          authors: ['A1', 'A2'],
+          tags: ['t1'],
+          formats: ['epub'],
+        ),
+      );
       final book = lib.getBook(id)!
         ..authors = ['B1']
         ..tags = ['t2', 't3']
@@ -77,7 +85,8 @@ void main() {
     test('deleteBook cascades children', () {
       final lib = Library(':memory:');
       final id = lib.addBook(
-          Book(title: 'T', authors: ['A'], tags: ['x'], formats: ['epub']));
+        Book(title: 'T', authors: ['A'], tags: ['x'], formats: ['epub']),
+      );
       lib.addHighlight(id, 'pos', 'yellow', 'hello');
       lib.setReadingPosition(id, 'loc');
       lib.deleteBook(id);
@@ -106,8 +115,7 @@ void main() {
 
     test('findBySourceId: empty returns null, match returns book', () {
       final lib = Library(':memory:');
-      final id =
-          lib.addBook(Book(title: 'Cal', sourceId: 'calibre:uuid-1'));
+      final id = lib.addBook(Book(title: 'Cal', sourceId: 'calibre:uuid-1'));
       expect(lib.findBySourceId(''), isNull);
       expect(lib.findBySourceId('missing'), isNull);
       expect(lib.findBySourceId('calibre:uuid-1')!.id, id);
@@ -126,7 +134,6 @@ void main() {
       lib.close();
       tmp.deleteSync(recursive: true);
     });
-
   });
 
   group('Library search', () {
@@ -141,11 +148,14 @@ void main() {
 
     test('AND tokens, case-insensitive, across title/author/tag/isbn', () {
       final lib = Library(':memory:');
-      lib.addBook(Book(
+      lib.addBook(
+        Book(
           title: 'The Left Hand of Darkness',
           authors: ['Ursula K. Le Guin'],
           tags: ['scifi'],
-          isbn: '9780441478125'));
+          isbn: '9780441478125',
+        ),
+      );
       lib.addBook(Book(title: 'Dune', authors: ['Frank Herbert']));
       // Matches via title + author.
       expect(lib.search('left le guin'), hasLength(1));
@@ -158,6 +168,32 @@ void main() {
       // Case-insensitive.
       expect(lib.search('LEFT HAND'), hasLength(1));
       lib.close();
+    });
+
+    test('search folds non-ASCII case on both sides', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      lib.addBooks([
+        Book(
+          title: 'Ägypten: Eine Geschichte',
+          authors: ['Jürgen Müller'],
+          tags: ['Reise'],
+        ),
+        Book(title: 'Straße nach Épernay'),
+      ]);
+
+      expect(lib.search('ägypten').map((b) => b.title), [
+        'Ägypten: Eine Geschichte',
+      ]);
+      expect(lib.search('JÜRGEN').map((b) => b.title), [
+        'Ägypten: Eine Geschichte',
+      ]);
+      expect(lib.search('REISE').map((b) => b.title), [
+        'Ägypten: Eine Geschichte',
+      ]);
+      expect(lib.search('épernay').map((b) => b.title), [
+        'Straße nach Épernay',
+      ]);
     });
   });
 
@@ -333,8 +369,9 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
 
       expect(lib.shelvesForBook(b2), [shelf]);
       lib.removeBookFromShelf(shelf, b2);
-      expect(lib.shelfBooks(shelf).map((b) => b.title), ['Beta'],
-          reason: 'Alpha removed; hidden book excluded by default');
+      expect(lib.shelfBooks(shelf).map((b) => b.title), [
+        'Beta',
+      ], reason: 'Alpha removed; hidden book excluded by default');
       expect(lib.shelvesForBook(b2), isEmpty);
 
       // Deleting a book cascades out of shelf_books; Beta (b1) remains.
@@ -426,7 +463,7 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
           'chapter': 1,
           'title': 'Middle',
           'content':
-              'The quick brown fox jumps over the lazy dog near the riverbank.'
+              'The quick brown fox jumps over the lazy dog near the riverbank.',
         },
       ]);
       if (lib.ftsAvailable) {
@@ -455,21 +492,52 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
       final lib = Library(':memory:');
       final b = lib.addBook(Book(title: 'Novel'));
       lib.replaceBookFts(b, [
-        {'chapter': 0, 'title': 'Old', 'content': 'xyzzy old content'}
+        {'chapter': 0, 'title': 'Old', 'content': 'xyzzy old content'},
       ]);
       lib.replaceBookFts(b, [
-        {'chapter': 0, 'title': 'New', 'content': 'plugh new content'}
+        {'chapter': 0, 'title': 'New', 'content': 'plugh new content'},
       ]);
       expect(lib.searchBookContent('xyzzy'), isEmpty);
       expect(lib.searchBookContent('plugh'), hasLength(1));
       lib.close();
     });
 
+    test('searchBookContent caps hits with SQL LIMIT', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final b = lib.addBook(Book(title: 'Novel'));
+      lib.replaceBookFts(b, [
+        for (var chapter = 0; chapter < 30; chapter++)
+          {'chapter': chapter, 'title': 'Ch', 'content': 'needle here'},
+      ]);
+
+      expect(lib.searchBookContent('needle'), hasLength(20));
+      expect(lib.searchBookContent('needle', limit: 5), hasLength(5));
+    });
+
+    test('deleteBook cascades the recorded FTS source', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final file = File(
+        '${Directory.systemTemp.createTempSync('vellum-fts-src').path}/book.epub',
+      )..writeAsBytesSync([1, 2, 3]);
+      addTearDown(() => file.parent.deleteSync(recursive: true));
+      final b = lib.addBook(Book(title: 'Novel', path: file.path));
+      lib.replaceBookFts(b, [
+        {'chapter': 0, 'title': 'Ch', 'content': 'needle'},
+      ], source: FtsSource.of(file.path));
+      expect(lib.ftsSourceFor(b), isNotNull);
+
+      lib.deleteBook(b);
+      expect(lib.ftsSourceFor(b), isNull);
+      expect(lib.searchBookContent('needle'), isEmpty);
+    });
+
     test('deleteBook removes rows from book_fts', () {
       final lib = Library(':memory:');
       final b = lib.addBook(Book(title: 'Novel'));
       lib.replaceBookFts(b, [
-        {'chapter': 0, 'title': 'Ch', 'content': 'zorkmid treasure'}
+        {'chapter': 0, 'title': 'Ch', 'content': 'zorkmid treasure'},
       ]);
       expect(lib.searchBookContent('zorkmid'), hasLength(1));
       lib.deleteBook(b);
@@ -483,7 +551,8 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
       // Pre-create a plain (non-FTS) book_fts table.
       final raw = sqlite3.open(path);
       raw.execute(
-          'CREATE TABLE book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)');
+        'CREATE TABLE book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)',
+      );
       raw.dispose();
 
       final lib = Library(path);
@@ -494,8 +563,8 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
           'chapter': 2,
           'title': 'Ch',
           'content':
-              'Some long text with the magic needle phrase deep inside it all.'
-        }
+              'Some long text with the magic needle phrase deep inside it all.',
+        },
       ]);
       final hits = lib.searchBookContent('needle phrase');
       expect(hits, hasLength(1));
@@ -511,8 +580,8 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
         {
           'chapter': 3,
           'title': 'Pct',
-          'content': 'Discount is 100% real_thing today.'
-        }
+          'content': 'Discount is 100% real_thing today.',
+        },
       ]);
       expect(lib.searchBookContent('100%'), hasLength(1));
       expect(lib.searchBookContent('real_thing'), hasLength(1));

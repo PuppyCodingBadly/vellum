@@ -221,15 +221,18 @@ Future<Uint8List> generateCoverPng({
   titlePainter.dispose();
 
   final picture = recorder.endRecording();
-  final image = await picture.toImage(width, height);
+  ui.Image? image;
   try {
+    image = await picture.toImage(width, height);
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     if (data == null) {
       throw StateError('cover renderer produced no PNG data');
     }
     return data.buffer.asUint8List();
   } finally {
-    image.dispose();
+    // Both handles are owned here: a failure inside `toImage` must not leak
+    // the picture.
+    image?.dispose();
     picture.dispose();
   }
 }

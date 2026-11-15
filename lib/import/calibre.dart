@@ -11,6 +11,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../core/db.dart';
 import '../core/models.dart';
+import '../core/safe_paths.dart';
 import '../formats/text_extract.dart';
 
 /// Formats the built-in reader can open, most preferred first.
@@ -31,16 +32,25 @@ bool isCalibreLibrary(String folder) =>
 /// Import every book from the calibre library in [folder].
 ///
 /// Books already imported (matched by `Book.sourceId`) are skipped.
-/// [progress], if given, is called as `progress(done, total)`.
+/// [progress], if given, is called as `progress(done, total)` every
+/// [_progressEveryRows] rows and once at the end.
+///
+/// The scan and its database writes stay on the calling isolate; the loop
+/// yields to the event loop between rows so the UI keeps painting and a
+/// long import never freezes a frame.
 Future<CalibreImportResult> importCalibreLibrary(
   Library library,
   String folder, {
   void Function(int done, int total)? progress,
-}) async =>
-    _importCalibreLibrary(library, folder, progress);
+}) async => _importCalibreLibrary(library, folder, progress);
 
-CalibreImportResult _importCalibreLibrary(
-    Library library, String folder, void Function(int, int)? progress) {
+const _progressEveryRows = 25;
+
+Future<CalibreImportResult> _importCalibreLibrary(
+  Library library,
+  String folder,
+  void Function(int, int)? progress,
+) async {
   final root = Directory(folder).absolute.path;
   final dbPath = p.join(root, 'metadata.db');
   if (!File(dbPath).existsSync()) {
@@ -48,6 +58,7 @@ CalibreImportResult _importCalibreLibrary(
   }
 
   final db = _openDatabase(dbPath, _snapshotRoot(library));
+  final paths = _LibraryPaths(root);
   try {
     final conn = db.db;
     if (!_hasTable(conn, 'books')) {
@@ -55,20 +66,28 @@ CalibreImportResult _importCalibreLibrary(
     }
     final bookCols = _columns(conn, 'books');
     const wanted = [
-      'id', 'title', 'sort', 'isbn', 'pubdate', 'path', 'uuid', 'has_cover',
+      'id',
+      'title',
+      'sort',
+      'isbn',
+      'pubdate',
+      'path',
+      'uuid',
+      'has_cover',
     ];
     final selected = wanted.where(bookCols.contains).toList();
     final total =
         conn.select('SELECT COUNT(*) FROM books').first.values.first as int;
-    final rows =
-        conn.select('SELECT ${selected.join(', ')} FROM books ORDER BY id');
+    final rows = conn.select(
+      'SELECT ${selected.join(', ')} FROM books ORDER BY id',
+    );
 
     final result = CalibreImportResult();
     var done = 0;
     for (final row in rows) {
       done++;
       try {
-        if (_importRow(conn, library, root, row, bookCols)) {
+        if (_importRow(conn, library, paths, row, bookCols)) {
           result.added++;
         } else {
           result.skipped++;
@@ -79,9 +98,11 @@ CalibreImportResult _importCalibreLibrary(
           result.firstError = '${e.runtimeType}: $e';
         }
       }
-      if (progress != null && (done % 25 == 0 || done == total)) {
+      if (progress != null &&
+          (done % _progressEveryRows == 0 || done == total)) {
         progress(done, total);
       }
+      await Future<void>.delayed(Duration.zero);
     }
     return result;
   } finally {
@@ -165,20 +186,20 @@ String? _snapshotRoot(Library library) {
   }
 }
 
-bool _hasTable(Database conn, String name) => conn
-    .select("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        [name])
-    .isNotEmpty;
+bool _hasTable(Database conn, String name) => conn.select(
+  "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+  [name],
+).isNotEmpty;
 
 Set<String> _columns(Database conn, String table) => {
-      for (final row in conn.select('PRAGMA table_info($table)'))
-        row.values[1].toString(),
-    };
+  for (final row in conn.select('PRAGMA table_info($table)'))
+    row.values[1].toString(),
+};
 
 List<String> _values(Database conn, String sql, int bookId) => [
-      for (final row in conn.select(sql, [bookId]))
-        if (row.values.first != null) row.values.first.toString(),
-    ];
+  for (final row in conn.select(sql, [bookId]))
+    if (row.values.first != null) row.values.first.toString(),
+];
 
 /// Run an optional calibre metadata query, falling back to [fallback].
 ///
@@ -194,8 +215,7 @@ T _optional<T>(T fallback, T Function() fn) {
 }
 
 List<String> _authorNames(Database conn, int bookId) {
-  if (!(_hasTable(conn, 'authors') &&
-      _hasTable(conn, 'books_authors_link'))) {
+  if (!(_hasTable(conn, 'authors') && _hasTable(conn, 'books_authors_link'))) {
     return [];
   }
   return _values(
@@ -252,13 +272,16 @@ String _language(Database conn, int bookId) {
 
 String _description(Database conn, int bookId) {
   if (!_hasTable(conn, 'comments')) return '';
-  final rows = _values(conn, 'SELECT text FROM comments WHERE book = ?', bookId);
+  final rows = _values(
+    conn,
+    'SELECT text FROM comments WHERE book = ?',
+    bookId,
+  );
   return rows.isNotEmpty ? htmlToText(rows.first) : '';
 }
 
 double _rating(Database conn, int bookId) {
-  if (!(_hasTable(conn, 'ratings') &&
-      _hasTable(conn, 'books_ratings_link'))) {
+  if (!(_hasTable(conn, 'ratings') && _hasTable(conn, 'books_ratings_link'))) {
     return 0.0;
   }
   final rows = _values(
@@ -290,54 +313,89 @@ String _isbn(Database conn, Row row, Set<String> bookCols) {
 
 /// Map lowercase format name to an existing file inside the library.
 Map<String, String> _formatFiles(
-    Database conn, String root, int bookId, String bookPath) {
+  Database conn,
+  _LibraryPaths paths,
+  int bookId,
+  String bookPath,
+) {
   if (!_hasTable(conn, 'data')) return {};
   if (!_columns(conn, 'data').containsAll({'book', 'format', 'name'})) {
     return {};
   }
-  final bookDir = _joinInside(root, [bookPath]);
+  final bookDir = paths.path([bookPath]);
   if (bookDir.isEmpty || !Directory(bookDir).existsSync()) return {};
   final List<FileSystemEntity> entries;
   try {
-    entries = Directory(bookDir).listSync();
+    // followLinks: false keeps a symlinked directory from being walked. Every
+    // listed name is still resolved by paths.file, which rejects links that
+    // lead outside the library and entries that are not regular files.
+    entries = Directory(bookDir).listSync(followLinks: false);
   } on FileSystemException {
     return {};
   }
   final byLower = {
-    for (final e in entries) p.basename(e.path).toLowerCase(): p.basename(e.path),
+    for (final e in entries)
+      p.basename(e.path).toLowerCase(): p.basename(e.path),
   };
 
   final found = <String, String>{};
-  for (final row
-      in conn.select('SELECT format, name FROM data WHERE book = ?', [bookId])) {
+  for (final row in conn.select(
+    'SELECT format, name FROM data WHERE book = ?',
+    [bookId],
+  )) {
     final fmt = (row['format']?.toString() ?? '').trim().toLowerCase();
     final base = p.basename((row['name']?.toString() ?? '').trim());
     if (fmt.isEmpty || base.isEmpty) continue;
     final filename = byLower['$base.$fmt'.toLowerCase()];
-    if (filename != null) found[fmt] = p.join(bookDir, filename);
+    if (filename == null) continue;
+    final file = paths.file([bookPath, filename]);
+    if (file.isNotEmpty) found[fmt] = file;
   }
   return found;
 }
 
-String _coverFile(String root, String bookPath, Object? hasCover) {
+String _coverFile(_LibraryPaths paths, String bookPath, Object? hasCover) {
   if (hasCover == null || hasCover == 0 || hasCover == false) return '';
-  final bookDir = _joinInside(root, [bookPath]);
-  if (bookDir.isEmpty) return '';
   for (final name in ['cover.jpg', 'cover.jpeg', 'cover.png']) {
-    final candidate = p.join(bookDir, name);
-    if (File(candidate).existsSync()) return candidate;
+    final cover = paths.file([bookPath, name]);
+    if (cover.isNotEmpty) return cover;
   }
   return '';
 }
 
-/// Join [parts] to [root], refusing paths outside the library.
-String _joinInside(String root, List<String> parts) {
-  final candidate = p.normalize(p.absolute(p.joinAll([root, ...parts])));
-  final rootAbs = p.normalize(p.absolute(root));
-  if (candidate != rootAbs && !candidate.startsWith('$rootAbs${p.separator}')) {
-    return '';
+/// Reads paths from one calibre library without letting a path leave it.
+///
+/// Calibre stores book paths in `metadata.db`, so they are untrusted input.
+/// A lexical prefix check is not enough: the library may hold a symbolic link
+/// (a book directory or a format file) that points outside it. [ContainedRoot]
+/// resolves both the library and the candidate, so such a link is rejected;
+/// a target that does not exist yet is checked through its deepest existing
+/// ancestor. Accepted paths keep their lexical spelling, so a library reached
+/// through a symlinked folder keeps the names calibre recorded.
+final class _LibraryPaths {
+  _LibraryPaths(this.root) : _contained = ContainedRoot.resolve(root);
+
+  /// Lexical absolute form of the library root.
+  final String root;
+
+  final ContainedRoot? _contained;
+
+  /// Lexical absolute path named by [parts], or '' when its real path leaves
+  /// the library.
+  String path(List<String> parts) => _accepted(parts, false) ?? '';
+
+  /// Like [path], but the target must also be an existing regular file.
+  String file(List<String> parts) => _accepted(parts, true) ?? '';
+
+  String? _accepted(List<String> parts, bool regularFile) {
+    final contained = _contained;
+    if (contained == null) return null;
+    final lexical = p.normalize(p.absolute(p.joinAll([root, ...parts])));
+    final real = regularFile
+        ? contained.file(lexical)
+        : contained.path(lexical);
+    return real == null ? null : lexical;
   }
-  return candidate;
 }
 
 String _pubdate(Object? value) {
@@ -347,18 +405,27 @@ String _pubdate(Object? value) {
 }
 
 /// Import one calibre row; return false if it is already present.
-bool _importRow(Database conn, Library library, String root, Row row,
-    Set<String> bookCols) {
+bool _importRow(
+  Database conn,
+  Library library,
+  _LibraryPaths paths,
+  Row row,
+  Set<String> bookCols,
+) {
   final bookId = row['id'] as int;
   final uuid = bookCols.contains('uuid')
       ? (row['uuid']?.toString() ?? '').trim()
       : '';
-  final sourceId = uuid.isNotEmpty ? 'calibre:$uuid' : 'calibre:$root:$bookId';
+  final sourceId = uuid.isNotEmpty
+      ? 'calibre:$uuid'
+      : 'calibre:${paths.root}:$bookId';
   if (library.findBySourceId(sourceId) != null) return false;
 
   final bookPath = row['path']?.toString() ?? '';
   final files = _optional(
-      <String, String>{}, () => _formatFiles(conn, root, bookId, bookPath));
+    <String, String>{},
+    () => _formatFiles(conn, paths, bookId, bookPath),
+  );
   var preferred = '';
   for (final fmt in _preferredFormats) {
     if (files.containsKey(fmt)) {
@@ -372,7 +439,9 @@ bool _importRow(Database conn, Library library, String root, Row row,
   final title = (row['title']?.toString() ?? '').trim();
   final book = Book(
     title: title.isEmpty ? 'Untitled' : title,
-    sort: bookCols.contains('sort') ? (row['sort']?.toString() ?? '').trim() : '',
+    sort: bookCols.contains('sort')
+        ? (row['sort']?.toString() ?? '').trim()
+        : '',
     authors: _optional(<String>[], () => _authorNames(conn, bookId)),
     isbn: _optional('', () => _isbn(conn, row, bookCols)),
     publisher: _optional('', () => _publisher(conn, bookId)),
@@ -381,7 +450,7 @@ bool _importRow(Database conn, Library library, String root, Row row,
     description: _optional('', () => _description(conn, bookId)),
     tags: _optional(<String>[], () => _tagNames(conn, bookId)),
     formats: files.keys.toList()..sort(),
-    coverPath: _coverFile(root, bookPath, hasCover),
+    coverPath: _coverFile(paths, bookPath, hasCover),
     path: preferred,
     rating: _optional(0.0, () => _rating(conn, bookId)),
     sourceId: sourceId,

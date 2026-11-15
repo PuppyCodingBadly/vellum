@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../metadata.dart';
+import '../universal.dart';
 
 const _apiUrl = 'https://www.googleapis.com/books/v1/volumes';
 
@@ -35,30 +36,33 @@ class GoogleBooks extends MetadataSource {
   }
 
   @override
-  Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> searchFreeText(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     query = query.trim();
     if (query.isEmpty) return [];
     return _query(query, client, timeout);
   }
 
-  Future<List<Metadata>> _query(String q, http.Client? client,
-      Duration timeout) async {
+  Future<List<Metadata>> _query(
+    String q,
+    http.Client? client,
+    Duration timeout,
+  ) async {
     final httpClient = client ?? http.Client();
     try {
-      final uri = Uri.parse(_apiUrl).replace(queryParameters: {
-        'q': q,
-        'maxResults': '20',
-        'langRestrict': 'en',
-      });
+      final uri = Uri.parse(_apiUrl).replace(
+        queryParameters: {'q': q, 'maxResults': '20', 'langRestrict': 'en'},
+      );
       final resp = await httpClient.get(uri).timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final items = (data['items'] as List?) ?? [];
       return [
         for (final item in items)
-          if (_parseItem(item as Map<String, Object?>) case final meta?) meta
+          if (_parseItem(item as Map<String, Object?>) case final meta?) meta,
       ];
     } catch (_) {
       return [];
@@ -68,19 +72,20 @@ class GoogleBooks extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (meta.coverUrl.isEmpty) return null;
-    final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient.get(Uri.parse(meta.coverUrl)).timeout(timeout);
-      if (resp.statusCode != 200) return null;
-      return resp.bodyBytes;
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
-    } finally {
-      if (client == null) httpClient.close();
     }
   }
 
@@ -89,8 +94,7 @@ class GoogleBooks extends MetadataSource {
     if (info == null || info.isEmpty) return null;
     var isbn = '';
     var isbn10 = '';
-    for (final ident
-        in (info['industryIdentifiers'] as List?) ?? const []) {
+    for (final ident in (info['industryIdentifiers'] as List?) ?? const []) {
       final map = ident as Map<String, Object?>;
       final value = (map['identifier'] as String?) ?? '';
       if (map['type'] == 'ISBN_13') {
@@ -119,7 +123,7 @@ class GoogleBooks extends MetadataSource {
       description: (info['description'] as String?) ?? '',
       tags:
           (info['categories'] as List?)?.map((e) => e.toString()).toList() ??
-              [],
+          [],
       rating: rating,
       coverUrl: coverUrl,
       sourceId: (item['id'] as String?) ?? '',

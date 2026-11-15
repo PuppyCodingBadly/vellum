@@ -1,6 +1,7 @@
 /// Tests for the universal URL metadata grabber.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -91,7 +92,10 @@ void main() {
 
   test('normalize url adds scheme', () {
     expect(normalizeUrl('example.com/book'), 'https://example.com/book');
-    expect(normalizeUrl('https://example.com/book'), 'https://example.com/book');
+    expect(
+      normalizeUrl('https://example.com/book'),
+      'https://example.com/book',
+    );
     expect(normalizeUrl(''), '');
   });
 
@@ -103,39 +107,58 @@ void main() {
   });
 
   test('grab rejects search strings', () {
-    expect(() => UniversalGrabber().grab('Dune Frank Herbert'),
-        throwsFormatException);
+    expect(
+      () => UniversalGrabber().grab('Dune Frank Herbert'),
+      throwsFormatException,
+    );
   });
 
   test('grab decodes latin1 charset', () async {
     final client = MockClient((request) async {
       final body = latin1.encode(
-          '<html><head><title>Caf\xe9 Society</title></head></html>');
-      return http.Response.bytes(body, 200, headers: {
-        'content-type': 'text/html; charset=iso-8859-1',
-      });
+        '<html><head><title>Caf\xe9 Society</title></head></html>',
+      );
+      return http.Response.bytes(
+        body,
+        200,
+        headers: {'content-type': 'text/html; charset=iso-8859-1'},
+      );
     });
-    final meta = await UniversalGrabber()
-        .grab('https://example.com/book', client: client);
+    final meta = await UniversalGrabber().grab(
+      'https://example.com/book',
+      client: client,
+    );
     expect(meta, isNotNull);
     expect(meta!.title, 'Caf\xe9 Society');
   });
 
   test('grab decodes latin1 for text/html without declared charset', () async {
-    final client = MockClient((request) async => http.Response(
-        '<html><head><title>Café</title></head></html>', 200,
-        headers: {'content-type': 'text/html'}));
-    final meta = await UniversalGrabber()
-        .grab('https://example.com/book', client: client);
+    final client = MockClient(
+      (request) async => http.Response(
+        '<html><head><title>Café</title></head></html>',
+        200,
+        headers: {'content-type': 'text/html'},
+      ),
+    );
+    final meta = await UniversalGrabber().grab(
+      'https://example.com/book',
+      client: client,
+    );
     expect(meta!.title, 'Café');
   });
 
   test('grab decodes utf-8 for non-text types without charset', () async {
-    final client = MockClient((request) async => http.Response.bytes(
-        utf8.encode('<html><head><title>Café</title></head></html>'), 200,
-        headers: {'content-type': 'application/xhtml+xml'}));
-    final meta = await UniversalGrabber()
-        .grab('https://example.com/book', client: client);
+    final client = MockClient(
+      (request) async => http.Response.bytes(
+        utf8.encode('<html><head><title>Café</title></head></html>'),
+        200,
+        headers: {'content-type': 'application/xhtml+xml'},
+      ),
+    );
+    final meta = await UniversalGrabber().grab(
+      'https://example.com/book',
+      client: client,
+    );
     expect(meta!.title, 'Café');
   });
 
@@ -196,8 +219,12 @@ void main() {
   });
 
   test('engine merge results', () {
-    final first =
-        Metadata(title: 'Book', authors: ['A'], description: 'short', rating: 3.0);
+    final first = Metadata(
+      title: 'Book',
+      authors: ['A'],
+      description: 'short',
+      rating: 3.0,
+    );
     final second = Metadata(
       title: 'Book',
       authors: ['B'],
@@ -215,4 +242,121 @@ void main() {
     expect(merged.rating, 4.0);
     expect(merged.sourceName, 'Merged sources');
   });
+
+  test(
+    'grab uses the redirected URL as the base for relative covers',
+    () async {
+      final client = _UrlClient(
+        Uri.parse('https://final.example/books/42'),
+        '<html><head><meta property="og:title" content="Dune">'
+        '<meta property="og:image" content="/cover.jpg"></head></html>',
+      );
+      final meta = await UniversalGrabber().grab(
+        'https://short.example/x',
+        client: client,
+      );
+      expect(meta, isNotNull);
+      expect(meta!.coverUrl, 'https://final.example/cover.jpg');
+      expect(meta.sourceId, 'universal:https://final.example/books/42');
+      expect(meta.sourceName, 'final.example');
+    },
+  );
+
+  test('a stalled body times out instead of hanging', () async {
+    final body = StreamController<List<int>>();
+    addTearDown(body.close);
+    final client = _ScriptedClient(
+      (request) async => http.StreamedResponse(
+        body.stream,
+        200,
+        headers: {'content-type': 'image/jpeg'},
+      ),
+    );
+    await expectLater(
+      fetchCoverBytes(
+        'https://example.com/cover.jpg',
+        client: client,
+        timeout: const Duration(milliseconds: 20),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+  });
+
+  test('a cover body over the cap is rejected', () async {
+    final client = _ScriptedClient(
+      (request) async => http.StreamedResponse(
+        Stream.value(List<int>.filled(maxCoverBytes + 1, 1)),
+        200,
+        headers: {'content-type': 'image/jpeg'},
+      ),
+    );
+    expect(
+      await fetchCoverBytes('https://example.com/cover.jpg', client: client),
+      isNull,
+    );
+  });
+
+  test('readBodyCapped stops at the cap and reports truncation', () async {
+    final response = http.StreamedResponse(
+      Stream.fromIterable([
+        List<int>.filled(4, 1),
+        List<int>.filled(4, 2),
+        List<int>.filled(4, 3),
+      ]),
+      200,
+    );
+    final written = <int>[];
+    final read = await readBodyCapped(
+      response,
+      onChunk: written.addAll,
+      maxBytes: 8,
+      idleTimeout: const Duration(seconds: 1),
+    );
+    expect(read.length, 8);
+    expect(read.truncated, isTrue);
+    expect(written, hasLength(8));
+  });
+
+  test('readBodyCapped reports a body that fits exactly', () async {
+    final read = await readBodyCapped(
+      http.StreamedResponse(Stream.value(List<int>.filled(8, 0)), 200),
+      onChunk: (_) {},
+      maxBytes: 8,
+      idleTimeout: const Duration(seconds: 1),
+    );
+    expect(read.length, 8);
+    expect(read.truncated, isFalse);
+  });
+}
+
+/// A client that reports the URL it was redirected to.
+class _UrlClient extends http.BaseClient {
+  _UrlClient(this.url, this.html);
+
+  final Uri url;
+  final String html;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async =>
+      _UrlResponse(Stream.value(utf8.encode(html)), 200, url);
+}
+
+class _UrlResponse extends http.StreamedResponse
+    implements http.BaseResponseWithUrl {
+  _UrlResponse(super.stream, super.statusCode, this.url);
+
+  @override
+  final Uri url;
+}
+
+/// A client with a scripted streaming response.
+class _ScriptedClient extends http.BaseClient {
+  _ScriptedClient(this.handler);
+
+  final Future<http.StreamedResponse> Function(http.BaseRequest request)
+  handler;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) =>
+      handler(request);
 }

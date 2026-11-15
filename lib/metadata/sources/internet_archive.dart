@@ -7,9 +7,9 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../metadata.dart';
+import '../universal.dart';
 
 const _apiUrl = 'https://archive.org/advancedsearch.php';
-const _maxCoverBytes = 10 * 1024 * 1024;
 const _fields = [
   'identifier',
   'title',
@@ -51,9 +51,11 @@ class InternetArchive extends MetadataSource {
   }
 
   @override
-  Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> searchFreeText(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     query = query.trim();
     if (query.isEmpty) return [];
     return _query(
@@ -64,7 +66,10 @@ class InternetArchive extends MetadataSource {
   }
 
   Future<List<Metadata>> _query(
-      String q, http.Client? client, Duration timeout) async {
+    String q,
+    http.Client? client,
+    Duration timeout,
+  ) async {
     final httpClient = client ?? http.Client();
     try {
       // fl[] must be repeated per field.
@@ -73,16 +78,16 @@ class InternetArchive extends MetadataSource {
         params.write('&fl%5B%5D=${Uri.encodeQueryComponent(field)}');
       }
       params.write('&rows=20&output=json');
-      final resp =
-          await httpClient.get(Uri.parse('$_apiUrl?$params')).timeout(timeout);
+      final resp = await httpClient
+          .get(Uri.parse('$_apiUrl?$params'))
+          .timeout(timeout);
       if (resp.statusCode != 200) return [];
       final data = jsonDecode(resp.body) as Map<String, Object?>;
       final docs =
-          ((data['response'] as Map<String, Object?>?)?['docs'] as List?) ??
-              [];
+          ((data['response'] as Map<String, Object?>?)?['docs'] as List?) ?? [];
       return [
         for (final doc in docs)
-          if (_parseDoc(doc as Map<String, Object?>) case final meta?) meta
+          if (_parseDoc(doc as Map<String, Object?>) case final meta?) meta,
       ];
     } catch (_) {
       return [];
@@ -92,31 +97,20 @@ class InternetArchive extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (meta.coverUrl.isEmpty) return null;
-    final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient
-          .send(http.Request('GET', Uri.parse(meta.coverUrl)))
-          .timeout(timeout);
-      final contentType = (resp.headers['content-type'] ?? '').toLowerCase();
-      if (contentType.isNotEmpty && !contentType.startsWith('image/')) {
-        return null;
-      }
-      final builder = BytesBuilder();
-      var size = 0;
-      await for (final chunk in resp.stream) {
-        size += chunk.length;
-        if (size > _maxCoverBytes) return null;
-        builder.add(chunk);
-      }
-      return builder.takeBytes();
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
-    } finally {
-      if (client == null) httpClient.close();
     }
   }
 

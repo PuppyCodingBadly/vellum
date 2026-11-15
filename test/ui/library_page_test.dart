@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:vellum/app_state.dart';
 import 'package:vellum/core/config.dart';
 import 'package:vellum/core/db.dart';
+import 'package:vellum/core/models.dart';
 import 'package:vellum/fts/indexer.dart';
 import 'package:vellum/metadata/engine.dart';
 import 'package:vellum/plugins/plugin_controller.dart';
@@ -35,24 +36,60 @@ void main() {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
-  testWidgets('a search with no hits says so instead of rendering nothing',
-      (tester) async {
+  testWidgets('a search with no hits says so instead of rendering nothing', (
+    tester,
+  ) async {
     await state.setSearchQuery('nonexistent');
-    await tester.pumpWidget(AppStateScope(
-      state: state,
-      child: const MaterialApp(home: Scaffold(body: LibraryPage())),
-    ));
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: Scaffold(body: LibraryPage())),
+      ),
+    );
 
     expect(find.text('No results for “nonexistent”.'), findsOneWidget);
   });
 
-  testWidgets('an empty library explains itself when not searching',
-      (tester) async {
-    await tester.pumpWidget(AppStateScope(
-      state: state,
-      child: const MaterialApp(home: Scaffold(body: LibraryPage())),
-    ));
+  testWidgets('an empty library explains itself when not searching', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: Scaffold(body: LibraryPage())),
+      ),
+    );
 
     expect(find.text('No books in your library yet.'), findsOneWidget);
+  });
+
+  testWidgets('build renders cached FTS hits without querying the database', (
+    tester,
+  ) async {
+    final id = library.addBook(
+      Book(
+        title: 'Novel',
+        path: p.join(tmp.path, 'novel.epub'),
+        formats: const ['epub'],
+      ),
+    );
+    library.replaceBookFts(id, [
+      {'chapter': 0, 'title': 'Start', 'content': 'the moonstone glows'},
+    ]);
+    await state.setSearchQuery('moonstone');
+    expect(state.contentHits, hasLength(1));
+
+    // Any query inside build() would throw on the closed handle.
+    library.close();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: Scaffold(body: LibraryPage())),
+      ),
+    );
+
+    expect(find.text('In book text'), findsOneWidget);
+    expect(find.textContaining('moonstone'), findsWidgets);
   });
 }

@@ -2,10 +2,12 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -50,10 +52,14 @@ class _ReaderPageState extends State<ReaderPage> {
   Offset _pointer = Offset.zero;
 
   int _lastIndex = 0;
+  int _lastSerial = -1;
   int _selectionEpoch = 0;
-  double _contentWidth = 600;
   int? _pendingJumpOffset;
   double? _pendingRestore;
+  bool _navigationScheduled = false;
+  bool _navigationPending = false;
+  bool _chapterReady = true;
+  GlobalKey _textLayoutKey = GlobalKey(debugLabel: 'reader-text');
   String _currentContentKey = '';
   bool _focusRequested = false;
 
@@ -105,7 +111,14 @@ class _ReaderPageState extends State<ReaderPage> {
     final appState = _appState;
     if (appState != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(appState.refresh());
+        // The library may already be closed by the time this frame runs
+        // (tests, or a page torn down with the app); a closed library is not
+        // an error worth surfacing from a refresh nobody awaits.
+        unawaited(
+          appState.refresh().catchError((Object error) {
+            if (error is! StateError) throw error;
+          }),
+        );
       });
     }
     super.dispose();
@@ -117,6 +130,7 @@ class _ReaderPageState extends State<ReaderPage> {
     final controller = _controller;
     if (controller == null || !mounted) return;
     final restore = controller.takePendingScrollFraction();
+    final jump = controller.takePendingJumpOffset();
     final indexChanged = controller.index != _lastIndex;
     if (indexChanged) {
       _lastIndex = controller.index;
@@ -124,22 +138,84 @@ class _ReaderPageState extends State<ReaderPage> {
       _pendingSelection = null;
       _removeSelectionOverlay();
     }
-    if (restore != null) _pendingRestore = restore;
-    if (restore != null || indexChanged || _pendingJumpOffset != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final restoreFraction = _pendingRestore;
-        _pendingRestore = null;
-        if (restoreFraction != null) {
-          _applyScrollFraction(restoreFraction);
-          return;
-        }
-        if (_scrollController.hasClients) _scrollController.jumpTo(0);
-        final jump = _pendingJumpOffset;
-        _pendingJumpOffset = null;
-        if (jump != null) _jumpToDocumentOffset(jump);
-      });
+    if (controller.documentSerial != _lastSerial) {
+      _lastSerial = controller.documentSerial;
+      _chapterReady = false;
+      _decodeChapterImages(_lastSerial);
     }
+    if (restore != null) _pendingRestore = restore;
+    if (jump != null) _pendingJumpOffset = jump;
+    if (restore != null || jump != null || indexChanged) {
+      _scheduleNavigation();
+    }
+  }
+
+  /// Coalesces the notifications of one navigation into a single frame.
+  void _scheduleNavigation() {
+    _navigationPending = true;
+    if (_navigationScheduled) return;
+    _navigationScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _navigationScheduled = false;
+      if (mounted) _applyPendingNavigation();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _applyPendingNavigation() {
+    // A restore or a jump measures rendered pixels, so it waits until the
+    // chapter's inline images can reserve their space; [_decodeChapterImages]
+    // re-runs this once they have.
+    if (!_chapterReady || !_navigationPending) return;
+    _navigationPending = false;
+    final restore = _pendingRestore;
+    final jump = _pendingJumpOffset;
+    _pendingRestore = null;
+    _pendingJumpOffset = null;
+    if (restore == null && jump == null) {
+      if (_scrollController.hasClients) _scrollController.jumpTo(0);
+      return;
+    }
+    if (restore != null) {
+      _applyScrollFraction(restore);
+    } else {
+      _jumpToDocumentOffset(jump!);
+    }
+  }
+
+  /// Decodes the chapter's inline images, then marks the chapter ready.
+  ///
+  /// Until an image is decoded its [WidgetSpan] has no intrinsic size, so a
+  /// fraction or document offset measured before then points at the wrong
+  /// pixel. The text is not rendered until this completes.
+  void _decodeChapterImages(int serial) {
+    final document = _controller?.document;
+    final paths = <String>{
+      for (final image in document?.images ?? const <DocumentImage>[])
+        if (image.path != null) image.path!,
+    };
+    if (paths.isEmpty) {
+      _chapterReady = true;
+      return;
+    }
+    unawaited(
+      Future.wait(<Future<void>>[
+        for (final path in paths)
+          precacheImage(
+            FileImage(File(path)),
+            context,
+            onError: (Object error, StackTrace? stackTrace) {},
+          ),
+      ]).then((_) {
+        if (!mounted || _controller?.documentSerial != serial) return;
+        setState(() => _chapterReady = true);
+        // The navigation must measure the frame that includes the decoded
+        // images, not the previous, image-less layout.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _applyPendingNavigation();
+        });
+      }),
+    );
   }
 
   void _applyScrollFraction(double fraction) {
@@ -154,30 +230,67 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// Scrolls to the line holding [documentOffset].
+  ///
+  /// The rendered paragraph owns the document-to-pixel mapping: its layout
+  /// includes the inline image placeholders, unlike a standalone text model.
   void _jumpToDocumentOffset(int documentOffset) {
     final controller = _controller;
     final document = controller?.document;
     if (controller == null || document == null) return;
     if (!_scrollController.hasClients) return;
-    final colors = _currentColors();
-    final span = _buildTextSpan(document, controller, colors, _contentWidth);
-    final painter = TextPainter(
-      text: _measurementSpan(span),
-      textDirection: TextDirection.ltr,
-      textScaler: TextScaler.noScaling,
-    )..layout(maxWidth: _contentWidth);
+    final text = _findRenderEditable();
+    if (text == null || !text.hasSize) return;
     final renderedOffset = document.documentStartToRendered(documentOffset);
-    final caret = painter.getOffsetForCaret(
+    final caret = text.getLocalRectForCaret(
       TextPosition(offset: renderedOffset),
-      Rect.zero,
     );
+    final RenderObject? viewport = _outerViewport(text);
+    if (viewport is! RenderBox) return;
     final position = _scrollController.position;
-    final target = caret.dy - position.viewportDimension / 3;
+    final caretGlobal = text.localToGlobal(caret.topLeft);
+    final viewportGlobal = viewport.localToGlobal(Offset.zero);
+    final target =
+        position.pixels +
+        (caretGlobal.dy - viewportGlobal.dy) -
+        position.viewportDimension / 3;
     _scrollController.jumpTo(
       target
           .clamp(position.minScrollExtent, position.maxScrollExtent)
           .toDouble(),
     );
+  }
+
+  /// The paragraph currently rendering the chapter, if it is laid out.
+  RenderEditable? _findRenderEditable() {
+    final root = _textLayoutKey.currentContext?.findRenderObject();
+    if (root == null) return null;
+    RenderEditable? found;
+    void visit(RenderObject object) {
+      if (found != null) return;
+      if (object is RenderEditable) {
+        found = object;
+        return;
+      }
+      object.visitChildren(visit);
+    }
+
+    visit(root);
+    return found;
+  }
+
+  /// The outermost scrolling viewport around [target].
+  ///
+  /// EditableText nests a Scrollable of its own, so the innermost viewport is
+  /// not the reader's page scroller.
+  RenderAbstractViewport? _outerViewport(RenderObject target) {
+    var viewport = RenderAbstractViewport.maybeOf(target);
+    while (viewport != null) {
+      final outer = RenderAbstractViewport.maybeOf(viewport.parent);
+      if (outer == null) return viewport;
+      viewport = outer;
+    }
+    return null;
   }
 
   // -- navigation ------------------------------------------------------------
@@ -639,8 +752,10 @@ class _ReaderPageState extends State<ReaderPage> {
           ? null
           : Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child:
-                  Text('Chapters', style: TextStyle(color: colors.foreground)),
+              child: Text(
+                'Chapters',
+                style: TextStyle(color: colors.foreground),
+              ),
             ),
     );
   }
@@ -802,24 +917,9 @@ class _ReaderPageState extends State<ReaderPage> {
   void _jumpToHighlight(int id) {
     final controller = _controller;
     if (controller == null) return;
-    ReaderHighlight? target;
-    for (final highlight in controller.highlights) {
-      if (highlight.id == id) {
-        target = highlight;
-        break;
-      }
-    }
-    if (target == null) return;
-    _pendingJumpOffset = target.start;
-    if (target.chapter == controller.index) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final offset = _pendingJumpOffset;
-        _pendingJumpOffset = null;
-        if (offset != null) _jumpToDocumentOffset(offset);
-      });
-    } else {
-      controller.goTo(target.chapter);
+    if (!controller.goToHighlight(id)) {
+      _pendingJumpOffset = null;
+      _appState?.showToast('This highlight is no longer in the book');
     }
   }
 
@@ -931,8 +1031,9 @@ class _ReaderPageState extends State<ReaderPage> {
                 IconButton(
                   tooltip: 'Previous',
                   icon: const Icon(Icons.chevron_left),
-                  onPressed:
-                      hasItems && controller.index > 0 ? _previous : null,
+                  onPressed: hasItems && controller.index > 0
+                      ? _previous
+                      : null,
                 ),
                 IconButton(
                   tooltip: 'Next',
@@ -1058,8 +1159,13 @@ class _ReaderPageState extends State<ReaderPage> {
       return Center(child: CircularProgressIndicator(color: colors.foreground));
     }
     final fontSize = _baseFontSize * controller.fontScale;
-    _currentContentKey =
-        'text-${controller.documentSerial}-${controller.index}';
+    final contentKey = 'text-${controller.documentSerial}-${controller.index}';
+    if (contentKey != _currentContentKey) {
+      _currentContentKey = contentKey;
+      // A fresh key per chapter keeps the outgoing AnimatedSwitcher child
+      // from sharing the key used to measure the incoming paragraph.
+      _textLayoutKey = GlobalKey(debugLabel: 'reader-text');
+    }
     return GestureDetector(
       onHorizontalDragEnd: _onSwipe,
       child: Listener(
@@ -1087,7 +1193,6 @@ class _ReaderPageState extends State<ReaderPage> {
                     final width = math
                         .min(40 * fontSize, constraints.maxWidth)
                         .toDouble();
-                    _contentWidth = width;
                     return AnimatedSwitcher(
                       duration: _animationEnabled
                           ? _animationDuration
@@ -1096,23 +1201,34 @@ class _ReaderPageState extends State<ReaderPage> {
                       child: SizedBox(
                         key: ValueKey<String>(_currentContentKey),
                         width: width,
-                        child: SelectableText.rich(
-                          _buildTextSpan(document, controller, colors, width),
-                          key: ValueKey<int>(_selectionEpoch),
-                          maxLines: null,
-                          style: TextStyle(
-                            fontFamily: kReaderFont,
-                            color: colors.foreground,
-                            fontSize: fontSize,
-                            height: 1.62,
-                          ),
-                          textScaler: TextScaler.noScaling,
-                          selectionColor: colors.foreground.withValues(
-                            alpha: 0.25,
-                          ),
-                          onSelectionChanged: _onSelectionChanged,
-                          contextMenuBuilder: (context, editableTextState) =>
-                              const SizedBox.shrink(),
+                        child: KeyedSubtree(
+                          key: _textLayoutKey,
+                          child: _chapterReady
+                              ? SelectableText.rich(
+                                  _buildTextSpan(
+                                    document,
+                                    controller,
+                                    colors,
+                                    width,
+                                  ),
+                                  key: ValueKey<int>(_selectionEpoch),
+                                  maxLines: null,
+                                  style: TextStyle(
+                                    fontFamily: kReaderFont,
+                                    color: colors.foreground,
+                                    fontSize: fontSize,
+                                    height: 1.62,
+                                  ),
+                                  textScaler: TextScaler.noScaling,
+                                  selectionColor: colors.foreground.withValues(
+                                    alpha: 0.25,
+                                  ),
+                                  onSelectionChanged: _onSelectionChanged,
+                                  contextMenuBuilder:
+                                      (context, editableTextState) =>
+                                          const SizedBox.shrink(),
+                                )
+                              : const SizedBox.shrink(),
                         ),
                       ),
                     );
@@ -1296,22 +1412,6 @@ class _ReaderPageState extends State<ReaderPage> {
     return SlideTransition(position: tween.animate(animation), child: child);
   }
 
-  /// Replaces inline widgets with a placeholder character so a standalone
-  /// [TextPainter] can measure the line occupied by [span].
-  TextSpan _measurementSpan(TextSpan span) {
-    final children = <InlineSpan>[];
-    for (final child in span.children ?? const <InlineSpan>[]) {
-      if (child is WidgetSpan) {
-        children.add(TextSpan(text: '\uFFFC', style: span.style));
-      } else if (child is TextSpan) {
-        children.add(_measurementSpan(child));
-      } else {
-        children.add(child);
-      }
-    }
-    return TextSpan(style: span.style, children: children);
-  }
-
   TextSpan _buildTextSpan(
     DocumentModel document,
     ReaderController controller,
@@ -1467,9 +1567,7 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return Center(
-        child: CircularProgressIndicator(color: widget.foreground),
-      );
+      return Center(child: CircularProgressIndicator(color: widget.foreground));
     }
     final atlas = _atlas;
     if (atlas == null) {
@@ -1522,16 +1620,13 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
     var first = true;
     for (final line in paragraph.lines) {
       for (final word in line.words) {
-        if (!first) {
+        if (!first && word.breakBefore != PdfWordBreak.wideCharacter) {
           // A real widget gap, not a text space: word sprites carry no
           // trailing advance, and a tiny space glyph is too narrow to see.
           spans.add(
             WidgetSpan(
               alignment: PlaceholderAlignment.bottom,
-              child: SizedBox(
-                width: widget.fontSize * 0.27,
-                height: 1,
-              ),
+              child: SizedBox(width: widget.fontSize * 0.27, height: 1),
             ),
           );
         }
@@ -1690,12 +1785,7 @@ class _WordSpritePainter extends CustomPainter {
     final paint = Paint()
       ..colorFilter = ColorFilter.mode(color, BlendMode.srcIn)
       ..filterQuality = FilterQuality.medium;
-    canvas.drawImageRect(
-      atlas,
-      source,
-      Offset.zero & size,
-      paint,
-    );
+    canvas.drawImageRect(atlas, source, Offset.zero & size, paint);
   }
 
   @override

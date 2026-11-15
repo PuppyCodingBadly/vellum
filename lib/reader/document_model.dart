@@ -18,13 +18,16 @@ import 'package:flutter/material.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 
+import '../core/safe_paths.dart';
+
 /// An image referenced by a chapter document.
 class DocumentImage {
   /// Creates an image reference.
   const DocumentImage({this.path, this.alt = ''});
 
-  /// Absolute filesystem path, or null when the source cannot be resolved
-  /// (remote URLs and data URIs are not loaded).
+  /// Absolute filesystem path, or null when the source cannot be resolved:
+  /// remote URLs, data URIs, absolute paths, paths that escape the book root,
+  /// and missing files are not loaded.
   final String? path;
 
   /// Alternate text from the HTML `alt` attribute.
@@ -107,16 +110,22 @@ class DocumentModel {
 
   /// Parses [html] into a document. Relative image sources resolve against
   /// [baseDirectory].
+  ///
+  /// [rootDirectory] is the book's extraction root: image sources may climb
+  /// with `../` inside it, but never leave it. When null, [baseDirectory] is
+  /// the root, so a chapter cannot reach outside its own directory.
   factory DocumentModel.fromHtml(
     String html, {
     required String baseDirectory,
+    String? rootDirectory,
   }) {
     final parsed = html_parser.parse(html);
     final root = parsed.body ?? parsed.documentElement;
     final blocks = <_Block>[];
     if (root != null) {
+      final images = _ImageResolver(baseDirectory, rootDirectory);
       for (final node in root.nodes) {
-        _collectBlocks(node, blocks, baseDirectory);
+        _collectBlocks(node, blocks, images);
       }
     }
     return _assemble(blocks);
@@ -139,9 +148,9 @@ class DocumentModel {
 
   /// Images in document order.
   List<DocumentImage> get images => [
-        for (final segment in _segments)
-          if (segment is _ImageSegment) segment.image,
-      ];
+    for (final segment in _segments)
+      if (segment is _ImageSegment) segment.image,
+  ];
 
   /// Maps a document offset where a selection starts to a rendered offset,
   /// skipping images that precede the text at the same boundary.
@@ -191,14 +200,12 @@ class DocumentModel {
     final children = <InlineSpan>[];
     for (final segment in _segments) {
       if (segment is _ImageSegment) {
-        children.add(WidgetSpan(
-          alignment: PlaceholderAlignment.middle,
-          child: _imageWidget(
-            segment.image,
-            baseStyle.color,
-            maxImageWidth,
+        children.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: _imageWidget(segment.image, baseStyle.color, maxImageWidth),
           ),
-        ));
+        );
         continue;
       }
       final text = segment as _TextSegment;
@@ -222,12 +229,14 @@ class DocumentModel {
             break;
           }
         }
-        children.add(TextSpan(
-          text: text.text.substring(from - start, to - start),
-          style: background == null
-              ? style
-              : style.copyWith(backgroundColor: background),
-        ));
+        children.add(
+          TextSpan(
+            text: text.text.substring(from - start, to - start),
+            style: background == null
+                ? style
+                : style.copyWith(backgroundColor: background),
+          ),
+        );
       }
     }
     return TextSpan(style: baseStyle, children: children);
@@ -266,22 +275,19 @@ class DocumentModel {
     1.0,
   ];
 
-  TextStyle _textStyle(
-    _RunStyle run,
-    TextStyle base,
-    Color? linkColor,
-  ) {
+  TextStyle _textStyle(_RunStyle run, TextStyle base, Color? linkColor) {
     final decorations = <TextDecoration>[
       if (run.underline) TextDecoration.underline,
       if (run.lineThrough) TextDecoration.lineThrough,
     ];
     var style = TextStyle(
-      fontWeight:
-          run.bold || run.heading > 0 ? FontWeight.bold : FontWeight.normal,
-      fontStyle:
-          run.italic || run.quote ? FontStyle.italic : FontStyle.normal,
-      decoration:
-          decorations.isEmpty ? null : TextDecoration.combine(decorations),
+      fontWeight: run.bold || run.heading > 0
+          ? FontWeight.bold
+          : FontWeight.normal,
+      fontStyle: run.italic || run.quote ? FontStyle.italic : FontStyle.normal,
+      decoration: decorations.isEmpty
+          ? null
+          : TextDecoration.combine(decorations),
       fontFamily: run.code || run.pre ? 'monospace' : null,
     );
     if (run.heading > 0 && base.fontSize != null) {
@@ -304,17 +310,51 @@ class DocumentModel {
 // ---------------------------------------------------------------------------
 
 const Set<String> _blockTags = <String>{
-  'address', 'article', 'aside', 'blockquote', 'dd', 'div', 'dl', 'dt',
-  'figcaption', 'figure', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'header', 'li', 'main', 'nav', 'ol', 'p', 'pre', 'section', 'table',
-  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'figcaption',
+  'figure',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'li',
+  'main',
+  'nav',
+  'ol',
+  'p',
+  'pre',
+  'section',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'ul',
 };
 
 const Set<String> _skipTags = <String>{
-  'head', 'link', 'meta', 'script', 'style', 'title',
+  'head',
+  'link',
+  'meta',
+  'script',
+  'style',
+  'title',
 };
 
-void _collectBlocks(dom.Node node, List<_Block> out, String baseDirectory) {
+void _collectBlocks(dom.Node node, List<_Block> out, _ImageResolver images) {
   if (node is dom.Text) {
     if (node.data.trim().isEmpty) return;
     _addBlock(
@@ -332,9 +372,7 @@ void _collectBlocks(dom.Node node, List<_Block> out, String baseDirectory) {
     if (level != null && level >= 1 && level <= 6) {
       _addBlock(
         out,
-        _normalize(
-          _inline(node, _RunStyle(heading: level), baseDirectory),
-        ),
+        _normalize(_inline(node, _RunStyle(heading: level), images)),
       );
       return;
     }
@@ -342,58 +380,44 @@ void _collectBlocks(dom.Node node, List<_Block> out, String baseDirectory) {
 
   switch (tag) {
     case 'p':
-      _addBlock(
-        out,
-        _normalize(_inline(node, const _RunStyle(), baseDirectory)),
-      );
+      _addBlock(out, _normalize(_inline(node, const _RunStyle(), images)));
       break;
     case 'blockquote':
       _addBlock(
         out,
-        _normalize(
-          _inline(node, const _RunStyle(quote: true), baseDirectory),
-        ),
+        _normalize(_inline(node, const _RunStyle(quote: true), images)),
       );
       break;
     case 'pre':
       _addBlock(
         out,
-        _normalize(
-          <_RawFragment>[
-            _RawText(node.text, const _RunStyle(pre: true, code: true)),
-          ],
-          pre: true,
-        ),
+        _normalize(<_RawFragment>[
+          _RawText(node.text, const _RunStyle(pre: true, code: true)),
+        ], pre: true),
       );
       break;
     case 'ul':
     case 'ol':
       for (final child in node.nodes) {
-        _collectBlocks(child, out, baseDirectory);
+        _collectBlocks(child, out, images);
       }
       break;
     case 'li':
-      _addBlock(
-        out,
-        _normalize(_inline(node, const _RunStyle(), baseDirectory)),
-      );
+      _addBlock(out, _normalize(_inline(node, const _RunStyle(), images)));
       break;
     case 'img':
-      final image = _image(node, baseDirectory);
+      final image = _image(node, images);
       if (image != null) _addBlock(out, <_Fragment>[_ImageFragment(image)]);
       break;
     case 'tr':
-      _addBlock(
-        out,
-        _normalize(_inline(node, const _RunStyle(), baseDirectory)),
-      );
+      _addBlock(out, _normalize(_inline(node, const _RunStyle(), images)));
       break;
     case 'table':
     case 'tbody':
     case 'thead':
     case 'tfoot':
       for (final child in node.nodes) {
-        _collectBlocks(child, out, baseDirectory);
+        _collectBlocks(child, out, images);
       }
       break;
     case 'body':
@@ -411,30 +435,24 @@ void _collectBlocks(dom.Node node, List<_Block> out, String baseDirectory) {
     case 'dl':
     case 'dd':
     case 'dt':
-      _container(node, out, baseDirectory);
+      _container(node, out, images);
       break;
     case 'br':
     case 'hr':
       return;
     default:
-      _addBlock(
-        out,
-        _normalize(_inline(node, const _RunStyle(), baseDirectory)),
-      );
+      _addBlock(out, _normalize(_inline(node, const _RunStyle(), images)));
       break;
   }
 }
 
-void _container(dom.Element element, List<_Block> out, String baseDirectory) {
+void _container(dom.Element element, List<_Block> out, _ImageResolver images) {
   if (_containsBlock(element)) {
     for (final child in element.nodes) {
-      _collectBlocks(child, out, baseDirectory);
+      _collectBlocks(child, out, images);
     }
   } else {
-    _addBlock(
-      out,
-      _normalize(_inline(element, const _RunStyle(), baseDirectory)),
-    );
+    _addBlock(out, _normalize(_inline(element, const _RunStyle(), images)));
   }
 }
 
@@ -450,17 +468,17 @@ bool _containsBlock(dom.Element element) {
 List<_RawFragment> _inline(
   dom.Node node,
   _RunStyle style,
-  String baseDirectory,
+  _ImageResolver images,
 ) {
   final out = <_RawFragment>[];
-  _walkInline(node, style, baseDirectory, out);
+  _walkInline(node, style, images, out);
   return out;
 }
 
 void _walkInline(
   dom.Node current,
   _RunStyle style,
-  String baseDirectory,
+  _ImageResolver images,
   List<_RawFragment> out,
 ) {
   if (current is dom.Text) {
@@ -476,30 +494,40 @@ void _walkInline(
       out.add(const _RawBreak());
       break;
     case 'img':
-      final image = _image(current, baseDirectory);
+      final image = _image(current, images);
       if (image != null) out.add(_RawImage(image));
       break;
     case 'b':
     case 'strong':
-      _walkInlineChildren(current, style.copyWith(bold: true), baseDirectory, out);
+      _walkInlineChildren(current, style.copyWith(bold: true), images, out);
       break;
     case 'i':
     case 'em':
-      _walkInlineChildren(current, style.copyWith(italic: true), baseDirectory, out);
+      _walkInlineChildren(current, style.copyWith(italic: true), images, out);
       break;
     case 'u':
     case 'ins':
-      _walkInlineChildren(current, style.copyWith(underline: true), baseDirectory, out);
+      _walkInlineChildren(
+        current,
+        style.copyWith(underline: true),
+        images,
+        out,
+      );
       break;
     case 's':
     case 'strike':
     case 'del':
-      _walkInlineChildren(current, style.copyWith(lineThrough: true), baseDirectory, out);
+      _walkInlineChildren(
+        current,
+        style.copyWith(lineThrough: true),
+        images,
+        out,
+      );
       break;
     case 'code':
     case 'kbd':
     case 'samp':
-      _walkInlineChildren(current, style.copyWith(code: true), baseDirectory, out);
+      _walkInlineChildren(current, style.copyWith(code: true), images, out);
       break;
     case 'a':
       // A named target (`<a id="..."/>`) is not a hyperlink. Gutenberg's
@@ -510,20 +538,17 @@ void _walkInline(
       _walkInlineChildren(
         current,
         href.isEmpty ? style : style.copyWith(link: true),
-        baseDirectory,
+        images,
         out,
       );
       break;
     case 'pre':
-      out.add(_RawText(
-        current.text,
-        style.copyWith(pre: true, code: true),
-      ));
+      out.add(_RawText(current.text, style.copyWith(pre: true, code: true)));
       break;
     case 'td':
     case 'th':
       out.add(_RawText(' ', style));
-      _walkInlineChildren(current, style, baseDirectory, out);
+      _walkInlineChildren(current, style, images, out);
       break;
     case 'p':
     case 'div':
@@ -542,11 +567,11 @@ void _walkInline(
     case 'h6':
     case 'table':
       out.add(const _RawBreak());
-      _walkInlineChildren(current, style, baseDirectory, out);
+      _walkInlineChildren(current, style, images, out);
       out.add(const _RawBreak());
       break;
     default:
-      _walkInlineChildren(current, style, baseDirectory, out);
+      _walkInlineChildren(current, style, images, out);
       break;
   }
 }
@@ -554,47 +579,58 @@ void _walkInline(
 void _walkInlineChildren(
   dom.Element element,
   _RunStyle style,
-  String baseDirectory,
+  _ImageResolver images,
   List<_RawFragment> out,
 ) {
   for (final child in element.nodes) {
-    _walkInline(child, style, baseDirectory, out);
+    _walkInline(child, style, images, out);
   }
 }
 
-DocumentImage? _image(dom.Element element, String baseDirectory) {
+DocumentImage? _image(dom.Element element, _ImageResolver images) {
   final source = (element.attributes['src'] ?? '').trim();
   if (source.isEmpty) return null;
   return DocumentImage(
-    path: _resolveImagePath(source, baseDirectory),
+    path: images.resolve(source),
     alt: (element.attributes['alt'] ?? '').trim(),
   );
 }
 
-String? _resolveImagePath(String source, String baseDirectory) {
-  final hash = source.indexOf('#');
-  final clean = hash < 0 ? source : source.substring(0, hash);
-  if (clean.isEmpty) return null;
-  final uri = Uri.tryParse(clean);
-  if (uri != null) {
-    if (uri.scheme == 'file') {
+/// Resolves the image sources of one document.
+///
+/// A source is relative to the chapter directory and must end up inside the
+/// book root, so a chapter cannot make the reader open a file elsewhere on
+/// disk. Absolute sources, `..` climbs out of the root, remote/data URIs and
+/// missing files all resolve to null.
+final class _ImageResolver {
+  _ImageResolver(String baseDirectory, String? rootDirectory)
+    : _baseDirectory = Directory(baseDirectory).absolute.path,
+      _root = ContainedRoot.resolve(rootDirectory ?? baseDirectory);
+
+  final String _baseDirectory;
+  final ContainedRoot? _root;
+
+  String? resolve(String source) {
+    final hash = source.indexOf('#');
+    final clean = hash < 0 ? source : source.substring(0, hash);
+    if (clean.isEmpty) return null;
+    final root = _root;
+    if (root == null) return null;
+    final uri = Uri.tryParse(clean);
+    if (uri != null && uri.hasScheme) {
+      // `file:` is how the MOBI reader points at its extracted images;
+      // every other scheme (http, data, …) is not a local file.
+      if (uri.scheme != 'file') return null;
       try {
-        return uri.toFilePath();
+        return root.file(uri.toFilePath());
       } on UnsupportedError {
         return null;
       }
     }
-    if (uri.hasScheme) return null;
+    final path = decodePercentEscapes(clean);
+    if (path.isEmpty) return null;
+    return root.file(path.startsWith('/') ? path : '$_baseDirectory/$path');
   }
-  var path = clean;
-  try {
-    path = Uri.decodeComponent(path);
-  } on ArgumentError {
-    // Keep the raw path when percent-decoding fails.
-  }
-  if (path.isEmpty) return null;
-  if (path.startsWith('/')) return path;
-  return '$baseDirectory/$path';
 }
 
 // ---------------------------------------------------------------------------
@@ -609,10 +645,7 @@ List<_Fragment> _normalize(List<_RawFragment> raw, {bool pre = false}) {
 
   void flush() {
     if (buffer.isEmpty) return;
-    out.add(_TextFragment(
-      buffer.toString(),
-      bufferStyle ?? const _RunStyle(),
-    ));
+    out.add(_TextFragment(buffer.toString(), bufferStyle ?? const _RunStyle()));
     buffer.clear();
     bufferStyle = null;
   }
@@ -741,12 +774,9 @@ DocumentModel _assemble(List<_Block> blocks) {
   for (final block in blocks) {
     if (block.fragments.isEmpty) continue;
     if (!first) {
-      segments.add(_TextSegment(
-        '\n\n',
-        const _RunStyle(),
-        documentOffset,
-        renderedOffset,
-      ));
+      segments.add(
+        _TextSegment('\n\n', const _RunStyle(), documentOffset, renderedOffset),
+      );
       plain.write('\n\n');
       documentOffset += 2;
       renderedOffset += 2;
@@ -754,21 +784,21 @@ DocumentModel _assemble(List<_Block> blocks) {
     first = false;
     for (final fragment in block.fragments) {
       if (fragment is _TextFragment) {
-        segments.add(_TextSegment(
-          fragment.text,
-          fragment.style,
-          documentOffset,
-          renderedOffset,
-        ));
+        segments.add(
+          _TextSegment(
+            fragment.text,
+            fragment.style,
+            documentOffset,
+            renderedOffset,
+          ),
+        );
         plain.write(fragment.text);
         documentOffset += fragment.text.length;
         renderedOffset += fragment.text.length;
       } else if (fragment is _ImageFragment) {
-        segments.add(_ImageSegment(
-          fragment.image,
-          documentOffset,
-          renderedOffset,
-        ));
+        segments.add(
+          _ImageSegment(fragment.image, documentOffset, renderedOffset),
+        );
         renderedOffset += 1;
       }
     }
@@ -842,16 +872,16 @@ class _RunStyle {
 
   @override
   int get hashCode => Object.hash(
-        bold,
-        italic,
-        underline,
-        lineThrough,
-        code,
-        link,
-        heading,
-        quote,
-        pre,
-      );
+    bold,
+    italic,
+    underline,
+    lineThrough,
+    code,
+    link,
+    heading,
+    quote,
+    pre,
+  );
 }
 
 sealed class _RawFragment {
@@ -911,11 +941,7 @@ class _TextSegment extends _Segment {
 }
 
 class _ImageSegment extends _Segment {
-  const _ImageSegment(
-    this.image,
-    super.documentStart,
-    super.renderedStart,
-  );
+  const _ImageSegment(this.image, super.documentStart, super.renderedStart);
   final DocumentImage image;
 }
 

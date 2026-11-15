@@ -14,10 +14,8 @@ export 'sidecar_client.dart'
     show PluginInfo, PluginLoadResult, LoadedPlugins, SidecarException;
 
 class PluginController extends ChangeNotifier {
-  PluginController({
-    required this.pluginDir,
-    SidecarClient? client,
-  }) : client = client ?? SidecarClient() {
+  PluginController({required this.pluginDir, SidecarClient? client})
+    : client = client ?? SidecarClient() {
     // A fresh sidecar process starts with an empty plugin registry; reload it
     // before retried requests reach the plugins.
     this.client.onRestart = _restoreAfterRestart;
@@ -34,14 +32,23 @@ class PluginController extends ChangeNotifier {
 
   /// Start the sidecar (if not already running) and load all plugins.
   ///
-  /// Concurrent callers share one in-flight start.  Idempotent once loaded.
+  /// Concurrent callers share one in-flight start.  Idempotent while the
+  /// plugins are loaded and the client is healthy; when the client spent its
+  /// restart budget and went down, this is the way back: the client is
+  /// respawned and the plugins are loaded into the fresh process.
   Future<void> start() {
-    if (_started) return Future<void>.value();
+    if (_started && client.isHealthy) return Future<void>.value();
     return _starting ??= _start();
   }
 
   Future<void> _start() async {
     try {
+      if (!client.isHealthy) {
+        // Only an explicit start clears a spent restart budget; the client
+        // will not respawn on demand anymore.
+        _clearPlugins();
+        await client.start();
+      }
       await _loadAll();
     } finally {
       _starting = null;
@@ -53,19 +60,27 @@ class PluginController extends ChangeNotifier {
     _metadata = loaded.metadata;
     _stores = loaded.stores;
     _started = true;
-    debugPrint('Vellum: loaded ${_metadata.length} metadata plugins and '
-        '${_stores.length} store plugins');
+    debugPrint(
+      'Vellum: loaded ${_metadata.length} metadata plugins and '
+      '${_stores.length} store plugins',
+    );
     _notify();
   }
 
   /// Re-loads every plugin after the sidecar process was respawned.
   Future<void> _restoreAfterRestart() async {
     if (_disposed) return;
+    _clearPlugins();
+    await _loadAll();
+  }
+
+  /// Forgets the loaded plugins because a fresh sidecar process starts with an
+  /// empty registry; the old lists would describe plugins that no longer exist.
+  void _clearPlugins() {
     _started = false;
     _metadata = const [];
     _stores = const [];
     _notify();
-    await _loadAll();
   }
 
   Future<void> _ensureStarted() async {
@@ -114,11 +129,17 @@ class PluginController extends ChangeNotifier {
   }) async {
     await _ensureStarted();
     return client.metadataSearch(
-        title: title, authors: authors, isbn: isbn, timeout: timeout);
+      title: title,
+      authors: authors,
+      isbn: isbn,
+      timeout: timeout,
+    );
   }
 
-  Future<Uint8List?> downloadCover(Map<String, Object?> meta,
-      {double timeout = 15.0}) async {
+  Future<Uint8List?> downloadCover(
+    Map<String, Object?> meta, {
+    double timeout = 15.0,
+  }) async {
     await _ensureStarted();
     return client.downloadCover(meta, timeout: timeout);
   }
@@ -130,8 +151,12 @@ class PluginController extends ChangeNotifier {
     double timeout = 60.0,
   }) async {
     await _ensureStarted();
-    return client.storeSearch(store, query,
-        maxResults: maxResults, timeout: timeout);
+    return client.storeSearch(
+      store,
+      query,
+      maxResults: maxResults,
+      timeout: timeout,
+    );
   }
 
   Future<Map<String, Object?>?> storeFetchDownload(

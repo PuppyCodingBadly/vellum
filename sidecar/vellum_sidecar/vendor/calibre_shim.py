@@ -545,7 +545,13 @@ def _random_user_agent():
 
 
 def _calibre_prints(*args, **kwargs):
-    print(*args, **kwargs)
+    """``calibre.prints``/``debug_print``: diagnostics never touch stdout.
+
+    stdout is the JSON-lines protocol channel; a plugin print there would
+    corrupt or drop a response frame, so both helpers write to stderr.
+    """
+    kwargs.pop("file", None)
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def _calibre_browser(*args, **kwargs):

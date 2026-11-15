@@ -86,7 +86,9 @@ class ReaderHighlight {
       try {
         final decoded = jsonDecode(raw);
         if (decoded is Map) {
-          position = decoded.map((key, value) => MapEntry(key.toString(), value));
+          position = decoded.map(
+            (key, value) => MapEntry(key.toString(), value),
+          );
         }
       } on FormatException {
         return null;
@@ -127,13 +129,13 @@ class ReaderController extends ChangeNotifier {
     this.initialChapter,
     bool pdfReflow = false,
     void Function(String message)? onToast,
-  })  : _library = library,
-        _stats = stats,
-        _onToast = onToast,
-        _kind = _selectFormat(book),
-        _pdfWorker = _PdfWorker(book.path),
-        _pdfReflow = pdfReflow,
-        _zoom = defaultScale;
+  }) : _library = library,
+       _stats = stats,
+       _onToast = onToast,
+       _kind = _selectFormat(book),
+       _pdfWorker = _PdfWorker(book.path),
+       _pdfReflow = pdfReflow,
+       _zoom = defaultScale;
 
   /// The book being read.
   final Book book;
@@ -157,6 +159,7 @@ class ReaderController extends ChangeNotifier {
   int _documentSerial = 0;
   double _lastFraction = 0.0;
   double? _pendingScrollFraction;
+  int? _pendingJumpOffset;
   double _fontScale = 1.0;
   double _zoom;
   int _pdfSerial = 0;
@@ -167,7 +170,7 @@ class ReaderController extends ChangeNotifier {
   String? _pdfRenderError;
   String? _pdfReflowError;
   bool _loaded = false;
-  bool _sessionStarted = false;
+  int? _sessionBookId;
   bool _disposed = false;
   String? _cacheDir;
   String? _error;
@@ -218,20 +221,20 @@ class ReaderController extends ChangeNotifier {
 
   /// Highlights on the current item.
   List<ReaderHighlight> get currentHighlights => [
-        for (final highlight in _highlights)
-          if (highlight.chapter == _index) highlight,
-      ];
+    for (final highlight in _highlights)
+      if (highlight.chapter == _index) highlight,
+  ];
 
   /// Current highlights converted to renderable ranges.
   List<HighlightRange> get currentHighlightRanges => [
-        for (final highlight in _highlights)
-          if (highlight.chapter == _index && highlight.end > highlight.start)
-            HighlightRange(
-              start: highlight.start,
-              end: highlight.end,
-              color: highlightColor(highlight.color),
-            ),
-      ];
+    for (final highlight in _highlights)
+      if (highlight.chapter == _index && highlight.end > highlight.start)
+        HighlightRange(
+          start: highlight.start,
+          end: highlight.end,
+          color: highlightColor(highlight.color),
+        ),
+  ];
 
   /// Reader text scale (0.8–1.6).
   double get fontScale => _fontScale;
@@ -256,12 +259,10 @@ class ReaderController extends ChangeNotifier {
       isPdf && _pdfReflow ? _pdfReflowCache[_index] : null;
 
   /// True while the current reflow layout is still being built.
-  bool get pdfReflowLoading =>
-      isPdf && _pdfReflow && _pdfReflowLoading;
+  bool get pdfReflowLoading => isPdf && _pdfReflow && _pdfReflowLoading;
 
   /// Human-readable reason reflow failed for the current page, if any.
-  String? get pdfReflowError =>
-      isPdf && _pdfReflow ? _pdfReflowError : null;
+  String? get pdfReflowError => isPdf && _pdfReflow ? _pdfReflowError : null;
 
   /// Switches PDF pages between the page bitmap and reflowed text.
   ///
@@ -304,7 +305,7 @@ class ReaderController extends ChangeNotifier {
   /// current section: `(index + scrollFraction) / count`.
   double get progress {
     if (_items.isEmpty) return 0;
-    final within = isPdf ? 0.0 : _lastFraction.clamp(0.0, 1.0).toDouble();
+    final within = isPdf ? 1.0 : _lastFraction.clamp(0.0, 1.0).toDouble();
     return ((_index + within) / _items.length).clamp(0.0, 1.0).toDouble();
   }
 
@@ -330,7 +331,7 @@ class ReaderController extends ChangeNotifier {
       final id = book.id;
       if (id != null) {
         _stats.startSession(id);
-        _sessionStarted = true;
+        _sessionBookId = id;
       }
       _savePosition();
     } catch (_) {
@@ -360,6 +361,9 @@ class ReaderController extends ChangeNotifier {
   }
 
   /// Updates the reader font scale (0.8–1.6).
+  ///
+  /// Reflowing the page changes every pixel offset, so the same scroll
+  /// fraction is re-armed for the page to apply once the new layout exists.
   void setFontScale(double scale) {
     final clamped = scale.clamp(_minFontScale, _maxFontScale).toDouble();
     if ((clamped - _fontScale).abs() < 1e-9) return;
@@ -367,6 +371,8 @@ class ReaderController extends ChangeNotifier {
     if (isPdf && !_pdfReflow) {
       _pdfCache.clear();
       _renderPdf();
+    } else {
+      _pendingScrollFraction = _lastFraction;
     }
     notifyListeners();
   }
@@ -400,6 +406,40 @@ class ReaderController extends ChangeNotifier {
     return fraction;
   }
 
+  /// Returns and clears the document offset a highlight jump armed.
+  int? takePendingJumpOffset() {
+    final offset = _pendingJumpOffset;
+    _pendingJumpOffset = null;
+    return offset;
+  }
+
+  /// Jumps to the chapter of highlight [id] and arms its document offset.
+  ///
+  /// Returns false, without arming anything, when the highlight is gone or
+  /// its chapter is not part of this book. The caller reports that case.
+  bool goToHighlight(int id) {
+    ReaderHighlight? target;
+    for (final highlight in _highlights) {
+      if (highlight.id == id) {
+        target = highlight;
+        break;
+      }
+    }
+    if (target == null ||
+        target.chapter < 0 ||
+        target.chapter >= _items.length) {
+      _pendingJumpOffset = null;
+      return false;
+    }
+    if (target.chapter == _index) {
+      _pendingJumpOffset = target.start;
+      notifyListeners();
+    } else {
+      _goTo(target.chapter, jumpOffset: target.start);
+    }
+    return true;
+  }
+
   /// Saves a highlight on the current item. Returns false on failure (a
   /// `Could not save highlight` toast is emitted).
   Future<bool> addHighlight({
@@ -412,8 +452,9 @@ class ReaderController extends ChangeNotifier {
     if (bookId == null || end <= start) return false;
     // Truncate on rune boundaries so a surrogate pair is never split
     // (an unpaired surrogate would make the position JSON invalid).
-    final quote =
-        text.length > 200 ? String.fromCharCodes(text.runes.take(200)) : text;
+    final quote = text.length > 200
+        ? String.fromCharCodes(text.runes.take(200))
+        : text;
     final position = jsonEncode(<String, Object?>{
       'chapter': _index,
       'start': start,
@@ -422,15 +463,17 @@ class ReaderController extends ChangeNotifier {
     });
     try {
       final id = _library.addHighlight(bookId, position, color, text);
-      _highlights.add(ReaderHighlight(
-        id: id,
-        chapter: _index,
-        start: start,
-        end: end,
-        color: color,
-        quote: quote,
-        text: text,
-      ));
+      _highlights.add(
+        ReaderHighlight(
+          id: id,
+          chapter: _index,
+          start: start,
+          end: end,
+          color: color,
+          quote: quote,
+          text: text,
+        ),
+      );
       notifyListeners();
       return true;
     } catch (_) {
@@ -471,10 +514,11 @@ class ReaderController extends ChangeNotifier {
     _saveTimer?.cancel();
     _saveTimer = null;
     if (!hasError) _savePosition();
-    if (_sessionStarted) {
-      _sessionStarted = false;
+    final sessionBookId = _sessionBookId;
+    if (sessionBookId != null) {
+      _sessionBookId = null;
       try {
-        _stats.endSession(locator);
+        _stats.endSession(sessionBookId, locator);
       } catch (_) {
         // Statistics failures must not break navigation away.
       }
@@ -576,7 +620,12 @@ class ReaderController extends ChangeNotifier {
     try {
       for (final row in _library.listHighlights(bookId)) {
         final highlight = ReaderHighlight.fromRow(row);
-        if (highlight != null) _highlights.add(highlight);
+        if (highlight == null) continue;
+        // A position saved before a re-import can point past the last item.
+        if (highlight.chapter < 0 || highlight.chapter >= _items.length) {
+          continue;
+        }
+        _highlights.add(highlight);
       }
     } catch (_) {
       _highlights.clear();
@@ -602,7 +651,9 @@ class ReaderController extends ChangeNotifier {
     final parts = locator.split(':');
     if (parts.length != 3 || parts[0] != _kind.name) return;
     final storedIndex = int.tryParse(parts[1]);
-    if (storedIndex == null || storedIndex < 0 || storedIndex >= _items.length) {
+    if (storedIndex == null ||
+        storedIndex < 0 ||
+        storedIndex >= _items.length) {
       return;
     }
     _index = storedIndex;
@@ -610,8 +661,9 @@ class ReaderController extends ChangeNotifier {
       _lastFraction = 0;
       return;
     }
-    final fraction =
-        (double.tryParse(parts[2]) ?? 0).clamp(0.0, 1.0).toDouble();
+    final fraction = (double.tryParse(parts[2]) ?? 0)
+        .clamp(0.0, 1.0)
+        .toDouble();
     _lastFraction = fraction;
     if (fraction > 0) _pendingScrollFraction = fraction;
   }
@@ -625,37 +677,41 @@ class ReaderController extends ChangeNotifier {
     if (cacheDir == null) throw const FormatException('No cache directory');
     final String html;
     final String baseDirectory;
+    final String rootDirectory;
     if (_kind == ReaderFormat.epub) {
       final path = _epub!.chapterFile(cacheDir, _index);
-      html = utf8.decode(
-        File(path).readAsBytesSync(),
-        allowMalformed: true,
-      );
+      html = utf8.decode(File(path).readAsBytesSync(), allowMalformed: true);
       baseDirectory = File(path).parent.path;
+      rootDirectory = cacheDir;
     } else {
       html = _mobi!.sectionHtml(_index);
       baseDirectory = '$cacheDir/mobi';
+      rootDirectory = baseDirectory;
     }
-    _document = DocumentModel.fromHtml(html, baseDirectory: baseDirectory);
+    _document = DocumentModel.fromHtml(
+      html,
+      baseDirectory: baseDirectory,
+      rootDirectory: rootDirectory,
+    );
     _documentSerial++;
   }
 
   // -- navigation ------------------------------------------------------------
 
-  void _goTo(int newIndex) {
+  void _goTo(int newIndex, {int? jumpOffset}) {
     _saveTimer?.cancel();
     _saveTimer = null;
     _direction = newIndex > _index ? 1 : -1;
     _index = newIndex;
     _lastFraction = 0;
     _pendingScrollFraction = null;
+    _pendingJumpOffset = null;
     _pdfSerial++;
     var loaded = true;
     if (isPdf) {
       _touchPdfCache(_index);
       _pdfPageLoading = !_pdfCache.containsKey(_index);
-      _pdfReflowLoading =
-          _pdfReflow && !_pdfReflowCache.containsKey(_index);
+      _pdfReflowLoading = _pdfReflow && !_pdfReflowCache.containsKey(_index);
     } else {
       try {
         _loadCurrentDocument();
@@ -666,7 +722,10 @@ class ReaderController extends ChangeNotifier {
         loaded = false;
       }
     }
-    if (loaded) _savePosition();
+    if (loaded) {
+      _pendingJumpOffset = jumpOffset;
+      _savePosition();
+    }
     notifyListeners();
     if (isPdf) _renderPdf();
   }
@@ -696,6 +755,14 @@ class ReaderController extends ChangeNotifier {
   }
 
   double get _pdfScale => _zoom * _fontScale;
+
+  /// Kills the PDF worker isolate, as an unexpected exit would. Test-only.
+  @visibleForTesting
+  void debugKillPdfWorker() => _pdfWorker.kill();
+
+  /// True while the PDF worker isolate is alive. Test-only.
+  @visibleForTesting
+  bool get debugPdfWorkerRunning => _pdfWorker.isRunning;
 
   void _renderPdf() {
     if (_disposed || !isPdf || _items.isEmpty) return;
@@ -816,22 +883,25 @@ class _PdfWorker {
   _PdfWorker(this.path);
 
   final String path;
-  Isolate? _isolate;
-  ReceivePort? _receive;
-  SendPort? _sendPort;
-  final Completer<SendPort> _ready = Completer<SendPort>();
-  Future<void>? _startFuture;
-  final Map<int, Completer<Object>> _pending =
-      <int, Completer<Object>>{};
-  int _nextId = 0;
-  bool _closed = false;
-  bool _tornDown = false;
-  Completer<void>? _closeAck;
-  ReceivePort? _errorPort;
-  ReceivePort? _exitPort;
+
+  /// How long one request may wait before its session is abandoned.
+  static const Duration _requestTimeout = Duration(seconds: 30);
 
   /// How long the worker gets to close its document before it is killed.
   static const Duration _closeTimeout = Duration(seconds: 2);
+
+  final Map<int, Completer<Object>> _pending = <int, Completer<Object>>{};
+  int _nextId = 0;
+  bool _closed = false;
+  _WorkerSession? _session;
+  Future<SendPort>? _starting;
+  Completer<void>? _closeAck;
+
+  /// True while an isolate session owns a spawned worker.
+  bool get isRunning => _session?.isolate != null;
+
+  /// Kills the current isolate, as an unexpected exit would. Test-only.
+  void kill() => _session?.isolate?.kill(priority: Isolate.immediate);
 
   Future<Uint8List> render(int index, double scale) async {
     final result = await _request(index, scale, null);
@@ -846,42 +916,78 @@ class _PdfWorker {
   }
 
   Future<Object> _request(int index, double scale, String? operation) async {
-    if (_closed) throw StateError('PDF renderer is closed');
-    await _start();
-    if (_closed) throw StateError('PDF renderer is closed');
+    final port = await _ensureSession();
+    if (_closed) throw const PdfRenderException('PDF renderer is closed');
     final id = _nextId++;
     final completer = Completer<Object>();
     _pending[id] = completer;
-    _sendPort!.send(<Object?>[id, index, scale, operation]);
-    return completer.future;
+    port.send(<Object?>[id, index, scale, operation]);
+    try {
+      return await completer.future.timeout(_requestTimeout);
+    } on TimeoutException {
+      _pending.remove(id);
+      final error = const PdfRenderException('PDF renderer did not respond');
+      final session = _session;
+      if (session != null) _failSession(session, error);
+      throw error;
+    }
   }
 
-  Future<void> _start() {
-    final existing = _startFuture;
-    if (existing != null) return existing;
-    final future = _startWorker();
-    _startFuture = future;
-    return future;
+  /// Returns a port for the live session, starting one when there is none.
+  ///
+  /// Concurrent callers share one start attempt. A failed attempt is
+  /// forgotten so the next caller starts a fresh worker.
+  Future<SendPort> _ensureSession() async {
+    if (_closed) throw const PdfRenderException('PDF renderer is closed');
+    final session = _session;
+    if (session != null) return _sessionPort(session);
+    final starting = _starting;
+    if (starting != null) return starting;
+    final future = _startSession();
+    _starting = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_starting, future)) _starting = null;
+    }
   }
 
-  Future<void> _startWorker() async {
+  Future<SendPort> _sessionPort(_WorkerSession session) async {
+    final port = session.sendPort ?? await session.ready.future;
+    if (port == null) {
+      throw (session.failure ??
+          const PdfRenderException('PDF renderer is unavailable'));
+    }
+    if (_closed) throw const PdfRenderException('PDF renderer is closed');
+    return port;
+  }
+
+  Future<SendPort> _startSession() async {
     final receive = ReceivePort();
-    _receive = receive;
-    receive.listen(_onMessage);
     final errorPort = ReceivePort();
-    _errorPort = errorPort;
-    errorPort.listen((message) {
-      _failPending(StateError('PDF renderer failed: $message'));
-      if (!_ready.isCompleted) {
-        _ready.completeError(StateError('PDF renderer failed: $message'));
-      }
-    });
     final exitPort = ReceivePort();
-    _exitPort = exitPort;
+    final session = _WorkerSession(
+      receive: receive,
+      errorPort: errorPort,
+      exitPort: exitPort,
+    );
+    _session = session;
+    receive.listen((message) => _onMessage(session, message));
+    errorPort.listen((message) {
+      _failSession(
+        session,
+        PdfRenderException('PDF renderer failed: $message'),
+      );
+    });
     exitPort.listen((_) {
-      exitPort.close();
-      if (_closed) return; // Expected: dispose kills the isolate.
-      _failPending(StateError('PDF renderer exited unexpectedly'));
+      if (_closed) {
+        _closeSession(session);
+        return;
+      }
+      _failSession(
+        session,
+        const PdfRenderException('PDF renderer exited unexpectedly'),
+      );
     });
     try {
       final isolate = await Isolate.spawn(
@@ -891,29 +997,60 @@ class _PdfWorker {
         onExit: exitPort.sendPort,
         errorsAreFatal: false,
       );
-      _isolate = isolate;
+      session.isolate = isolate;
       if (_closed) {
         isolate.kill(priority: Isolate.immediate);
-        throw StateError('PDF renderer is closed');
+        throw const PdfRenderException('PDF renderer is closed');
+      }
+      if (!identical(_session, session)) {
+        isolate.kill(priority: Isolate.immediate);
+        throw (session.failure ??
+            const PdfRenderException('PDF renderer exited unexpectedly'));
       }
     } catch (error) {
-      errorPort.close();
-      exitPort.close();
-      if (!_ready.isCompleted) _ready.completeError(error);
+      final failure = error is PdfRenderException
+          ? error
+          : const PdfRenderException('PDF renderer failed to start');
+      _failSession(session, failure);
+      throw failure;
     }
-    _sendPort = await _ready.future;
+    return _sessionPort(session);
   }
 
-  void _failPending(StateError error) {
+  /// Drops [session] and fails everything queued on it.
+  ///
+  /// Only the current session can be dropped, so a late message from a dead
+  /// isolate cannot tear down its replacement.
+  void _failSession(_WorkerSession session, PdfRenderException error) {
+    if (!identical(_session, session)) return;
+    session.failure = error;
+    _closeSession(session);
+    _failPending(error);
+  }
+
+  void _closeSession(_WorkerSession session) {
+    if (identical(_session, session)) _session = null;
+    session.isolate?.kill(priority: Isolate.immediate);
+    session.isolate = null;
+    session.close();
+    if (!session.ready.isCompleted) {
+      // Wake callers waiting for the port; they read [failure].
+      session.failure ??= const PdfRenderException('PDF renderer is closed');
+      session.ready.complete(null);
+    }
+  }
+
+  void _failPending(PdfRenderException error) {
     for (final completer in _pending.values) {
       if (!completer.isCompleted) completer.completeError(error);
     }
     _pending.clear();
   }
 
-  void _onMessage(Object? message) {
+  void _onMessage(_WorkerSession session, Object? message) {
     if (message is SendPort) {
-      if (!_ready.isCompleted) _ready.complete(message);
+      session.sendPort = message;
+      if (!session.ready.isCompleted) session.ready.complete(message);
       return;
     }
     if (message is List && message.length == 1 && message[0] == 'closed') {
@@ -921,6 +1058,7 @@ class _PdfWorker {
       if (ack != null && !ack.isCompleted) ack.complete();
       return;
     }
+    if (!identical(_session, session)) return; // A dead session's late reply.
     if (message is List && message.length == 3) {
       final id = message[0];
       final bytes = message[1];
@@ -953,7 +1091,6 @@ class _PdfWorker {
         chain = chain.then((_) {
           pdf?.close();
           pdf = null;
-          PdfBook.shutdownLibrary();
           replyPort.send(const <Object>['closed']);
         });
         return;
@@ -982,37 +1119,59 @@ class _PdfWorker {
   /// Stops the worker: asks it to close its document, then kills it.
   ///
   /// [Isolate.kill] does not run cleanup, so the handshake is what releases
-  /// the worker's `FPDF_DOCUMENT` (and PDFium's global resources).
+  /// the worker's `FPDF_DOCUMENT`. PDFium itself is process-global and stays
+  /// alive for the isolates that still render.
   void dispose() {
     if (_closed) return;
     _closed = true;
-    _failPending(StateError('PDF renderer is closed'));
-    final port = _sendPort;
+    final session = _session;
+    _session = null;
+    _failPending(const PdfRenderException('PDF renderer is closed'));
+    if (session == null) return;
+    final port = session.sendPort;
     if (port == null) {
-      _tearDown();
+      _closeSession(session);
       return;
     }
     final ack = Completer<void>();
     _closeAck = ack;
     port.send(const <Object>['close']);
     unawaited(
-      ack.future
-          .timeout(_closeTimeout)
-          .catchError((_) {})
-          .whenComplete(_tearDown),
+      ack.future.timeout(_closeTimeout).catchError((_) {}).whenComplete(() {
+        if (identical(_closeAck, ack)) _closeAck = null;
+        _closeSession(session);
+      }),
     );
   }
+}
 
-  void _tearDown() {
-    if (_tornDown) return;
-    _tornDown = true;
-    _receive?.close();
-    _receive = null;
-    _errorPort?.close();
-    _errorPort = null;
-    _exitPort?.close();
-    _exitPort = null;
-    _isolate?.kill(priority: Isolate.immediate);
-    _isolate = null;
+/// One worker isolate and the ports that talk to it.
+///
+/// [ready] completes with the worker's reply port, or with null once the
+/// session failed; [failure] then says why. Keeping the failure as data
+/// instead of an error future avoids unhandled errors when a start fails
+/// before anyone awaits the port.
+class _WorkerSession {
+  _WorkerSession({
+    required this.receive,
+    required this.errorPort,
+    required this.exitPort,
+  });
+
+  final ReceivePort receive;
+  final ReceivePort errorPort;
+  final ReceivePort exitPort;
+  final Completer<SendPort?> ready = Completer<SendPort?>();
+  SendPort? sendPort;
+  Isolate? isolate;
+  PdfRenderException? failure;
+  bool _closed = false;
+
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    receive.close();
+    errorPort.close();
+    exitPort.close();
   }
 }

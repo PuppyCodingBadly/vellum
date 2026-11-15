@@ -22,6 +22,7 @@ import 'import/calibre.dart';
 import 'metadata/engine.dart';
 import 'plugins/plugin_controller.dart';
 import 'stats/reading_stats.dart';
+import 'ui/theme.dart';
 
 /// Central application state. Provided via [AppStateScope] and read with
 /// [AppState.of].
@@ -52,6 +53,7 @@ class AppState extends ChangeNotifier {
   Library library;
   final MetadataEngine engine;
   final PluginController plugins;
+
   /// Full-text indexer bound to the current [library]; recreated on switch.
   FtsIndexer fts;
 
@@ -74,6 +76,14 @@ class AppState extends ChangeNotifier {
   /// Current view: the search hits (or all books) in the selected sort order.
   List<Book> books = <Book>[];
 
+  /// Full-text hits for [searchQuery], resolved to visible books (hidden books
+  /// are excluded unless [showHidden]).
+  ///
+  /// Derived once per [refresh] so widget `build()` never queries the
+  /// database; capped by the SQL `LIMIT` in [Library.searchBookContent].
+  List<ContentHit> get contentHits => _contentHits;
+  List<ContentHit> _contentHits = const <ContentHit>[];
+
   /// Raw search query typed by the user.
   String searchQuery = '';
 
@@ -86,7 +96,8 @@ class AppState extends ChangeNotifier {
   /// Whether hidden books are shown in the grid.
   bool get showHidden => config.getBool('show_hidden');
 
-  /// Re-queries the database with the current query, sort and hidden filter.
+  /// Re-queries the database with the current query, sort and hidden filter,
+  /// and caches the derived full-text hits for the page to render.
   Future<void> refresh() async {
     final includeHidden = showHidden;
     final query = searchQuery.trim();
@@ -94,7 +105,44 @@ class AppState extends ChangeNotifier {
         ? library.allBooks(includeHidden: includeHidden)
         : library.search(searchQuery, includeHidden: includeHidden);
     books = sortBooks(found, key: sortKey);
+    if (query.isEmpty) {
+      _contentHits = const <ContentHit>[];
+    } else {
+      // Body-text hits are not filtered by the catalogue query: a book whose
+      // text matches should surface even when its title does not.
+      final visible = library.allBooks(includeHidden: includeHidden);
+      _contentHits = _searchBookText(query, visible);
+    }
     notifyListeners();
+  }
+
+  /// Resolves FTS rows to visible books, keeping only hits whose book is in
+  /// [visible] (hidden books are absent unless [showHidden]).
+  List<ContentHit> _searchBookText(String query, List<Book> visible) {
+    final byId = <int, Book>{
+      for (final book in visible)
+        if (book.id != null) book.id!: book,
+    };
+    final hits = <ContentHit>[];
+    for (final row in fts.search(query)) {
+      final id = row['book_id'];
+      if (id is! int) continue;
+      final book = byId[id];
+      if (book == null) continue;
+      final chapter = row['chapter'];
+      hits.add(
+        ContentHit(
+          book: book,
+          chapter: chapter is int ? chapter : int.tryParse('$chapter'),
+          chapterTitle: (row['title'] ?? '').toString(),
+          snippet: (row['snippet'] ?? '')
+              .toString()
+              .replaceAll('<b>', '')
+              .replaceAll('</b>', ''),
+        ),
+      );
+    }
+    return hits;
   }
 
   /// Sets the active search query and refreshes the view.
@@ -127,11 +175,6 @@ class AppState extends ChangeNotifier {
 
   /// Looks up a book by database id.
   Book? bookById(int id) => library.getBook(id);
-
-  /// Searches indexed book contents; rows are
-  /// `{book_id, chapter, title, snippet}`.
-  List<Map<String, Object?>> searchBookContents(String q) =>
-      fts.search(q);
 
   // --- library switching ---
 
@@ -203,7 +246,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Resolved accent colour (palette name or `#rrggbb`).
-  Color get accentColor => resolveAccent(accentName);
+  Color get accentColor => VellumAccents.resolve(accentName);
 
   /// Raw `accent_color` setting.
   String get accentName => config.getString('accent_color');
@@ -276,10 +319,7 @@ class AppState extends ChangeNotifier {
     messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          duration: const Duration(seconds: 3),
-        ),
+        SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
       );
   }
 
@@ -287,7 +327,8 @@ class AppState extends ChangeNotifier {
 
   bool _calibreImportRunning = false;
 
-  /// True while [chooseAndImportCalibre] is importing.
+  /// True while [importCalibreFolder] (or [chooseAndImportCalibre]) is
+  /// importing.
   bool get calibreImportRunning => _calibreImportRunning;
 
   /// Asks for a calibre library folder and imports it into the current library.
@@ -307,17 +348,28 @@ class AppState extends ChangeNotifier {
       return; // Dialog cancelled or unavailable.
     }
     if (folder == null || folder.isEmpty) return;
-    if (!isCalibreLibrary(folder)) {
-      showToast('Not a calibre library (no metadata.db)');
-      return;
-    }
+    await importCalibreFolder(folder);
+  }
+
+  /// Imports the calibre library in [folder] into the current library.
+  ///
+  /// [calibreImportRunning] is set for the duration and notifies on both
+  /// transitions, so the Preferences import button reflects the run. Returns
+  /// true when an import ran (even if individual books failed).
+  Future<bool> importCalibreFolder(String folder) async {
     if (_calibreImportRunning) {
       showToast('A calibre import is already running');
-      return;
+      return false;
+    }
+    if (!isCalibreLibrary(folder)) {
+      showToast('Not a calibre library (no metadata.db)');
+      return false;
     }
     _calibreImportRunning = true;
+    notifyListeners();
     showToast('Importing calibre library…');
-    await WidgetsBinding.instance.endOfFrame;
+    // Yield once so the toast can paint before the scan starts.
+    await Future<void>.delayed(Duration.zero);
     try {
       final result = await importCalibreLibrary(library, folder);
       await refresh();
@@ -338,37 +390,14 @@ class AppState extends ChangeNotifier {
         );
       }
       showToast(parts.join(' · '));
+      return true;
     } catch (error) {
       showToast('Calibre import failed: $error');
+      return true;
     } finally {
       _calibreImportRunning = false;
+      notifyListeners();
     }
-  }
-
-  // --- accent palette ---
-
-  /// Named accent colours from the GTK palette.
-  static const Map<String, Color> accentPalette = {
-    'blue': Color(0xFF3584E4),
-    'teal': Color(0xFF2190A4),
-    'green': Color(0xFF3A944A),
-    'yellow': Color(0xFFC88800),
-    'orange': Color(0xFFED5B00),
-    'red': Color(0xFFE62D42),
-    'pink': Color(0xFFD56199),
-    'purple': Color(0xFF9141AC),
-    'slate': Color(0xFF6F8396),
-  };
-
-  static final RegExp _hexPattern = RegExp(r'^#[0-9a-fA-F]{6}$');
-
-  /// Resolves a palette name or `#rrggbb` string; unknown values are blue.
-  static Color resolveAccent(String nameOrHex) {
-    final value = nameOrHex.trim();
-    if (_hexPattern.hasMatch(value)) {
-      return Color(0xFF000000 | int.parse(value.substring(1), radix: 16));
-    }
-    return accentPalette[value] ?? accentPalette['blue']!;
   }
 
   /// Finds the state published by [AppStateScope]; throws when absent.
@@ -382,6 +411,23 @@ class AppState extends ChangeNotifier {
     }
     return scope.state;
   }
+}
+
+/// One full-text hit inside a book, already resolved to a visible [Book].
+class ContentHit {
+  const ContentHit({
+    required this.book,
+    required this.chapter,
+    required this.chapterTitle,
+    required this.snippet,
+  });
+
+  final Book book;
+  final int? chapter;
+  final String chapterTitle;
+
+  /// Match text with the FTS5 highlight markers stripped.
+  final String snippet;
 }
 
 /// Publishes an [AppState] to the widget tree and rebuilds dependents when it

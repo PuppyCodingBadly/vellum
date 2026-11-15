@@ -11,6 +11,14 @@ import 'package:sqlite3/sqlite3.dart';
 
 import 'models.dart';
 
+/// Case-folds [value] for catalogue matching.
+///
+/// SQLite's `lower()` folds only ASCII, so a non-ASCII capital such as `Ä`
+/// never matched a lower-case query. Catalogue search and the FTS fallback
+/// fold both the stored column and the query through this one function,
+/// exposed to SQL as `vellum_fold`.
+String foldText(String value) => value.toLowerCase();
+
 /// The library database. Use `:memory:` for an in-memory database.
 ///
 /// Both in-memory and file-backed libraries keep one persistent connection
@@ -59,7 +67,9 @@ class Library {
 
   Library(this.path) {
     _ensureSqliteOverride();
-    _connection = path == ':memory:' ? sqlite3.openInMemory() : sqlite3.open(path);
+    _connection = path == ':memory:'
+        ? sqlite3.openInMemory()
+        : sqlite3.open(path);
     if (path != ':memory:') {
       // One writer plus concurrent readers; NORMAL is durable enough for a
       // catalogue and removes an fsync per commit.
@@ -67,6 +77,17 @@ class Library {
       _db.execute('PRAGMA synchronous = NORMAL');
     }
     _db.execute('PRAGMA foreign_keys = ON');
+    // Catalogue search folds with Dart on both sides; SQLite's built-in
+    // lower() is ASCII-only.
+    _db.createFunction(
+      functionName: 'vellum_fold',
+      argumentCount: const AllowedArgumentCount(1),
+      deterministic: true,
+      function: (arguments) {
+        final value = arguments.first;
+        return value is String ? foldText(value) : value;
+      },
+    );
     _createSchema();
     _migrate();
     _write(_createIndexes);
@@ -184,6 +205,15 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     duration_seconds INTEGER NOT NULL DEFAULT 0,
     end_locator TEXT NOT NULL DEFAULT ''
 );
+-- Skip state for the full-text index. It lives beside the rows it describes
+-- and cascades with the book, so a deleted (or re-imported) book can never
+-- keep a stale "already indexed" mark.
+CREATE TABLE IF NOT EXISTS fts_index_state (
+    book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    path TEXT NOT NULL DEFAULT '',
+    mtime_ms INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0
+);
 ''';
 
   void _createSchema() {
@@ -193,25 +223,27 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
       _db.execute(_extraSchema);
       try {
         _db.execute(
-            'CREATE VIRTUAL TABLE IF NOT EXISTS book_fts USING fts5(book_id UNINDEXED, chapter UNINDEXED, title, content)');
+          'CREATE VIRTUAL TABLE IF NOT EXISTS book_fts USING fts5(book_id UNINDEXED, chapter UNINDEXED, title, content)',
+        );
         ftsAvailable = true;
       } catch (_) {
         ftsAvailable = false;
         _db.execute(
-            'CREATE TABLE IF NOT EXISTS book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)');
+          'CREATE TABLE IF NOT EXISTS book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)',
+        );
       }
       // A pre-existing plain book_fts table (or a failed FTS5 create above)
       // means MATCH queries are unavailable; use the LIKE fallback.
       final sqlRow = _db.select(
-          "SELECT sql FROM sqlite_master WHERE name = 'book_fts'");
+        "SELECT sql FROM sqlite_master WHERE name = 'book_fts'",
+      );
       if (sqlRow.isEmpty ||
-          !(sqlRow.first['sql'] as String)
-              .toUpperCase()
-              .contains('VIRTUAL')) {
+          !(sqlRow.first['sql'] as String).toUpperCase().contains('VIRTUAL')) {
         ftsAvailable = false;
         if (sqlRow.isEmpty) {
           _db.execute(
-              'CREATE TABLE IF NOT EXISTS book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)');
+            'CREATE TABLE IF NOT EXISTS book_fts (book_id INTEGER, chapter INTEGER, title TEXT, content TEXT)',
+          );
         }
       }
       _db.execute('COMMIT');
@@ -224,52 +256,47 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   void _migrate() {
     final cols = {
       for (final row in _db.select('PRAGMA table_info(books)'))
-        row['name'] as String
+        row['name'] as String,
     };
     if (!cols.contains('hidden')) {
       _db.execute(
-          'ALTER TABLE books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+        'ALTER TABLE books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0',
+      );
     }
     if (!cols.contains('source_id')) {
       _db.execute(
-          "ALTER TABLE books ADD COLUMN source_id TEXT NOT NULL DEFAULT ''");
+        "ALTER TABLE books ADD COLUMN source_id TEXT NOT NULL DEFAULT ''",
+      );
     }
     final positionCols = {
       for (final row in _db.select('PRAGMA table_info(reading_positions)'))
-        row['name'] as String
+        row['name'] as String,
     };
     if (positionCols.isNotEmpty && !positionCols.contains('progress')) {
       _db.execute(
-          'ALTER TABLE reading_positions ADD COLUMN progress REAL NOT NULL DEFAULT 0');
+        'ALTER TABLE reading_positions ADD COLUMN progress REAL NOT NULL DEFAULT 0',
+      );
     }
   }
 
   static String _nowIso() => DateTime.now().toUtc().toIso8601String();
 
-  /// Nesting depth of [_write]; >0 means a transaction is already open.
-  int _writeDepth = 0;
-
-  /// Wraps [fn] in a transaction (commit-on-exit semantics).
+  /// Wraps [fn] in the one transaction currently open; callers never nest.
   ///
-  /// Nested calls use savepoints, so composed public APIs (for example
-  /// importing a batch of books and their links) commit as one unit.
+  /// There is deliberately no savepoint nesting: a failed COMMIT used to
+  /// leave the depth counter decremented twice and hide the real error.
   T _write<T>(T Function() fn) {
-    final savepoint = 'vellum_write_$_writeDepth';
-    final nested = _writeDepth > 0;
-    _db.execute(nested ? 'SAVEPOINT $savepoint' : 'BEGIN');
-    _writeDepth++;
+    _db.execute('BEGIN');
     try {
       final result = fn();
-      _writeDepth--;
-      _db.execute(nested ? 'RELEASE $savepoint' : 'COMMIT');
+      _db.execute('COMMIT');
       return result;
     } catch (_) {
-      _writeDepth--;
-      if (nested) {
-        _db.execute('ROLLBACK TO $savepoint');
-        _db.execute('RELEASE $savepoint');
-      } else {
+      try {
         _db.execute('ROLLBACK');
+      } catch (_) {
+        // COMMIT can fail after closing the transaction; the original error
+        // is the one worth reporting.
       }
       rethrow;
     }
@@ -308,17 +335,22 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     for (var i = 0; i < book.authors.length; i++) {
       final authorId = _getOrInsertAuthor(book.authors[i]);
       _db.execute(
-          'INSERT INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)',
-          [id, authorId, i]);
+        'INSERT INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)',
+        [id, authorId, i],
+      );
     }
     for (final tag in book.tags) {
       final tagId = _getOrInsertTag(tag);
-      _db.execute(
-          'INSERT INTO book_tags (book_id, tag_id) VALUES (?, ?)', [id, tagId]);
+      _db.execute('INSERT INTO book_tags (book_id, tag_id) VALUES (?, ?)', [
+        id,
+        tagId,
+      ]);
     }
     for (final fmt in book.formats) {
-      _db.execute('INSERT INTO formats (book_id, format, path) VALUES (?, ?, ?)',
-          [id, fmt, book.path]);
+      _db.execute(
+        'INSERT INTO formats (book_id, format, path) VALUES (?, ?, ?)',
+        [id, fmt, book.path],
+      );
     }
   }
 
@@ -331,29 +363,29 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
 
   int _insertBook(Book book) {
     if (book.added.isEmpty) book.added = _nowIso();
-      _db.execute(
-        'INSERT INTO books (title, sort, isbn, publisher, pubdate, language, '
-        'description, cover_path, path, rating, added, hidden, source_id) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          book.title,
-          book.sort,
-          book.isbn,
-          book.publisher,
-          book.pubdate,
-          book.language,
-          book.description,
-          book.coverPath,
-          book.path,
-          book.rating,
-          book.added,
-          book.hidden ? 1 : 0,
-          book.sourceId,
-        ],
-      );
-      book.id = _db.lastInsertRowId;
-      _writeLinks(book);
-      return book.id!;
+    _db.execute(
+      'INSERT INTO books (title, sort, isbn, publisher, pubdate, language, '
+      'description, cover_path, path, rating, added, hidden, source_id) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        book.title,
+        book.sort,
+        book.isbn,
+        book.publisher,
+        book.pubdate,
+        book.language,
+        book.description,
+        book.coverPath,
+        book.path,
+        book.rating,
+        book.added,
+        book.hidden ? 1 : 0,
+        book.sourceId,
+      ],
+    );
+    book.id = _db.lastInsertRowId;
+    _writeLinks(book);
+    return book.id!;
   }
 
   /// Updates an existing book. Throws [ArgumentError] when [book.id] is null
@@ -417,36 +449,42 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     const chunkSize = 500;
     for (var start = 0; start < ids.length; start += chunkSize) {
       final chunk = ids.sublist(
-          start, start + chunkSize > ids.length ? ids.length : start + chunkSize);
+        start,
+        start + chunkSize > ids.length ? ids.length : start + chunkSize,
+      );
       final placeholders = List.filled(chunk.length, '?').join(', ');
       for (final r in _db.select(
-          'SELECT ba.book_id AS book_id, a.name AS name '
-          'FROM book_authors ba JOIN authors a ON a.id = ba.author_id '
-          'WHERE ba.book_id IN ($placeholders) '
-          'ORDER BY ba.book_id, ba.position',
-          chunk)) {
-        (authors[r['book_id'] as int] ??= <String>[])
-            .add(r['name'] as String);
+        'SELECT ba.book_id AS book_id, a.name AS name '
+        'FROM book_authors ba JOIN authors a ON a.id = ba.author_id '
+        'WHERE ba.book_id IN ($placeholders) '
+        'ORDER BY ba.book_id, ba.position',
+        chunk,
+      )) {
+        (authors[r['book_id'] as int] ??= <String>[]).add(r['name'] as String);
       }
       for (final r in _db.select(
-          'SELECT bt.book_id AS book_id, t.name AS name '
-          'FROM book_tags bt JOIN tags t ON t.id = bt.tag_id '
-          'WHERE bt.book_id IN ($placeholders) '
-          'ORDER BY bt.book_id, t.name',
-          chunk)) {
+        'SELECT bt.book_id AS book_id, t.name AS name '
+        'FROM book_tags bt JOIN tags t ON t.id = bt.tag_id '
+        'WHERE bt.book_id IN ($placeholders) '
+        'ORDER BY bt.book_id, t.name',
+        chunk,
+      )) {
         (tags[r['book_id'] as int] ??= <String>[]).add(r['name'] as String);
       }
       for (final r in _db.select(
-          'SELECT book_id, format FROM formats '
-          'WHERE book_id IN ($placeholders) ORDER BY book_id, format',
-          chunk)) {
-        (formats[r['book_id'] as int] ??= <String>[])
-            .add(r['format'] as String);
+        'SELECT book_id, format FROM formats '
+        'WHERE book_id IN ($placeholders) ORDER BY book_id, format',
+        chunk,
+      )) {
+        (formats[r['book_id'] as int] ??= <String>[]).add(
+          r['format'] as String,
+        );
       }
       for (final r in _db.select(
-          'SELECT book_id, progress FROM reading_positions '
-          'WHERE book_id IN ($placeholders)',
-          chunk)) {
+        'SELECT book_id, progress FROM reading_positions '
+        'WHERE book_id IN ($placeholders)',
+        chunk,
+      )) {
         progress[r['book_id'] as int] = (r['progress'] as num).toDouble();
       }
     }
@@ -476,7 +514,8 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   }
 
   /// Returns the book with [id], or null.
-  Book? getBook(int id) => _hydrate(_db.select('SELECT * FROM books WHERE id = ?', [id]));
+  Book? getBook(int id) =>
+      _hydrate(_db.select('SELECT * FROM books WHERE id = ?', [id]));
 
   /// All books, ordered by title. Hidden books excluded unless
   /// [includeHidden].
@@ -497,21 +536,25 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Whitespace-separated tokens are ANDed; each token matches
   /// case-insensitively against title, isbn, author name, or tag name.
   List<Book> search(String query, {bool includeHidden = false}) {
-    final tokens =
-        query.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    final tokens = query
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((t) => t.isNotEmpty)
+        .toList();
     if (tokens.isEmpty) return allBooks(includeHidden: includeHidden);
     const perToken = r'''
-(lower(b.title) LIKE ? ESCAPE '\' OR lower(b.isbn) LIKE ? ESCAPE '\'
+(vellum_fold(b.title) LIKE ? ESCAPE '\' OR vellum_fold(b.isbn) LIKE ? ESCAPE '\'
  OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-   WHERE ba.book_id = b.id AND lower(a.name) LIKE ? ESCAPE '\')
+   WHERE ba.book_id = b.id AND vellum_fold(a.name) LIKE ? ESCAPE '\')
  OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
-   WHERE bt.book_id = b.id AND lower(t.name) LIKE ? ESCAPE '\'))''';
+   WHERE bt.book_id = b.id AND vellum_fold(t.name) LIKE ? ESCAPE '\'))''';
     final where = tokens.map((_) => perToken).join(' AND ');
-    final sql = 'SELECT b.* FROM books b WHERE $where'
+    final sql =
+        'SELECT b.* FROM books b WHERE $where'
         '${includeHidden ? '' : ' AND b.hidden = 0'} ORDER BY b.title';
     final params = [
       for (final token in tokens)
-        ...List.filled(4, '%${_escapeLike(token.toLowerCase())}%')
+        ...List.filled(4, '%${_escapeLike(foldText(token))}%'),
     ];
     return _rowsToBooks(_db.select(sql, params));
   }
@@ -534,9 +577,11 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
       for (final title in titles) {
         // book_fts (FTS5 virtual table) has no FK cascade; clean it explicitly.
         final ids = _db
-            .select("SELECT id FROM books WHERE path='' AND title = ? "
-                'AND NOT EXISTS (SELECT 1 FROM formats f WHERE f.book_id=books.id)',
-                [title])
+            .select(
+              "SELECT id FROM books WHERE path='' AND title = ? "
+              'AND NOT EXISTS (SELECT 1 FROM formats f WHERE f.book_id=books.id)',
+              [title],
+            )
             .map((r) => r['id'] as int)
             .toList();
         for (final id in ids) {
@@ -552,8 +597,10 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Sets the hidden flag. Throws [StateError] when no such book exists.
   void setHidden(int id, bool hidden) {
     _write(() {
-      _db.execute('UPDATE books SET hidden = ? WHERE id = ?',
-          [hidden ? 1 : 0, id]);
+      _db.execute('UPDATE books SET hidden = ? WHERE id = ?', [
+        hidden ? 1 : 0,
+        id,
+      ]);
       if (_db.updatedRows == 0) {
         throw StateError('no book with id $id');
       }
@@ -563,18 +610,22 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Finds the first book with the given [sourceId]; null for falsy input.
   Book? findBySourceId(String sourceId) {
     if (sourceId.isEmpty) return null;
-    return _hydrate(_db.select(
+    return _hydrate(
+      _db.select(
         'SELECT * FROM books WHERE source_id = ? ORDER BY id LIMIT 1',
-        [sourceId]));
+        [sourceId],
+      ),
+    );
   }
 
   /// Adds a highlight and returns its id.
   int addHighlight(int bookId, String position, String color, String text) {
     return _write(() {
       _db.execute(
-          'INSERT INTO highlights (book_id, position, color, text, created) '
-          'VALUES (?, ?, ?, ?, ?)',
-          [bookId, position, color, text, _nowIso()]);
+        'INSERT INTO highlights (book_id, position, color, text, created) '
+        'VALUES (?, ?, ?, ?, ?)',
+        [bookId, position, color, text, _nowIso()],
+      );
       return _db.lastInsertRowId;
     });
   }
@@ -583,9 +634,10 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   List<Map<String, Object?>> listHighlights(int bookId) {
     return _db
         .select(
-            'SELECT id, book_id, position, color, text, created FROM highlights '
-            'WHERE book_id = ? ORDER BY created, id',
-            [bookId])
+          'SELECT id, book_id, position, color, text, created FROM highlights '
+          'WHERE book_id = ? ORDER BY created, id',
+          [bookId],
+        )
         .map((r) => Map<String, Object?>.of(r))
         .toList();
   }
@@ -602,15 +654,18 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
         : 0.0;
     _write(() {
       _db.execute(
-          'INSERT OR REPLACE INTO reading_positions '
-          '(book_id, locator, progress, updated) VALUES (?, ?, ?, ?)',
-          [bookId, locator, fraction, _nowIso()]);
+        'INSERT OR REPLACE INTO reading_positions '
+        '(book_id, locator, progress, updated) VALUES (?, ?, ?, ?)',
+        [bookId, locator, fraction, _nowIso()],
+      );
     });
   }
 
   String? getReadingPosition(int bookId) {
     final rows = _db.select(
-        'SELECT locator FROM reading_positions WHERE book_id = ?', [bookId]);
+      'SELECT locator FROM reading_positions WHERE book_id = ?',
+      [bookId],
+    );
     if (rows.isEmpty) return null;
     return rows.first['locator'] as String;
   }
@@ -640,9 +695,11 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// All shelves as `{id, name, book_count}` maps ordered by name.
   List<Map<String, Object?>> listShelves() {
     return _db
-        .select('SELECT s.id AS id, s.name AS name, '
-            '(SELECT COUNT(*) FROM shelf_books sb WHERE sb.shelf_id = s.id) '
-            'AS book_count FROM shelves s ORDER BY s.name')
+        .select(
+          'SELECT s.id AS id, s.name AS name, '
+          '(SELECT COUNT(*) FROM shelf_books sb WHERE sb.shelf_id = s.id) '
+          'AS book_count FROM shelves s ORDER BY s.name',
+        )
         .map((r) => Map<String, Object?>.of(r))
         .toList();
   }
@@ -650,22 +707,25 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   void addBookToShelf(int shelfId, int bookId) {
     _write(() {
       _db.execute(
-          'INSERT OR IGNORE INTO shelf_books (shelf_id, book_id) VALUES (?, ?)',
-          [shelfId, bookId]);
+        'INSERT OR IGNORE INTO shelf_books (shelf_id, book_id) VALUES (?, ?)',
+        [shelfId, bookId],
+      );
     });
   }
 
   void removeBookFromShelf(int shelfId, int bookId) {
     _write(() {
       _db.execute(
-          'DELETE FROM shelf_books WHERE shelf_id = ? AND book_id = ?',
-          [shelfId, bookId]);
+        'DELETE FROM shelf_books WHERE shelf_id = ? AND book_id = ?',
+        [shelfId, bookId],
+      );
     });
   }
 
   /// Books on a shelf, ordered by title.
   List<Book> shelfBooks(int shelfId, {bool includeHidden = false}) {
-    final sql = 'SELECT b.* FROM books b '
+    final sql =
+        'SELECT b.* FROM books b '
         'JOIN shelf_books sb ON sb.book_id = b.id '
         'WHERE sb.shelf_id = ?'
         '${includeHidden ? '' : ' AND b.hidden = 0'} ORDER BY b.title';
@@ -675,8 +735,10 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Ids of shelves containing [bookId].
   List<int> shelvesForBook(int bookId) {
     return _db
-        .select('SELECT shelf_id FROM shelf_books WHERE book_id = ? ORDER BY shelf_id',
-            [bookId])
+        .select(
+          'SELECT shelf_id FROM shelf_books WHERE book_id = ? ORDER BY shelf_id',
+          [bookId],
+        )
         .map((r) => r['shelf_id'] as int)
         .toList();
   }
@@ -684,22 +746,28 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   // ---- Reading stats (new feature) ----
 
   void addReadingSession(
-      int bookId, String startedIso, int durationSeconds, String endLocator) {
+    int bookId,
+    String startedIso,
+    int durationSeconds,
+    String endLocator,
+  ) {
     _write(() {
       _db.execute(
-          'INSERT INTO reading_sessions (book_id, started, duration_seconds, end_locator) '
-          'VALUES (?, ?, ?, ?)',
-          [bookId, startedIso, durationSeconds, endLocator]);
+        'INSERT INTO reading_sessions (book_id, started, duration_seconds, end_locator) '
+        'VALUES (?, ?, ?, ?)',
+        [bookId, startedIso, durationSeconds, endLocator],
+      );
     });
   }
 
   /// Per-book stats: `{totalSeconds, sessions, lastRead}`.
   Map<String, Object?> statsForBook(int bookId) {
     final rows = _db.select(
-        'SELECT COALESCE(SUM(duration_seconds), 0) AS total_seconds, '
-        'COUNT(*) AS sessions, MAX(started) AS last_read '
-        'FROM reading_sessions WHERE book_id = ?',
-        [bookId]);
+      'SELECT COALESCE(SUM(duration_seconds), 0) AS total_seconds, '
+      'COUNT(*) AS sessions, MAX(started) AS last_read '
+      'FROM reading_sessions WHERE book_id = ?',
+      [bookId],
+    );
     final r = rows.first;
     return {
       'totalSeconds': r['total_seconds'],
@@ -711,9 +779,10 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   /// Library-wide stats: `{totalSeconds, booksRead, sessions}`.
   Map<String, Object?> libraryStats() {
     final rows = _db.select(
-        'SELECT COALESCE(SUM(duration_seconds), 0) AS total_seconds, '
-        'COUNT(DISTINCT book_id) AS books_read, COUNT(*) AS sessions '
-        'FROM reading_sessions');
+      'SELECT COALESCE(SUM(duration_seconds), 0) AS total_seconds, '
+      'COUNT(DISTINCT book_id) AS books_read, COUNT(*) AS sessions '
+      'FROM reading_sessions',
+    );
     final r = rows.first;
     return {
       'totalSeconds': r['total_seconds'],
@@ -727,9 +796,10 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   List<Map<String, Object?>> recentReadingSessions(int limit) {
     return _db
         .select(
-            'SELECT id, book_id, started, duration_seconds, end_locator '
-            'FROM reading_sessions ORDER BY id DESC LIMIT ?',
-            [limit])
+          'SELECT id, book_id, started, duration_seconds, end_locator '
+          'FROM reading_sessions ORDER BY id DESC LIMIT ?',
+          [limit],
+        )
         .map((r) => Map<String, Object?>.of(r))
         .toList();
   }
@@ -737,31 +807,72 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   // ---- Full-text search over book content (new feature) ----
 
   /// Replaces the FTS rows for [bookId] with [rows].
-  void replaceBookFts(int bookId, List<Map<String, Object>> rows) {
-    _write(() => _replaceFtsRows(bookId, rows));
+  ///
+  /// [source] is the file signature the rows were extracted from; it is
+  /// stored in the same transaction so a skip decision can never outlive the
+  /// rows it describes. Null clears the recorded signature.
+  void replaceBookFts(
+    int bookId,
+    List<Map<String, Object>> rows, {
+    FtsSource? source,
+  }) {
+    _write(() => _replaceFtsRows(bookId, rows, source));
   }
 
   /// Replaces FTS rows for many books in one transaction (indexing runs).
-  void replaceBookFtsMany(Map<int, List<Map<String, Object>>> rowsByBook) {
+  void replaceBookFtsMany(Map<int, FtsIndexEntry> entries) {
     _write(() {
-      for (final entry in rowsByBook.entries) {
-        _replaceFtsRows(entry.key, entry.value);
+      for (final entry in entries.entries) {
+        _replaceFtsRows(entry.key, entry.value.rows, entry.value.source);
       }
     });
   }
 
-  void _replaceFtsRows(int bookId, List<Map<String, Object>> rows) {
+  /// The signature recorded alongside [bookId]'s FTS rows, or null when the
+  /// book has never been indexed.
+  FtsSource? ftsSourceFor(int bookId) {
+    final rows = _db.select(
+      'SELECT path, mtime_ms, size FROM fts_index_state WHERE book_id = ?',
+      [bookId],
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return FtsSource(
+      path: row['path'] as String,
+      mtimeMs: row['mtime_ms'] as int,
+      size: row['size'] as int,
+    );
+  }
+
+  void _replaceFtsRows(
+    int bookId,
+    List<Map<String, Object>> rows,
+    FtsSource? source,
+  ) {
     _db.execute('DELETE FROM book_fts WHERE book_id = ?', [bookId]);
     for (final r in rows) {
       _db.execute(
-          'INSERT INTO book_fts (book_id, chapter, title, content) '
-          'VALUES (?, ?, ?, ?)',
-          [
-            bookId,
-            r['chapter'] as int,
-            r['title'] as String,
-            r['content'] as String,
-          ]);
+        'INSERT INTO book_fts (book_id, chapter, title, content) '
+        'VALUES (?, ?, ?, ?)',
+        [
+          bookId,
+          r['chapter'] as int,
+          r['title'] as String,
+          r['content'] as String,
+        ],
+      );
+    }
+    _db.execute('DELETE FROM fts_index_state WHERE book_id = ?', [bookId]);
+    if (source != null) {
+      // Guarded insert: indexing runs while other actions may delete a book,
+      // and a missing parent must skip the state row instead of failing the
+      // whole batch on the foreign key.
+      _db.execute(
+        'INSERT INTO fts_index_state (book_id, path, mtime_ms, size) '
+        'SELECT ?, ?, ?, ? WHERE EXISTS '
+        '(SELECT 1 FROM books WHERE id = ?)',
+        [bookId, source.path, source.mtimeMs, source.size, bookId],
+      );
     }
   }
 
@@ -777,59 +888,127 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
   }
 
   /// Searches indexed book content. Returns `{book_id, chapter, title,
-  /// snippet}` maps. Uses FTS5 when available, else a LIKE fallback.
-  List<Map<String, Object?>> searchBookContent(String query) {
+  /// snippet}` maps, at most [limit] of them. Uses FTS5 when available, else
+  /// a LIKE fallback.
+  List<Map<String, Object?>> searchBookContent(String query, {int limit = 20}) {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return const [];
+    final maxRows = limit > 0 ? limit : 20;
     if (ftsAvailable) {
       final match = _sanitizeMatch(trimmed);
       if (match.isEmpty) return const [];
       return _db
           .select(
-              "SELECT book_id, chapter, title, snippet(book_fts, 3, '<b>', '</b>', '…', 32) AS snippet "
-              'FROM book_fts WHERE book_fts MATCH ? ORDER BY rank',
-              [match])
-          .map((r) => {
-                'book_id': r['book_id'],
-                'chapter': r['chapter'],
-                'title': r['title'],
-                'snippet': r['snippet'],
-              })
-          .toList();
-    }
-    // Fallback: plain LIKE over the regular table. Escape LIKE wildcards so
-    // user-typed '%' and '_' are matched literally.
-    final escaped = trimmed
-        .replaceAll(r'\', r'\\')
-        .replaceAll('%', r'\%')
-        .replaceAll('_', r'\_');
-    final pattern = '%$escaped%';
-    return _db
-        .select(
-            'SELECT book_id, chapter, title, content FROM book_fts '
-            r"WHERE content LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' "
-            'ORDER BY book_id, chapter',
-            [pattern, pattern])
-        .map((r) => {
+            "SELECT book_id, chapter, title, snippet(book_fts, 3, '<b>', '</b>', '…', 32) AS snippet "
+            'FROM book_fts WHERE book_fts MATCH ? '
+            'ORDER BY rank LIMIT ?',
+            [match, maxRows],
+          )
+          .map(
+            (r) => {
               'book_id': r['book_id'],
               'chapter': r['chapter'],
               'title': r['title'],
-              'snippet': _makeSnippet(r['content'] as String, trimmed),
-            })
+              'snippet': r['snippet'],
+            },
+          )
+          .toList();
+    }
+    // Fallback: plain LIKE over the regular table. Escape LIKE wildcards so
+    // user-typed '%' and '_' are matched literally, and fold both sides so
+    // non-ASCII capitals match.
+    final escaped = foldText(
+      trimmed,
+    ).replaceAll(r'\', r'\\').replaceAll('%', r'\%').replaceAll('_', r'\_');
+    final pattern = '%$escaped%';
+    return _db
+        .select(
+          'SELECT book_id, chapter, title, content FROM book_fts '
+          r"WHERE vellum_fold(content) LIKE ? ESCAPE '\' "
+          r"OR vellum_fold(title) LIKE ? ESCAPE '\' "
+          'ORDER BY book_id, chapter LIMIT ?',
+          [pattern, pattern, maxRows],
+        )
+        .map(
+          (r) => {
+            'book_id': r['book_id'],
+            'chapter': r['chapter'],
+            'title': r['title'],
+            'snippet': _makeSnippet(
+              r['content'] as String,
+              r['title'] as String,
+              trimmed,
+            ),
+          },
+        )
         .toList();
   }
 
-  static String _makeSnippet(String content, String query) {
-    final idx = content.toLowerCase().indexOf(query.toLowerCase());
+  static String _makeSnippet(String content, String title, String query) {
+    final needle = foldText(query);
+    var idx = foldText(content).indexOf(needle);
+    var haystack = content;
+    if (idx < 0) {
+      idx = foldText(title).indexOf(needle);
+      haystack = title;
+    }
     if (idx < 0) {
       return content.length <= 64 ? content : '${content.substring(0, 64)}…';
     }
     const context = 24;
     final start = idx - context < 0 ? 0 : idx - context;
-    final end =
-        idx + query.length + context > content.length ? content.length : idx + query.length + context;
+    final end = idx + needle.length + context > haystack.length
+        ? haystack.length
+        : idx + needle.length + context;
     final prefix = start > 0 ? '…' : '';
-    final suffix = end < content.length ? '…' : '';
-    return '$prefix${content.substring(start, end)}$suffix';
+    final suffix = end < haystack.length ? '…' : '';
+    return '$prefix${haystack.substring(start, end)}$suffix';
   }
+}
+
+/// Identity of the source file a snapshot of FTS rows was extracted from.
+///
+/// Stored in `fts_index_state` beside the rows, so the skip decision cannot
+/// outlive them. Path is part of the identity: a book re-imported elsewhere
+/// must be re-indexed even when its mtime and size happen to match.
+class FtsSource {
+  const FtsSource({
+    required this.path,
+    required this.mtimeMs,
+    required this.size,
+  });
+
+  /// Stats [path]; null when it does not name a regular file.
+  static FtsSource? of(String path) {
+    if (path.isEmpty) return null;
+    try {
+      final stat = File(path).statSync();
+      if (stat.type != FileSystemEntityType.file) return null;
+      return FtsSource(
+        path: path,
+        mtimeMs: stat.modified.millisecondsSinceEpoch,
+        size: stat.size,
+      );
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  final String path;
+  final int mtimeMs;
+  final int size;
+
+  bool matches(FtsSource other) =>
+      path == other.path && mtimeMs == other.mtimeMs && size == other.size;
+}
+
+/// FTS rows for one book together with the source file they came from.
+class FtsIndexEntry {
+  const FtsIndexEntry({required this.rows, this.source});
+
+  final List<Map<String, Object>> rows;
+
+  /// Null when there is no source file (PDF-only or manually supplied rows);
+  /// such a book is never skipped by [Library.ftsSourceFor].
+  final FtsSource? source;
 }

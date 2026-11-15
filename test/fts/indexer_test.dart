@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -29,10 +30,18 @@ String _buildEpub() {
     ..addFile(ArchiveFile.string('mimetype', 'application/epub+zip'))
     ..addFile(ArchiveFile.string('META-INF/container.xml', container))
     ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
-    ..addFile(ArchiveFile.string(
-        'OEBPS/ch1.xhtml', '<html><body><p>moonstone alpha</p></body></html>'))
-    ..addFile(ArchiveFile.string(
-        'OEBPS/ch2.xhtml', '<html><body><p>moonstone beta</p></body></html>'));
+    ..addFile(
+      ArchiveFile.string(
+        'OEBPS/ch1.xhtml',
+        '<html><body><p>moonstone alpha</p></body></html>',
+      ),
+    )
+    ..addFile(
+      ArchiveFile.string(
+        'OEBPS/ch2.xhtml',
+        '<html><body><p>moonstone beta</p></body></html>',
+      ),
+    );
   return base64Encode(ZipEncoder().encode(archive));
 }
 
@@ -53,27 +62,29 @@ void main() {
   });
 
   int addBookWithFile(String ext, List<int> bytes, {String title = 't'}) {
-    final file = File('${tmp.path}/book-${DateTime.now().microsecondsSinceEpoch}.$ext');
+    final file = File(
+      '${tmp.path}/book-${DateTime.now().microsecondsSinceEpoch}.$ext',
+    );
     file.writeAsBytesSync(bytes);
-    return library.addBook(Book(
-      title: title,
-      path: file.path,
-      formats: [ext],
-    ));
+    return library.addBook(Book(title: title, path: file.path, formats: [ext]));
   }
 
   List<int> epubBytes() => base64Decode(_buildEpub());
 
-  test('indexBook populates rows and search finds chapter with snippet',
-      () async {
-    final id = addBookWithFile('epub', epubBytes());
-    await indexer.indexBook(id);
-    final results = indexer.search('moonstone');
-    expect(results, isNotEmpty);
-    final row = results.firstWhere((r) => r['bookId'] == id || r['book_id'] == id);
-    final snippet = (row['snippet'] ?? '').toString();
-    expect(snippet, contains('<b>'));
-  });
+  test(
+    'indexBook populates rows and search finds chapter with snippet',
+    () async {
+      final id = addBookWithFile('epub', epubBytes());
+      await indexer.indexBook(id);
+      final results = indexer.search('moonstone');
+      expect(results, isNotEmpty);
+      final row = results.firstWhere(
+        (r) => r['bookId'] == id || r['book_id'] == id,
+      );
+      final snippet = (row['snippet'] ?? '').toString();
+      expect(snippet, contains('<b>'));
+    },
+  );
 
   test('unchanged book skipped on second indexAll', () async {
     addBookWithFile('epub', epubBytes());
@@ -84,7 +95,9 @@ void main() {
   test('changed mtime/size re-indexes', () async {
     final file = File('${tmp.path}/changing.epub');
     file.writeAsBytesSync(epubBytes());
-    final id = library.addBook(Book(title: 't', path: file.path, formats: ['epub']));
+    final id = library.addBook(
+      Book(title: 't', path: file.path, formats: ['epub']),
+    );
     expect(await indexer.indexAll(), 1);
     file.writeAsBytesSync([...epubBytes(), 0]); // change size+mtime
     file.setLastModifiedSync(DateTime.now().add(const Duration(seconds: 2)));
@@ -94,12 +107,20 @@ void main() {
 
   test('garbage epub skipped without failing indexAll', () async {
     addBookWithFile('epub', epubBytes());
-    addBookWithFile('epub', utf8.encode('this is not a zip at all'), title: 'bad');
+    addBookWithFile(
+      'epub',
+      utf8.encode('this is not a zip at all'),
+      title: 'bad',
+    );
     expect(await indexer.indexAll(), 1);
   });
 
   test('corrupt book is not counted by indexAll', () async {
-    addBookWithFile('epub', utf8.encode('this is not a zip at all'), title: 'bad');
+    addBookWithFile(
+      'epub',
+      utf8.encode('this is not a zip at all'),
+      title: 'bad',
+    );
     expect(await indexer.indexAll(), 0);
   });
 
@@ -124,5 +145,54 @@ void main() {
     indexer.removeBook(id);
     final results = indexer.search('moonstone');
     expect(results.where((r) => (r['bookId'] ?? r['book_id']) == id), isEmpty);
+  });
+
+  test('a book re-imported after deletion is indexed and searchable', () async {
+    final file = File('${tmp.path}/reimport.epub')
+      ..writeAsBytesSync(epubBytes());
+    final firstId = library.addBook(
+      Book(title: 'gone', path: file.path, formats: ['epub']),
+    );
+    expect(await indexer.indexAll(), 1);
+
+    // Deleting the book must take its skip state with it (FK cascade), not
+    // just its rows; otherwise the re-import below would stay invisible.
+    library.deleteBook(firstId);
+    expect(library.ftsSourceFor(firstId), isNull);
+    expect(indexer.search('moonstone'), isEmpty);
+
+    final secondId = library.addBook(
+      Book(title: 'back', path: file.path, formats: ['epub']),
+    );
+    expect(
+      await indexer.indexAll(),
+      1,
+      reason: 'a new id must not inherit an indexed mark',
+    );
+    expect(
+      indexer.search('moonstone').where((r) => r['book_id'] == secondId),
+      isNotEmpty,
+    );
+  });
+
+  test('indexAll yields to the event loop between batches', () async {
+    for (var i = 0; i < 10; i++) {
+      final file = File('${tmp.path}/yield-$i.epub')
+        ..writeAsBytesSync(epubBytes());
+      library.addBook(Book(title: 'y$i', path: file.path, formats: ['epub']));
+    }
+    var ticks = 0;
+    final timer = Timer.periodic(
+      const Duration(milliseconds: 1),
+      (_) => ticks++,
+    );
+    addTearDown(timer.cancel);
+    expect(await indexer.indexAll(), 10);
+    timer.cancel();
+    expect(
+      ticks,
+      greaterThan(0),
+      reason: 'indexAll must not block the event loop end to end',
+    );
   });
 }

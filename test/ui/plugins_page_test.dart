@@ -36,9 +36,15 @@ class _PluginSidecar extends SidecarClient {
   ];
   final List<String> unloaded = [];
 
+  /// When set, `loadAll` fails with this error until the test clears it.
+  Object? startFailure;
+
   @override
-  Future<LoadedPlugins> loadAll(String pluginDir) async =>
-      LoadedPlugins(metadata: metadata, stores: stores);
+  Future<LoadedPlugins> loadAll(String pluginDir) async {
+    final failure = startFailure;
+    if (failure != null) throw failure;
+    return LoadedPlugins(metadata: metadata, stores: stores);
+  }
 
   @override
   Future<LoadedPlugins> loaded(String pluginDir) async =>
@@ -81,9 +87,9 @@ void main() {
   });
 
   Widget wrap() => AppStateScope(
-        state: state,
-        child: const MaterialApp(home: Scaffold(body: PluginsPage())),
-      );
+    state: state,
+    child: const MaterialApp(home: Scaffold(body: PluginsPage())),
+  );
 
   testWidgets('installed plugins list renders with versions', (tester) async {
     await tester.pumpWidget(wrap());
@@ -95,12 +101,32 @@ void main() {
     expect(find.text('v2.1 · Fetches metadata'), findsOneWidget);
     // Store plugin row.
     expect(find.text('Test Shop'), findsOneWidget);
-    expect(
-        find.text('Store plugin · Fake store plugin'), findsOneWidget);
+    expect(find.text('Store plugin · Fake store plugin'), findsOneWidget);
   });
 
-  testWidgets('removing a metadata plugin unloads it through the sidecar',
-      (tester) async {
+  testWidgets('a sidecar startup failure renders retry, not an empty list', (
+    tester,
+  ) async {
+    sidecar.startFailure = SidecarException('sidecar crashed');
+    await tester.pumpWidget(wrap());
+    await tester.pumpAndSettle();
+
+    expect(find.text('Plugins Unavailable'), findsOneWidget);
+    expect(find.text('No Plugins Installed'), findsNothing);
+    expect(find.textContaining('sidecar crashed'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+
+    sidecar.startFailure = null;
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Plugins Unavailable'), findsNothing);
+    expect(find.text('Goodreads Meta'), findsOneWidget);
+  });
+
+  testWidgets('removing a metadata plugin unloads it through the sidecar', (
+    tester,
+  ) async {
     await tester.pumpWidget(wrap());
     await tester.pumpAndSettle();
 

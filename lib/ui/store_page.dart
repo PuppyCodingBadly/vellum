@@ -9,10 +9,23 @@ import '../plugins/plugin_controller.dart' show PluginInfo;
 import '../store/store_download.dart';
 import 'theme.dart';
 
+/// Chooses, streams and publishes a store download.
+typedef StoreDownload =
+    Future<File> Function({
+      required String url,
+      required String title,
+      required String formats,
+      required String directory,
+    });
+
 /// "Get Books" tab: searches loaded calibre store plugins and downloads the
 /// selected result into the current library.
 class StorePage extends StatefulWidget {
-  const StorePage({super.key});
+  const StorePage({super.key, this.download = downloadBook});
+
+  /// Download implementation; tests replace it so they never touch the
+  /// network or the real data directory.
+  final StoreDownload download;
 
   @override
   State<StorePage> createState() => _StorePageState();
@@ -26,7 +39,20 @@ class _StorePageState extends State<StorePage> {
   List<Map<String, Object?>>? _results;
   String? _resultsStore;
   String? _searchError;
-  final Set<int> _downloading = {};
+
+  /// Result keys with a download in flight.  A search does not clear it: the
+  /// same row can come back while its download still runs.
+  final Set<String> _downloading = {};
+
+  /// Stable identity for a search result, so the same store row keeps its
+  /// in-flight marker across searches; maps are recreated by every search.
+  static String _resultKey(String storeName, Map<String, Object?> result) {
+    final fields = [
+      'store=$storeName',
+      for (final entry in result.entries) '${entry.key}=${entry.value}',
+    ]..sort();
+    return fields.join('\u0000');
+  }
 
   @override
   void dispose() {
@@ -62,7 +88,6 @@ class _StorePageState extends State<StorePage> {
     if (mounted) {
       setState(() {
         _searching = false;
-        _downloading.clear();
         _results = results;
         _resultsStore = storeName;
         _searchError = error;
@@ -72,15 +97,15 @@ class _StorePageState extends State<StorePage> {
     }
   }
 
-  Future<void> _download(int index, String storeName) async {
-    final results = _results;
-    if (results == null || index >= results.length) return;
-    if (_downloading.contains(index)) return;
-    final result = results[index];
+  Future<void> _download(Map<String, Object?> result, String storeName) async {
+    final key = _resultKey(storeName, result);
+    if (_downloading.contains(key)) return;
     final appState = AppState.of(context);
-    // Resolve the library now: the user may switch libraries mid-download.
-    final library = appState.library;
-    setState(() => _downloading.add(index));
+    // Only the directory is remembered across the awaits: the Library itself
+    // is resolved again when the import writes, and is never touched after a
+    // library switch closed it.
+    final startedIn = appState.libraryDir;
+    setState(() => _downloading.add(key));
     try {
       Map<String, Object?>? fetched;
       try {
@@ -92,7 +117,7 @@ class _StorePageState extends State<StorePage> {
         appState.showToast('Could not resolve download link');
         return;
       }
-      final url = (fetched['download_url'] ?? '').toString();
+      final url = (fetched['download_url'] ?? '').toString().trim();
       if (url.isEmpty) {
         appState.showToast('Could not resolve download link');
         return;
@@ -104,42 +129,45 @@ class _StorePageState extends State<StorePage> {
       final title = rawTitle.isEmpty ? 'book' : rawTitle;
       final formats = (fetched['formats'] ?? result['formats'] ?? 'epub')
           .toString();
-      final downloadsDir = p.join(appState.dataDir, 'downloads');
 
-      String path;
+      final File file;
       try {
-        await Directory(downloadsDir).create(recursive: true);
-        final fileName = sanitizeDownloadFileName(
-          title,
-          formats,
-          exists: (candidate) =>
-              File(p.join(downloadsDir, candidate)).existsSync(),
+        file = await widget.download(
+          url: url,
+          title: title,
+          formats: formats,
+          directory: p.join(appState.dataDir, 'downloads'),
         );
-        path = p.join(downloadsDir, fileName);
-        await downloadToFile(url, path);
-      } catch (e) {
-        appState.showToast('Download failed: $e');
+      } catch (error) {
+        appState.showToast('Download failed: $error');
         return;
       }
 
-      List<int> ids;
+      if (appState.libraryDir != startedIn) {
+        appState.showToast(
+          'Library changed during download; $title was not added',
+        );
+        return;
+      }
+
+      final List<int> ids;
       try {
-        ids = await importPath(library, path);
-      } catch (e) {
-        appState.showToast('Import failed: $e');
+        ids = await importPath(appState.library, file.path);
+      } catch (error) {
+        appState.showToast('Import failed: $error');
         return;
       }
 
       if (ids.isEmpty) {
-        appState.showToast('Downloaded $title');
-      } else if (!identical(appState.library, library)) {
-        appState.showToast('Added $title to the previous library');
-      } else {
-        await appState.refresh();
-        appState.showToast('Added $title to library');
+        appState.showToast(
+          'Downloaded $title but could not add it to the library',
+        );
+        return;
       }
+      await appState.refresh();
+      appState.showToast('Added $title to library');
     } finally {
-      if (mounted) setState(() => _downloading.remove(index));
+      if (mounted) setState(() => _downloading.remove(key));
     }
   }
 
@@ -308,13 +336,12 @@ class _StorePageState extends State<StorePage> {
         padding: EdgeInsets.zero,
         itemCount: results.length,
         separatorBuilder: (_, __) => Divider(height: 1, color: palette.line),
-        itemBuilder: (context, index) =>
-            _buildRow(index, results[index], storeName),
+        itemBuilder: (context, index) => _buildRow(results[index], storeName),
       ),
     );
   }
 
-  Widget _buildRow(int index, Map<String, Object?> result, String storeName) {
+  Widget _buildRow(Map<String, Object?> result, String storeName) {
     final palette = context.palette;
     final title = (result['title'] ?? '').toString().trim();
     final author = (result['author'] ?? '').toString().trim();
@@ -324,7 +351,7 @@ class _StorePageState extends State<StorePage> {
       for (final format in formats.split(','))
         if (format.trim().isNotEmpty) format.trim(),
     ];
-    final downloading = _downloading.contains(index);
+    final downloading = _downloading.contains(_resultKey(storeName, result));
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: VellumSpace.md,
@@ -405,7 +432,7 @@ class _StorePageState extends State<StorePage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : OutlinedButton(
-                      onPressed: () => _download(index, storeName),
+                      onPressed: () => _download(result, storeName),
                       child: const Text('Download'),
                     ),
             ),

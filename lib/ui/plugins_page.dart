@@ -2,6 +2,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../plugins/plugin_controller.dart' show PluginInfo;
 import 'theme.dart';
 
 /// Plugins tab: lists loaded metadata and store plugins and lets the user
@@ -17,6 +18,7 @@ class _PluginsPageState extends State<PluginsPage> {
   AppState? _appState;
   bool _bootstrapped = false;
   bool _adding = false;
+  String? _startError;
 
   @override
   void didChangeDependencies() {
@@ -27,15 +29,16 @@ class _PluginsPageState extends State<PluginsPage> {
     _startPlugins(_appState!);
   }
 
-  /// Loads the plugins already installed in the data directory, ignoring
-  /// sidecar failures so the page always renders.
+  /// Loads the plugins installed in the data directory.  A sidecar failure is
+  /// kept and rendered as an error state with a retry, never as "no plugins".
   Future<void> _startPlugins(AppState appState) async {
+    String? error;
     try {
       await appState.plugins.start();
-    } catch (_) {
-      // Listing simply stays empty until the sidecar recovers.
+    } catch (failure) {
+      error = '$failure';
     }
-    if (mounted) setState(() {});
+    if (mounted) setState(() => _startError = error);
   }
 
   Future<void> _addPlugin() async {
@@ -84,6 +87,16 @@ class _PluginsPageState extends State<PluginsPage> {
         final metadata = appState.plugins.metadataPlugins();
         final stores = appState.plugins.storePlugins();
         final isEmpty = metadata.isEmpty && stores.isEmpty;
+        final Widget body;
+        final startError = _startError;
+        if (startError != null && isEmpty) {
+          // Nothing loaded: the failure is the whole story, never "no plugins".
+          body = _failure(palette, startError);
+        } else if (isEmpty) {
+          body = _empty(palette);
+        } else {
+          body = _installed(palette, metadata, stores);
+        }
         return ColoredBox(
           color: palette.background,
           child: Center(
@@ -135,53 +148,7 @@ class _PluginsPageState extends State<PluginsPage> {
                       ],
                     ),
                     const SizedBox(height: VellumSpace.lg),
-                    Expanded(
-                      child: isEmpty
-                          ? _empty(palette)
-                          : SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  if (metadata.isNotEmpty) ...[
-                                    _section('Metadata sources', palette),
-                                    const SizedBox(height: VellumSpace.xs),
-                                    _pluginList(palette, [
-                                      for (final info in metadata)
-                                        _PluginRow(
-                                          name: info.name.isEmpty
-                                              ? 'Unnamed plugin'
-                                              : info.name,
-                                          subtitle: info.version.isEmpty
-                                              ? info.description
-                                              : 'v${info.version} · '
-                                                    '${info.description}',
-                                          onRemove: () =>
-                                              _removePlugin(info.name),
-                                        ),
-                                    ]),
-                                  ],
-                                  if (stores.isNotEmpty) ...[
-                                    if (metadata.isNotEmpty)
-                                      const SizedBox(height: VellumSpace.lg),
-                                    _section('Stores', palette),
-                                    const SizedBox(height: VellumSpace.xs),
-                                    _pluginList(palette, [
-                                      for (final store in stores)
-                                        _PluginRow(
-                                          name: store.name.isEmpty
-                                              ? 'Unnamed store'
-                                              : store.name,
-                                          subtitle: store.description.isEmpty
-                                              ? 'Store plugin'
-                                              : 'Store plugin · '
-                                                    '${store.description}',
-                                        ),
-                                    ]),
-                                  ],
-                                ],
-                              ),
-                            ),
-                    ),
+                    Expanded(child: body),
                   ],
                 ),
               ),
@@ -189,6 +156,48 @@ class _PluginsPageState extends State<PluginsPage> {
           ),
         );
       },
+    );
+  }
+
+  Widget _installed(
+    VellumPalette palette,
+    List<PluginInfo> metadata,
+    List<PluginInfo> stores,
+  ) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (metadata.isNotEmpty) ...[
+            _section('Metadata sources', palette),
+            const SizedBox(height: VellumSpace.xs),
+            _pluginList(palette, [
+              for (final info in metadata)
+                _PluginRow(
+                  name: info.name.isEmpty ? 'Unnamed plugin' : info.name,
+                  subtitle: info.version.isEmpty
+                      ? info.description
+                      : 'v${info.version} · ${info.description}',
+                  onRemove: () => _removePlugin(info.name),
+                ),
+            ]),
+          ],
+          if (stores.isNotEmpty) ...[
+            if (metadata.isNotEmpty) const SizedBox(height: VellumSpace.lg),
+            _section('Stores', palette),
+            const SizedBox(height: VellumSpace.xs),
+            _pluginList(palette, [
+              for (final store in stores)
+                _PluginRow(
+                  name: store.name.isEmpty ? 'Unnamed store' : store.name,
+                  subtitle: store.description.isEmpty
+                      ? 'Store plugin'
+                      : 'Store plugin · ${store.description}',
+                ),
+            ]),
+          ],
+        ],
+      ),
     );
   }
 
@@ -223,7 +232,34 @@ class _PluginsPageState extends State<PluginsPage> {
     );
   }
 
-  Widget _empty(VellumPalette palette) {
+  Widget _empty(VellumPalette palette) => _status(
+    palette,
+    icon: Icons.extension_outlined,
+    title: 'No Plugins Installed',
+    description: 'Add a plugin archive (.zip) to extend Vellum.',
+  );
+
+  Widget _failure(VellumPalette palette, String message) {
+    final appState = _appState;
+    return _status(
+      palette,
+      icon: Icons.error_outline,
+      title: 'Plugins Unavailable',
+      description: message,
+      action: FilledButton(
+        onPressed: appState == null ? null : () => _startPlugins(appState),
+        child: const Text('Retry'),
+      ),
+    );
+  }
+
+  Widget _status(
+    VellumPalette palette, {
+    required IconData icon,
+    required String title,
+    required String description,
+    Widget? action,
+  }) {
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(VellumSpace.xl),
@@ -240,15 +276,11 @@ class _PluginsPageState extends State<PluginsPage> {
                   shape: BoxShape.circle,
                   border: Border.all(color: palette.line),
                 ),
-                child: Icon(
-                  Icons.extension_outlined,
-                  size: 23,
-                  color: palette.textDim,
-                ),
+                child: Icon(icon, size: 23, color: palette.textDim),
               ),
               const SizedBox(height: VellumSpace.md),
               Text(
-                'No Plugins Installed',
+                title,
                 textAlign: TextAlign.center,
                 style: VellumType.display(
                   22,
@@ -259,10 +291,14 @@ class _PluginsPageState extends State<PluginsPage> {
               ),
               const SizedBox(height: VellumSpace.xs),
               Text(
-                'Add a plugin archive (.zip) to extend Vellum.',
+                description,
                 textAlign: TextAlign.center,
                 style: VellumType.ui(13, height: 1.55, color: palette.textDim),
               ),
+              if (action != null) ...[
+                const SizedBox(height: VellumSpace.md),
+                action,
+              ],
             ],
           ),
         ),

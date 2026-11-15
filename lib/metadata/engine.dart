@@ -9,8 +9,6 @@ import '../core/isbn.dart';
 import 'metadata.dart';
 import 'universal.dart';
 
-const int maxCoverBytes = 10 * 1024 * 1024;
-
 class MetadataEngine {
   final List<MetadataSource> _sources = [];
 
@@ -24,60 +22,61 @@ class MetadataEngine {
     String isbn = '',
     http.Client? client,
     Duration timeout = const Duration(seconds: 15),
+  }) async => _rank(
+    await _everySource(
+      (source) => source.search(
+        title: title,
+        authors: authors,
+        isbn: isbn,
+        client: client,
+        timeout: timeout,
+      ),
+    ),
+  );
+
+  Future<Metadata?> grabUrl(
+    String url, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 20),
+  }) => UniversalGrabber().grab(url, client: client, timeout: timeout);
+
+  Future<List<Metadata>> findQuery(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
-    // Fan out in parallel; results concatenated in registration order.
-    final perSource = await Future.wait(_sources.map((source) async {
-      try {
-        return await source.search(
-            title: title,
-            authors: authors,
-            isbn: isbn,
-            client: client,
-            timeout: timeout);
-      } catch (_) {
-        return <Metadata>[];
-      }
-    }));
-    final results = perSource.expand((list) => list).toList();
-    return _dedupe(results).where(_isEnglish).toList();
-  }
-
-  Future<Metadata?> grabUrl(String url,
-          {http.Client? client,
-          Duration timeout = const Duration(seconds: 20)}) =>
-      UniversalGrabber().grab(url, client: client, timeout: timeout);
-
-  Future<List<Metadata>> findQuery(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
     query = query.trim().replaceAll(RegExp(r'\s+'), ' ');
     if (query.isEmpty) return [];
     final isbn = queryIsbn(query);
-    List<Metadata> results;
     if (isbn.isNotEmpty) {
-      results = await find(isbn: isbn, client: client, timeout: timeout);
-    } else {
-      final perSource = await Future.wait(_sources.map((source) async {
-        try {
-          return await source.searchFreeText(query,
-              client: client, timeout: timeout);
-        } catch (_) {
-          return <Metadata>[];
-        }
-      }));
-      results = perSource.expand((list) => list).toList();
-      results = _dedupe(results).where(_isEnglish).toList();
-      results.sort((a, b) {
-        final byScore = _fuzzyScore(query, b).compareTo(_fuzzyScore(query, a));
-        if (byScore != 0) return byScore;
-        return b.rating.compareTo(a.rating);
-      });
+      return _withMerged(
+        await find(isbn: isbn, client: client, timeout: timeout),
+      );
     }
-    final merged = mergeResults(results);
-    if (merged != null && results.length > 1) {
-      return [merged, ...results];
+    final results = await _everySource(
+      (source) =>
+          source.searchFreeText(query, client: client, timeout: timeout),
+    );
+    return combineQuery(query, results);
+  }
+
+  /// Runs [search] against every source in parallel, dropping the ones that
+  /// fail so one broken source cannot sink the others.
+  Future<List<Metadata>> _everySource(
+    Future<List<Metadata>> Function(MetadataSource source) search,
+  ) async {
+    Future<List<Metadata>> guarded(MetadataSource source) async {
+      try {
+        return await search(source);
+      } catch (_) {
+        return const <Metadata>[];
+      }
     }
-    return results;
+
+    final perSource = await Future.wait([
+      for (final source in _sources) guarded(source),
+    ]);
+    return [for (final rows in perSource) ...rows];
   }
 
   Future<List<Metadata>> findAll({
@@ -86,38 +85,43 @@ class MetadataEngine {
     String isbn = '',
     http.Client? client,
     Duration timeout = const Duration(seconds: 15),
-  }) async {
-    final results = await find(
-        title: title,
-        authors: authors,
-        isbn: isbn,
-        client: client,
-        timeout: timeout);
-    final merged = mergeResults(results);
-    if (merged != null && results.length > 1) {
-      return [merged, ...results];
-    }
-    return results;
-  }
+  }) async => _withMerged(
+    await find(
+      title: title,
+      authors: authors,
+      isbn: isbn,
+      client: client,
+      timeout: timeout,
+    ),
+  );
 
   /// Canonicalize results gathered from several sources: keep English
   /// entries, dedupe (rating-aware), sort by rating and prepend the merged
-  /// record when more than one source row remains.
-  static List<Metadata> combineSources(List<Metadata> results) {
-    final combined = _dedupe(results.where(_isEnglish).toList());
-    return _withMerged(combined);
-  }
+  /// record when more than one row remains.
+  static List<Metadata> combineSources(List<Metadata> results) =>
+      _withMerged(_rank(results));
 
   /// Rank free-text query results: English only, deduped, then ordered by
   /// fuzzy score and rating; prepend the merged record when >1 row remains.
-  static List<Metadata> combineQuery(String query, List<Metadata> results) {
-    final combined = _dedupe(results.where(_isEnglish).toList());
-    combined.sort((a, b) {
-      final byScore = _fuzzyScore(query, b).compareTo(_fuzzyScore(query, a));
-      if (byScore != 0) return byScore;
-      return b.rating.compareTo(a.rating);
-    });
-    return _withMerged(combined);
+  static List<Metadata> combineQuery(String query, List<Metadata> results) =>
+      _withMerged(_rank(results, query: query));
+
+  /// The one result pipeline: keep English rows before dedupe, so a
+  /// non-English duplicate cannot evict the English row it shares a key with,
+  /// then dedupe (best rating wins) and, for [query], rank by fuzzy score.
+  static List<Metadata> _rank(List<Metadata> results, {String? query}) {
+    final deduped = _dedupe([
+      for (final meta in results)
+        if (_isEnglish(meta)) meta,
+    ]);
+    if (query != null) {
+      deduped.sort((a, b) {
+        final byScore = _fuzzyScore(query, b).compareTo(_fuzzyScore(query, a));
+        if (byScore != 0) return byScore;
+        return b.rating.compareTo(a.rating);
+      });
+    }
+    return deduped;
   }
 
   static List<Metadata> _withMerged(List<Metadata> results) {
@@ -180,11 +184,13 @@ class MetadataEngine {
       merged.language = firstTruthy((m) => m.language);
     }
 
-    final descriptions =
-        results.map((m) => m.description).where((d) => d.isNotEmpty);
+    final descriptions = results
+        .map((m) => m.description)
+        .where((d) => d.isNotEmpty);
     if (descriptions.isNotEmpty) {
-      merged.description =
-          descriptions.reduce((a, b) => a.length >= b.length ? a : b);
+      merged.description = descriptions.reduce(
+        (a, b) => a.length >= b.length ? a : b,
+      );
     }
 
     if (merged.coverUrl.isEmpty) {
@@ -207,42 +213,37 @@ class MetadataEngine {
     return merged;
   }
 
-  Future<Uint8List?> fetchCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  /// Fetches a cover for [meta], preferring the source that produced it and
+  /// failing over to the next matching source, then to [Metadata.coverUrl].
+  Future<Uint8List?> fetchCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     for (final source in _sources) {
-      if (source.id == meta.sourceId || source.name == meta.sourceName) {
-        try {
-          return await source.downloadCover(meta,
-              client: client, timeout: timeout);
-        } catch (_) {
-          return null;
-        }
+      if (source.id != meta.sourceId && source.name != meta.sourceName) {
+        continue;
+      }
+      try {
+        final data = await source.downloadCover(
+          meta,
+          client: client,
+          timeout: timeout,
+        );
+        if (data != null && data.isNotEmpty) return data;
+      } catch (_) {
+        // This source cannot serve it; the next one might.
       }
     }
     if (meta.coverUrl.isEmpty) return null;
-    final httpClient = client ?? http.Client();
     try {
-      final request = http.Request('GET', Uri.parse(meta.coverUrl))
-        ..headers['User-Agent'] = 'Vellum/0.1 metadata grabber';
-      final resp = await httpClient.send(request).timeout(timeout);
-      final contentType =
-          (resp.headers['content-type'] ?? '').toLowerCase();
-      if (contentType.isNotEmpty && !contentType.startsWith('image/')) {
-        return null;
-      }
-      final builder = BytesBuilder();
-      var size = 0;
-      await for (final chunk in resp.stream) {
-        size += chunk.length;
-        if (size > maxCoverBytes) return null;
-        builder.add(chunk);
-      }
-      return builder.takeBytes();
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
-    } finally {
-      if (client == null) httpClient.close();
     }
   }
 
@@ -253,8 +254,11 @@ class MetadataEngine {
     for (final meta in results) {
       final Object key = meta.isbn.isNotEmpty
           ? ('isbn', meta.isbn)
-          : ('ta', meta.title.toLowerCase(),
-              meta.authors.map((a) => a.toLowerCase()).join('\u0000'));
+          : (
+              'ta',
+              meta.title.toLowerCase(),
+              meta.authors.map((a) => a.toLowerCase()).join('\u0000'),
+            );
       final existing = merged[key];
       if (existing == null) {
         merged[key] = meta;
@@ -296,7 +300,7 @@ double _ratio(String a, String b) {
 int _matchingBlocks(String a, String b) {
   var total = 0;
   final stack = <List<int>>[
-    [0, a.length, 0, b.length]
+    [0, a.length, 0, b.length],
   ];
   while (stack.isNotEmpty) {
     final range = stack.removeLast();

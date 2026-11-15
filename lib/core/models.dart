@@ -66,9 +66,9 @@ class Book {
     this.hidden = false,
     this.sourceId = '',
     this.progress = 0.0,
-  })  : authors = authors ?? <String>[],
-        tags = tags ?? <String>[],
-        formats = formats ?? <String>[];
+  }) : authors = authors ?? <String>[],
+       tags = tags ?? <String>[],
+       formats = formats ?? <String>[];
 
   /// Returns a copy with the given fields replaced.
   Book copyWith({
@@ -113,6 +113,16 @@ class Book {
     );
   }
 
+  /// Whole-percent read for display: 0 when unopened, 1–100 otherwise.
+  ///
+  /// One rounding rule for the grid, the details page, and any future surface;
+  /// [isFinished] is the only "finished" predicate.
+  int get progressPercent =>
+      progress <= 0 ? 0 : (progress * 100).round().clamp(1, 100);
+
+  /// True when the stored position is at the end within rounding.
+  bool get isFinished => progress >= 0.999;
+
   @override
   bool operator ==(Object other) =>
       other is Book &&
@@ -137,28 +147,29 @@ class Book {
 
   @override
   int get hashCode => Object.hash(
-        id,
-        title,
-        Object.hashAll(authors),
-        sort,
-        isbn,
-        publisher,
-        pubdate,
-        language,
-        description,
-        Object.hashAll(tags),
-        Object.hashAll(formats),
-        coverPath,
-        path,
-        rating,
-        added,
-        hidden,
-        sourceId,
-        progress,
-      );
+    id,
+    title,
+    Object.hashAll(authors),
+    sort,
+    isbn,
+    publisher,
+    pubdate,
+    language,
+    description,
+    Object.hashAll(tags),
+    Object.hashAll(formats),
+    coverPath,
+    path,
+    rating,
+    added,
+    hidden,
+    sourceId,
+    progress,
+  );
 
   @override
-  String toString() => 'Book(id: $id, title: $title, authors: $authors, '
+  String toString() =>
+      'Book(id: $id, title: $title, authors: $authors, '
       'sort: $sort, isbn: $isbn, publisher: $publisher, pubdate: $pubdate, '
       'language: $language, description: $description, tags: $tags, '
       'formats: $formats, coverPath: $coverPath, path: $path, '

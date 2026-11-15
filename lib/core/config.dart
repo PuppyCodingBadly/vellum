@@ -13,23 +13,36 @@ class VellumConfig {
 
   VellumConfig._(this.path, this._values);
 
-  /// Loads config from [path]; missing/corrupt files fall back to defaults.
+  /// Loads config from [path]; a missing file yields defaults. A file that
+  /// cannot be parsed is moved to `<path>.corrupt` and defaults are used, so
+  /// the broken bytes stay available for inspection instead of being
+  /// silently overwritten.
   factory VellumConfig(String path) {
-    var values = <String, Object?>{};
+    final file = File(path);
+    if (!file.existsSync()) return VellumConfig._(path, <String, Object?>{});
+    Map<String, Object?>? decoded;
     try {
-      final file = File(path);
-      if (file.existsSync()) {
-        final decoded = jsonDecode(file.readAsStringSync());
-        if (decoded is Map<String, Object?>) {
-          values = Map<String, Object?>.of(decoded);
-        } else if (decoded is Map) {
-          values = decoded.map((k, v) => MapEntry(k.toString(), v));
-        }
+      final json = jsonDecode(file.readAsStringSync());
+      if (json is Map) {
+        decoded = json.map((k, v) => MapEntry(k.toString(), v));
       }
     } catch (_) {
-      // Corrupt config: start from defaults.
+      // Corrupt or partially written config.
     }
-    return VellumConfig._(path, values);
+    if (decoded == null) {
+      _setAside(file);
+      return VellumConfig._(path, <String, Object?>{});
+    }
+    return VellumConfig._(path, decoded);
+  }
+
+  /// Renames an unparseable config out of the way; best effort.
+  static void _setAside(File file) {
+    try {
+      file.renameSync('${file.path}.corrupt');
+    } catch (_) {
+      // The config is unreadable either way; defaults still apply.
+    }
   }
 
   /// `~/.local/share/vellum`, honoring `XDG_DATA_HOME`.
@@ -87,10 +100,13 @@ class VellumConfig {
     save();
   }
 
-  /// Persists the config to disk.
+  /// Persists the config to disk through a sibling temp file and a rename,
+  /// so a crash mid-write leaves the previous file intact.
   void save() {
     final file = File(path);
     file.parent.createSync(recursive: true);
-    file.writeAsStringSync(jsonEncode(_values));
+    final temp = File('${file.path}.tmp');
+    temp.writeAsStringSync(jsonEncode(_values), flush: true);
+    temp.renameSync(file.path);
   }
 }

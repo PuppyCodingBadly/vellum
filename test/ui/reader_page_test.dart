@@ -3,10 +3,14 @@
 /// next-chapter navigation works.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:vellum/app_state.dart';
 import 'package:vellum/core/config.dart';
@@ -15,6 +19,7 @@ import 'package:vellum/core/models.dart';
 import 'package:vellum/fts/indexer.dart';
 import 'package:vellum/metadata/engine.dart';
 import 'package:vellum/plugins/plugin_controller.dart';
+import 'package:vellum/reader/document_model.dart';
 import 'package:vellum/stats/reading_stats.dart';
 import 'package:vellum/ui/reader_page.dart';
 import '../support/test_support.dart';
@@ -44,12 +49,14 @@ void main() {
       fts: FtsIndexer(library),
       stats: ReadingStatsTracker(library),
     );
-    final id = library.addBook(Book(
-      title: 'The Smoke Test Book',
-      authors: const ['Test Author'],
-      formats: const ['epub'],
-      path: buildTestEpub(p.join(tmp.path, 'smoke.epub')),
-    ));
+    final id = library.addBook(
+      Book(
+        title: 'The Smoke Test Book',
+        authors: const ['Test Author'],
+        formats: const ['epub'],
+        path: buildTestEpub(p.join(tmp.path, 'smoke.epub')),
+      ),
+    );
     book = library.getBook(id)!;
   });
 
@@ -59,67 +66,263 @@ void main() {
   });
 
   Future<void> openReader(WidgetTester tester) async {
-    await tester.pumpWidget(AppStateScope(
-      state: state,
-      child: MaterialApp(
-        home: Builder(
-          builder: (context) => Scaffold(
-            body: Center(
-              child: FilledButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ReaderPage(book: book),
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => ReaderPage(book: book),
+                    ),
                   ),
+                  child: const Text('Open book'),
                 ),
-                child: const Text('Open book'),
               ),
             ),
           ),
         ),
       ),
-    ));
+    );
     await tester.tap(find.text('Open book'));
     await tester.pumpAndSettle();
   }
 
   testWidgets(
-      'seeded EPUB renders chapter text; font scale and next chapter work',
-      (tester) async {
+    'seeded EPUB renders chapter text; font scale and next chapter work',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await openReader(tester);
+
+      // Chapter one text is rendered.
+      expect(
+        find.textContaining('moonstone lantern', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('phrase number 1', findRichText: true),
+        findsOneWidget,
+      );
+
+      // The font-scale control grows the document font and persists the scale.
+      final before = _readerFontSize(tester);
+      await tester.tap(find.byTooltip('Increase font size'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final after = _readerFontSize(tester);
+      expect(after, greaterThan(before));
+      expect(state.readerFontScale, 1.1);
+      expect(VellumConfig(configPath).getDouble('reader_font_scale'), 1.1);
+
+      // Next-chapter navigation swaps the document text.
+      await tester.tap(find.byTooltip('Next'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('phrase number 2', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('phrase number 1', findRichText: true),
+        findsNothing,
+      );
+
+      // Leaving the reader records the reading session.
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open book'), findsOneWidget);
+      expect(library.recentReadingSessions(10), isNotEmpty);
+    },
+  );
+
+  testWidgets('a highlight jump accounts for a leading image', (tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    final id = library.addBook(
+      Book(
+        title: 'Image Book',
+        formats: const ['epub'],
+        path: buildImageEpub(p.join(tmp.path, 'image.epub')),
+      ),
+    );
+    book = library.getBook(id)!;
+    // The fixture parser resolves images from its base directory, exactly as
+    // the reader does from the extracted chapter.
+    File(p.join(tmp.path, 'tall.png')).writeAsBytesSync(tallPng());
+    final document = DocumentModel.fromHtml(
+      imageChapterHtml(),
+      baseDirectory: tmp.path,
+    );
+    final start = document.plainText.indexOf('needle');
+    expect(start, greaterThan(0));
+    library.addHighlight(
+      book.id!,
+      jsonEncode(<String, Object?>{
+        'chapter': 0,
+        'start': start,
+        'end': start + 6,
+        'quote': 'needle',
+      }),
+      'yellow',
+      'needle',
+    );
+
     await openReader(tester);
+    final scroll = tester
+        .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+        .controller!;
+    await tester.runAsync(() async {
+      await pumpUntil(tester, () => scroll.position.maxScrollExtent > 800);
+    });
 
-    // Chapter one text is rendered.
-    expect(find.textContaining('moonstone lantern', findRichText: true),
-        findsOneWidget);
-    expect(find.textContaining('phrase number 1', findRichText: true),
-        findsOneWidget);
+    final viewportTop = tester
+        .getTopLeft(find.byType(SingleChildScrollView))
+        .dy;
+    final viewportHeight = tester
+        .getSize(find.byType(SingleChildScrollView))
+        .height;
+    final renderedOffset = document.documentStartToRendered(start);
+    final before = renderEditableOf(tester);
+    final caretBefore = before.localToGlobal(
+      before.getLocalRectForCaret(TextPosition(offset: renderedOffset)).topLeft,
+    );
+    expect(
+      caretBefore.dy - viewportTop,
+      greaterThan(viewportHeight),
+      reason: 'the highlighted line starts below the visible chapter',
+    );
 
-    // The font-scale control grows the document font and persists the scale.
-    final before = _readerFontSize(tester);
-    await tester.tap(find.byTooltip('Increase font size'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    final after = _readerFontSize(tester);
-    expect(after, greaterThan(before));
-    expect(state.readerFontScale, 1.1);
-    expect(VellumConfig(configPath).getDouble('reader_font_scale'), 1.1);
-
-    // Next-chapter navigation swaps the document text.
-    await tester.tap(find.byTooltip('Next'));
+    await tester.tap(find.byTooltip('Highlights'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('phrase number 2', findRichText: true),
-        findsOneWidget);
-    expect(find.textContaining('phrase number 1', findRichText: true),
-        findsNothing);
+    await tester.tap(find.text('needle'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
+      await pumpUntil(tester, () => scroll.position.pixels > 0);
+    });
 
-    // Leaving the reader records the reading session.
+    final after = renderEditableOf(tester);
+    final caretAfter = after.localToGlobal(
+      after.getLocalRectForCaret(TextPosition(offset: renderedOffset)).topLeft,
+    );
+    expect(caretAfter.dy, greaterThan(viewportTop));
+    expect(caretAfter.dy, lessThan(viewportTop + viewportHeight));
+
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    expect(find.text('Open book'), findsOneWidget);
-    expect(library.recentReadingSessions(10), isNotEmpty);
   });
+
+  testWidgets('restoring a fraction waits for inline images to lay out', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final id = library.addBook(
+      Book(
+        title: 'Image Book',
+        formats: const ['epub'],
+        path: buildImageEpub(p.join(tmp.path, 'restore.epub')),
+      ),
+    );
+    book = library.getBook(id)!;
+    library.setReadingPosition(book.id!, 'epub:0:0.5000', progress: 0.5);
+
+    await openReader(tester);
+    final scroll = tester
+        .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+        .controller!;
+    await tester.runAsync(() async {
+      await pumpUntil(
+        tester,
+        () =>
+            scroll.position.maxScrollExtent > 800 && scroll.position.pixels > 0,
+      );
+    });
+
+    expect(scroll.position.maxScrollExtent, greaterThan(800));
+    expect(
+      scroll.position.pixels,
+      closeTo(scroll.position.maxScrollExtent * 0.5, 2.0),
+    );
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+  });
+}
+
+RenderEditable renderEditableOf(WidgetTester tester) {
+  RenderEditable? found;
+  void visit(RenderObject object) {
+    if (found != null) return;
+    if (object is RenderEditable) {
+      found = object;
+      return;
+    }
+    object.visitChildren(visit);
+  }
+
+  visit(tester.renderObject(find.byType(SelectableText)));
+  return found!;
+}
+
+Future<void> pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  int attempts = 200,
+}) async {
+  for (var i = 0; i < attempts; i++) {
+    if (condition()) return;
+    await tester.pump(const Duration(milliseconds: 16));
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('condition not met');
+}
+
+List<int> tallPng() => img.encodePng(img.Image(width: 600, height: 900));
+
+/// One chapter whose first paragraph is a 600x900 image.
+String imageChapterHtml() =>
+    '<html><body>'
+    '<p><img src="tall.png" alt="tall image"/></p>'
+    '<p>the needle phrase follows a tall image</p>'
+    '<p>${'filler words ' * 200}</p>'
+    '</body></html>';
+
+String buildImageEpub(String path) {
+  const container = '''<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>''';
+  const opf = '''<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
+  <manifest>
+    <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="i1" href="tall.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+  </spine>
+</package>''';
+  final png = tallPng();
+  final archive = Archive()
+    ..addFile(ArchiveFile.string('mimetype', 'application/epub+zip'))
+    ..addFile(ArchiveFile.string('META-INF/container.xml', container))
+    ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
+    ..addFile(ArchiveFile.string('OEBPS/ch1.xhtml', imageChapterHtml()))
+    ..addFile(ArchiveFile('OEBPS/tall.png', png.length, png));
+  File(path).writeAsBytesSync(ZipEncoder().encode(archive));
+  return path;
 }

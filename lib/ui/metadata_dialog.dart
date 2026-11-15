@@ -1,9 +1,9 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/covers.dart';
 import '../core/isbn.dart';
 import '../core/models.dart';
 import '../metadata/engine.dart';
@@ -40,6 +40,10 @@ class _MetadataDialogState extends State<MetadataDialog> {
   Metadata? _selected;
   String _sortKey = 'relevance';
   int _serial = 0;
+
+  /// Generation of the pending apply; dismissing the dialog bumps it so an
+  /// apply that is still waiting on the cover never saves or toasts.
+  int _applySerial = 0;
 
   @override
   void initState() {
@@ -238,68 +242,102 @@ class _MetadataDialogState extends State<MetadataDialog> {
     final meta = _selected;
     if (meta == null || _applying) return;
     final app = AppState.of(context);
+    final serial = ++_applySerial;
     setState(() => _applying = true);
 
-    final book = widget.book;
-    if (meta.title.isNotEmpty) book.title = meta.title;
-    if (meta.authors.isNotEmpty) book.authors = List.of(meta.authors);
-    if (meta.isbn.isNotEmpty) book.isbn = meta.isbn;
-    if (meta.publisher.isNotEmpty) book.publisher = meta.publisher;
-    if (meta.pubdate.isNotEmpty) book.pubdate = meta.pubdate;
-    if (meta.language.isNotEmpty) book.language = meta.language;
-    if (meta.description.isNotEmpty) book.description = meta.description;
-    if (meta.tags.isNotEmpty) book.tags = List.of(meta.tags);
-    if (meta.rating > 0) book.rating = meta.rating;
+    // Build the new row in a copy: the instance the caller passed in is only
+    // touched after the save succeeds, so a cancelled apply cannot leave it
+    // showing metadata the library never stored.
+    final updated = widget.book.copyWith();
+    _applyMetadata(updated, meta);
 
-    // Cover download is best-effort: a failure is reported but does not
-    // block applying the textual metadata.
+    // Cover download is best-effort: a failure is reported with the rest of
+    // the outcome but does not block the textual metadata.
     String? coverError;
+    Uint8List? coverBytes;
     try {
       final data = await _coverBytes(app, meta);
-      if (data != null && data.isNotEmpty) {
-        final coversDir = Directory('${app.dataDir}/covers');
-        await coversDir.create(recursive: true);
-        final file = File('${coversDir.path}/${book.id ?? 'new'}.jpg');
-        await file.writeAsBytes(data, flush: true);
-        book.coverPath = file.path;
-      }
+      if (!_stillApplying(serial)) return;
+      if (data != null && data.isNotEmpty) coverBytes = data;
     } catch (error) {
       coverError = '$error';
     }
-    if (coverError != null) {
-      app.showToast('Cover download failed: $coverError');
-    }
+    if (!_stillApplying(serial)) return;
 
     try {
-      app.library.updateBook(book);
-      if (book.id != null) BookCover.invalidate(book.id!);
+      final bookId = updated.id;
+      if (coverBytes == null || bookId == null) {
+        app.library.updateBook(updated);
+      } else {
+        try {
+          await replaceCover(
+            dataDir: app.dataDir,
+            bookId: bookId,
+            bytes: coverBytes,
+            // The row must name the final path before the cover lands there,
+            // so a refusal here leaves the previous artwork in place.
+            saveBook: (coverPath) {
+              updated.coverPath = coverPath;
+              app.library.updateBook(updated);
+            },
+          );
+        } on CoverWriteException catch (error) {
+          // Unusable artwork: keep the book's existing cover, save the rest.
+          coverError ??= '$error';
+          app.library.updateBook(updated);
+        }
+      }
     } catch (error) {
       app.showToast('Failed to save book: $error');
       if (mounted) setState(() => _applying = false);
       return;
     }
+    _applyMetadata(widget.book, meta);
+    widget.book.coverPath = updated.coverPath;
+    if (updated.id != null) BookCover.invalidate(updated.id!);
 
     await app.refresh();
-    app.showToast('Metadata applied');
     if (!mounted) return;
+    if (!_stillApplying(serial)) return;
+    app.showToast(
+      coverError == null
+          ? 'Metadata applied'
+          : 'Metadata applied without cover: $coverError',
+    );
     Navigator.of(context).pop(true);
+  }
+
+  bool _stillApplying(int serial) => mounted && serial == _applySerial;
+
+  /// Dismisses the dialog and invalidates any apply still in flight.
+  void _close() {
+    _applySerial++;
+    Navigator.of(context).pop(false);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      insetPadding: const EdgeInsets.all(24),
-      child: SizedBox(
-        width: 660,
-        height: 600,
-        child: Column(
-          children: [
-            _buildHeader(context),
-            const Divider(height: 1),
-            _buildQueryBar(context),
-            _buildUrlBar(context),
-            Expanded(child: _buildView(context)),
-          ],
+    return PopScope(
+      // Barrier and Escape dismissal take the same cancel path as Close, so
+      // the apply token is bumped before the route goes away.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _close();
+      },
+      child: Dialog(
+        insetPadding: const EdgeInsets.all(24),
+        child: SizedBox(
+          width: 660,
+          height: 600,
+          child: Column(
+            children: [
+              _buildHeader(context),
+              const Divider(height: 1),
+              _buildQueryBar(context),
+              _buildUrlBar(context),
+              Expanded(child: _buildView(context)),
+            ],
+          ),
         ),
       ),
     );
@@ -329,7 +367,7 @@ class _MetadataDialogState extends State<MetadataDialog> {
           IconButton(
             icon: const Icon(Icons.close),
             tooltip: 'Close',
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: _close,
           ),
         ],
       ),
@@ -470,6 +508,22 @@ class _MetadataDialogState extends State<MetadataDialog> {
   }
 }
 
+/// Copies every non-empty field of [meta] onto [book].
+///
+/// The single rule shared by the saved copy and the caller-visible instance
+/// updated after the save.
+void _applyMetadata(Book book, Metadata meta) {
+  if (meta.title.isNotEmpty) book.title = meta.title;
+  if (meta.authors.isNotEmpty) book.authors = List.of(meta.authors);
+  if (meta.isbn.isNotEmpty) book.isbn = meta.isbn;
+  if (meta.publisher.isNotEmpty) book.publisher = meta.publisher;
+  if (meta.pubdate.isNotEmpty) book.pubdate = meta.pubdate;
+  if (meta.language.isNotEmpty) book.language = meta.language;
+  if (meta.description.isNotEmpty) book.description = meta.description;
+  if (meta.tags.isNotEmpty) book.tags = List.of(meta.tags);
+  if (meta.rating > 0) book.rating = meta.rating;
+}
+
 class _ResultTile extends StatelessWidget {
   const _ResultTile({
     required this.meta,
@@ -501,7 +555,9 @@ class _ResultTile extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: VellumRadius.mediumAll,
         side: BorderSide(
-          color: selected ? palette.accent.withValues(alpha: 0.45) : Colors.transparent,
+          color: selected
+              ? palette.accent.withValues(alpha: 0.45)
+              : Colors.transparent,
         ),
       ),
       child: InkWell(

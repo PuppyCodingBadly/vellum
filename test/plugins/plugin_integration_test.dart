@@ -95,6 +95,22 @@ class _RecordingSidecar extends _NoopSidecar {
   }
 }
 
+/// A sidecar whose health the test controls, standing in for a client that
+/// spent its restart budget and stopped respawning on demand.
+class _FlakySidecar extends _RecordingSidecar {
+  bool healthy = true;
+  int startCalls = 0;
+
+  @override
+  bool get isHealthy => healthy;
+
+  @override
+  Future<void> start() async {
+    startCalls++;
+    healthy = true;
+  }
+}
+
 class _FakePlugins extends PluginController {
   _FakePlugins({
     this.metadataList = const [],
@@ -133,9 +149,10 @@ class _FakePlugins extends PluginController {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Map<String, Object?> meta,
-          {double timeout = 15.0}) async =>
-      null;
+  Future<Uint8List?> downloadCover(
+    Map<String, Object?> meta, {
+    double timeout = 15.0,
+  }) async => null;
 
   @override
   Future<List<Map<String, Object?>>> storeSearch(
@@ -153,15 +170,10 @@ class _FakePlugins extends PluginController {
     String store,
     Map<String, Object?> result, {
     double timeout = 60.0,
-  }) async =>
-      download;
+  }) async => download;
 }
 
-Widget _app(
-  VellumConfig config,
-  Library library,
-  PluginController plugins,
-) {
+Widget _app(VellumConfig config, Library library, PluginController plugins) {
   return VellumApp(
     config: config,
     library: library,
@@ -173,31 +185,62 @@ Widget _app(
 }
 
 void main() {
-  test('PluginController starts once, notifies, and guards async calls',
-      () async {
-    final sidecar = _RecordingSidecar();
+  test(
+    'PluginController starts once, notifies, and guards async calls',
+    () async {
+      final sidecar = _RecordingSidecar();
+      final plugins = PluginController(pluginDir: '/tmp/none', client: sidecar);
+      var notifications = 0;
+      plugins.addListener(() => notifications++);
+
+      await Future.wait([plugins.start(), plugins.start(), plugins.start()]);
+      expect(sidecar.loadAllCalls, 1);
+      expect(plugins.metadataPlugins().single.name, 'Fake Source');
+      expect(plugins.storePlugins().single.name, 'Fake Store');
+      expect(notifications, 1);
+
+      final rows = await plugins.metadataSearch(title: 'x');
+      expect(sidecar.metadataCalls, 1);
+      expect(rows.single['title'], 'Plugin Book');
+
+      await plugins.addPlugin('/tmp/fake.zip');
+      expect(sidecar.loadCalls, 1);
+      expect(sidecar.loadedCalls, 1);
+      expect(notifications, 2);
+
+      await plugins.removePlugin('Fake Source');
+      expect(sidecar.unloadCalls, 1);
+      expect(sidecar.removed, ['Fake Source']);
+
+      plugins.dispose();
+    },
+  );
+
+  test('PluginController.start() respawns an unhealthy sidecar', () async {
+    final sidecar = _FlakySidecar();
     final plugins = PluginController(pluginDir: '/tmp/none', client: sidecar);
     var notifications = 0;
     plugins.addListener(() => notifications++);
 
-    await Future.wait([plugins.start(), plugins.start(), plugins.start()]);
+    await plugins.start();
     expect(sidecar.loadAllCalls, 1);
-    expect(plugins.metadataPlugins().single.name, 'Fake Source');
-    expect(plugins.storePlugins().single.name, 'Fake Store');
+    expect(sidecar.startCalls, 0);
     expect(notifications, 1);
 
-    final rows = await plugins.metadataSearch(title: 'x');
-    expect(sidecar.metadataCalls, 1);
-    expect(rows.single['title'], 'Plugin Book');
+    // The client spent its restart budget and stays down until start().
+    sidecar.healthy = false;
+    await plugins.start();
+    expect(sidecar.startCalls, 1);
+    expect(sidecar.loadAllCalls, 2);
+    expect(plugins.metadataPlugins().single.name, 'Fake Source');
+    expect(plugins.storePlugins().single.name, 'Fake Store');
+    expect(notifications, 3); // clear, then reload
 
-    await plugins.addPlugin('/tmp/fake.zip');
-    expect(sidecar.loadCalls, 1);
-    expect(sidecar.loadedCalls, 1);
-    expect(notifications, 2);
-
-    await plugins.removePlugin('Fake Source');
-    expect(sidecar.unloadCalls, 1);
-    expect(sidecar.removed, ['Fake Source']);
+    // A loaded controller over a healthy client short-circuits.
+    await plugins.start();
+    expect(sidecar.startCalls, 1);
+    expect(sidecar.loadAllCalls, 2);
+    expect(notifications, 3);
 
     plugins.dispose();
   });
@@ -238,8 +281,9 @@ void main() {
     expect(ranked[1].title, 'Dune');
   });
 
-  testWidgets('metadata dialog searches and applies plugin results',
-      (WidgetTester tester) async {
+  testWidgets('metadata dialog searches and applies plugin results', (
+    WidgetTester tester,
+  ) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -253,9 +297,7 @@ void main() {
     library.addBook(book);
 
     final plugins = _FakePlugins(
-      metadataList: const [
-        PluginInfo(name: 'Fake Source', version: '1.0'),
-      ],
+      metadataList: const [PluginInfo(name: 'Fake Source', version: '1.0')],
       metadataRows: [
         <String, Object?>{
           'title': 'Plugin Book',
@@ -275,7 +317,8 @@ void main() {
     );
 
     await tester.pumpWidget(
-        _app(VellumConfig('${dir.path}/config.json'), library, plugins));
+      _app(VellumConfig('${dir.path}/config.json'), library, plugins),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byType(BookCard));
     await tester.pumpAndSettle();
@@ -298,8 +341,9 @@ void main() {
     expect(updated.publisher, 'Plugin Press');
   });
 
-  testWidgets('Get Books searches and downloads through store plugins',
-      (WidgetTester tester) async {
+  testWidgets('Get Books searches and downloads through store plugins', (
+    WidgetTester tester,
+  ) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -329,12 +373,15 @@ void main() {
     );
 
     await tester.pumpWidget(
-        _app(VellumConfig('${dir.path}/config.json'), library, plugins));
+      _app(VellumConfig('${dir.path}/config.json'), library, plugins),
+    );
     await tester.pumpAndSettle();
-    await tester.tap(find.descendant(
-      of: find.byType(NavigationRail),
-      matching: find.text('Get Books'),
-    ));
+    await tester.tap(
+      find.descendant(
+        of: find.byType(NavigationRail),
+        matching: find.text('Get Books'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Search stores…'), findsOneWidget);
@@ -413,8 +460,10 @@ def search_libgen(query, max_results=10, timeout=60.0):
     final plugins = PluginController(pluginDir: pluginDir.path);
     try {
       await plugins.start();
-      expect(plugins.metadataPlugins().map((p) => p.name),
-          contains('Fake Source'));
+      expect(
+        plugins.metadataPlugins().map((p) => p.name),
+        contains('Fake Source'),
+      );
       expect(plugins.storePlugins().map((p) => p.name), contains('Store X'));
 
       final metadata = await plugins.metadataSearch(title: 'x');
@@ -422,7 +471,10 @@ def search_libgen(query, max_results=10, timeout=60.0):
         metadata.map((m) => m['title']),
         containsAll(<String>['Fake Book One', 'Fake Book Two']),
       );
-      expect(metadata.map((m) => m['source_name']), everyElement('Fake Source'));
+      expect(
+        metadata.map((m) => m['source_name']),
+        everyElement('Fake Source'),
+      );
 
       final store = await plugins.storeSearch('Store X', 'dune');
       expect(store.single['title'], 'Store Hit: dune');

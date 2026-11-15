@@ -153,6 +153,24 @@ Future<void> _start(String dataDir, CrashLog crashLog) async {
   });
 }
 
+/// The keyboard shortcuts that stay active on every route.
+///
+/// They are installed in the [MaterialApp.builder] rather than in a page, so a
+/// pushed reader or details page keeps them working. The callbacks decide what
+/// each shortcut may do in the current route; [focusSearch] in particular must
+/// not switch routes.
+Map<ShortcutActivator, VoidCallback> appShortcuts({
+  required VoidCallback focusSearch,
+  required VoidCallback toggleFullscreen,
+  required VoidCallback quit,
+  required VoidCallback back,
+}) => <ShortcutActivator, VoidCallback>{
+  const SingleActivator(LogicalKeyboardKey.keyF, control: true): focusSearch,
+  const SingleActivator(LogicalKeyboardKey.keyQ, control: true): quit,
+  const SingleActivator(LogicalKeyboardKey.f11): toggleFullscreen,
+  const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): back,
+};
+
 /// Root widget: owns the [AppState] and builds the Material application.
 class VellumApp extends StatefulWidget {
   const VellumApp({
@@ -230,14 +248,6 @@ class _VellumAppState extends State<VellumApp> {
     super.dispose();
   }
 
-  Future<void> _quit() async {
-    try {
-      await windowManager.destroy();
-    } catch (error) {
-      debugPrint('Vellum: quit failed: $error');
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return AppStateScope(
@@ -254,17 +264,13 @@ class _VellumAppState extends State<VellumApp> {
           darkTheme: VellumTheme.themeFor(Brightness.dark, _state.accentColor),
           themeAnimationDuration: const Duration(milliseconds: 180),
           builder: (context, child) => CallbackShortcuts(
-            bindings: <ShortcutActivator, VoidCallback>{
-              const SingleActivator(LogicalKeyboardKey.keyQ, control: true):
-                  _quit,
-              const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-                  _focusLibrarySearch,
-              const SingleActivator(
-                LogicalKeyboardKey.arrowLeft,
-                alt: true,
-              ): () =>
-                  _navigatorKey.currentState?.maybePop(),
-            },
+            bindings: appShortcuts(
+              focusSearch: _focusLibrarySearch,
+              toggleFullscreen: () =>
+                  unawaited(_homeKey.currentState?.toggleFullscreen()),
+              quit: () => unawaited(_homeKey.currentState?.quit()),
+              back: () => _navigatorKey.currentState?.maybePop(),
+            ),
             child: child ?? const SizedBox.shrink(),
           ),
           home: _TitleBarTheme(child: HomePage(key: _homeKey)),

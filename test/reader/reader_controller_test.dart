@@ -34,8 +34,12 @@ List<int> _epubWithBrokenSecondChapter() {
     ..addFile(ArchiveFile.string('mimetype', 'application/epub+zip'))
     ..addFile(ArchiveFile.string('META-INF/container.xml', container))
     ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
-    ..addFile(ArchiveFile.string(
-        'OEBPS/ch1.xhtml', '<html><body><p>first chapter</p></body></html>'));
+    ..addFile(
+      ArchiveFile.string(
+        'OEBPS/ch1.xhtml',
+        '<html><body><p>first chapter</p></body></html>',
+      ),
+    );
   return ZipEncoder().encode(archive);
 }
 
@@ -116,7 +120,8 @@ void main() {
         ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
       final library = Library('${tmp.path}/library.db');
       final id = library.addBook(
-          Book(title: 't', path: bookFile.path, formats: ['epub']));
+        Book(title: 't', path: bookFile.path, formats: ['epub']),
+      );
       final controller = ReaderController(
         book: Book(id: id, title: 't', path: bookFile.path, formats: ['epub']),
         library: library,
@@ -136,8 +141,9 @@ void main() {
         final quote = controller.highlights.single.quote;
         expect(quote.runes.length, lessThanOrEqualTo(200));
         // No unpaired surrogate was stored: JSON round-trips intact.
-        expect(jsonDecode(jsonEncode({'q': quote})),
-            <String, Object?>{'q': quote});
+        expect(jsonDecode(jsonEncode({'q': quote})), <String, Object?>{
+          'q': quote,
+        });
       } finally {
         controller.dispose();
         library.close();
@@ -154,7 +160,8 @@ void main() {
         ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
       final library = Library('${tmp.path}/library.db');
       final id = library.addBook(
-          Book(title: 't', path: bookFile.path, formats: ['epub']));
+        Book(title: 't', path: bookFile.path, formats: ['epub']),
+      );
       final controller = ReaderController(
         book: Book(id: id, title: 't', path: bookFile.path, formats: ['epub']),
         library: library,
@@ -209,12 +216,84 @@ void main() {
     }
   });
 
-  test('oversized PDF page reports a render error instead of crashing',
-      () async {
+  test(
+    'oversized PDF page reports a render error instead of crashing',
+    () async {
+      final tmp = Directory.systemTemp.createTempSync('vellum-reader-pdf');
+      try {
+        final file = File('${tmp.path}/huge.pdf')
+          ..writeAsBytesSync(_pdfBytes('0 0 20000 20000'));
+        final library = Library('${tmp.path}/library.db');
+        final controller = ReaderController(
+          book: Book(title: 'p', path: file.path, formats: ['pdf']),
+          library: library,
+          stats: ReadingStatsTracker(library),
+        );
+        try {
+          await controller.load();
+          expect(controller.hasError, isFalse);
+
+          await _waitUntil(() => controller.pdfRenderError != null);
+          expect(controller.pdfPageBytes, isNull);
+          expect(controller.pdfRenderError, contains('too large'));
+        } finally {
+          controller.dispose();
+          library.close();
+        }
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'PDF reflow travels through the worker isolate and caches a page',
+    () async {
+      final tmp = Directory.systemTemp.createTempSync('vellum-pdf-reflow-');
+      try {
+        final bookFile = File(_pdfWithText('${tmp.path}/reflow.pdf'));
+        final library = Library('${tmp.path}/library.db');
+        final controller = ReaderController(
+          book: Book(
+            title: 'Reflow',
+            path: bookFile.path,
+            formats: const ['pdf'],
+          ),
+          library: library,
+          stats: ReadingStatsTracker(library),
+          pdfReflow: true,
+        );
+        try {
+          await controller.load();
+          expect(controller.isPdf, isTrue);
+          for (var i = 0; i < 120 && controller.pdfReflowPage == null; i++) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+          final page = controller.pdfReflowPage;
+          expect(page, isNotNull);
+          expect(page!.hasText, isTrue);
+          expect(page.atlasPng, isNotNull);
+          final text = page.blocks
+              .whereType<PdfReflowParagraph>()
+              .map((paragraph) => paragraph.text)
+              .join(' ');
+          expect(text, contains('PDF reflow keeps'));
+          expect(controller.pdfReflowLoading, isFalse);
+        } finally {
+          controller.dispose();
+          library.close();
+        }
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    },
+  );
+
+  test('PDF worker restarts after its isolate exits', () async {
     final tmp = Directory.systemTemp.createTempSync('vellum-reader-pdf');
     try {
-      final file = File('${tmp.path}/huge.pdf')
-        ..writeAsBytesSync(_pdfBytes('0 0 20000 20000'));
+      final file = File('${tmp.path}/multi.pdf')
+        ..writeAsBytesSync(_pdfPages(4));
       final library = Library('${tmp.path}/library.db');
       final controller = ReaderController(
         book: Book(title: 'p', path: file.path, formats: ['pdf']),
@@ -223,11 +302,27 @@ void main() {
       );
       try {
         await controller.load();
-        expect(controller.hasError, isFalse);
+        expect(controller.items, hasLength(4));
 
-        await _waitUntil(() => controller.pdfRenderError != null);
-        expect(controller.pdfPageBytes, isNull);
-        expect(controller.pdfRenderError, contains('too large'));
+        // Kill the worker while the first render is still in flight.
+        await _waitUntil(() => controller.debugPdfWorkerRunning);
+        controller.debugKillPdfWorker();
+        await _waitUntil(() => !controller.debugPdfWorkerRunning);
+        await _waitUntil(() => !controller.pdfPageLoading);
+        expect(
+          controller.pdfPageBytes != null || controller.pdfRenderError != null,
+          isTrue,
+          reason: 'an exited worker must settle its in-flight request',
+        );
+
+        // The next request starts a new worker instead of hanging.
+        for (final target in <int>[3, 2, 3, 2]) {
+          controller.goTo(target);
+          await _waitUntil(() => !controller.pdfPageLoading);
+          if (controller.pdfPageBytes != null) break;
+        }
+        expect(controller.pdfPageBytes, isNotNull);
+        expect(controller.pdfRenderError, isNull);
       } finally {
         controller.dispose();
         library.close();
@@ -237,43 +332,154 @@ void main() {
     }
   });
 
-  test('PDF reflow travels through the worker isolate and caches a page',
-      () async {
-    final tmp = Directory.systemTemp.createTempSync('vellum-pdf-reflow-');
+  test('PDF progress reaches 1.0 on the last page', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-pdf');
     try {
-      final bookFile = File(_pdfWithText('${tmp.path}/reflow.pdf'));
+      final file = File('${tmp.path}/ten.pdf')..writeAsBytesSync(_pdfPages(10));
       final library = Library('${tmp.path}/library.db');
       final controller = ReaderController(
-        book: Book(
-          title: 'Reflow',
-          path: bookFile.path,
-          formats: const ['pdf'],
-        ),
+        book: Book(title: 'p', path: file.path, formats: ['pdf']),
         library: library,
         stats: ReadingStatsTracker(library),
-        pdfReflow: true,
       );
       try {
         await controller.load();
-        expect(controller.isPdf, isTrue);
-        for (var i = 0; i < 120 && controller.pdfReflowPage == null; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        }
-        final page = controller.pdfReflowPage;
-        expect(page, isNotNull);
-        expect(page!.hasText, isTrue);
-        expect(page.atlasPng, isNotNull);
-        final text = page.blocks
-            .whereType<PdfReflowParagraph>()
-            .map((paragraph) => paragraph.text)
-            .join(' ');
-        expect(text, contains('PDF reflow keeps'));
-        expect(controller.pdfReflowLoading, isFalse);
+        controller.goTo(9);
+        expect(controller.index, 9);
+        expect(controller.progress, 1.0);
+        // The locator format stays page-index based.
+        expect(controller.locator, 'pdf:9:0.0000');
       } finally {
         controller.dispose();
         library.close();
       }
     } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test('setFontScale re-arms the current scroll fraction', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-scale');
+    try {
+      final bookFile = File('${tmp.path}/book.epub')
+        ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
+      final library = Library('${tmp.path}/library.db');
+      final controller = ReaderController(
+        book: Book(title: 't', path: bookFile.path, formats: ['epub']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        controller.reportScroll(0.4);
+        controller.setFontScale(1.3);
+        expect(controller.takePendingScrollFraction(), closeTo(0.4, 1e-9));
+      } finally {
+        controller.dispose();
+        library.close();
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test(
+    'highlights on missing chapters are dropped and never jumped to',
+    () async {
+      final tmp = Directory.systemTemp.createTempSync('vellum-reader-mark');
+      try {
+        final bookFile = File('${tmp.path}/book.epub')
+          ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
+        final library = Library('${tmp.path}/library.db');
+        final id = library.addBook(
+          Book(title: 't', path: bookFile.path, formats: ['epub']),
+        );
+        final stale = library.addHighlight(
+          id,
+          jsonEncode(<String, Object?>{'chapter': 5, 'start': 0, 'end': 4}),
+          'yellow',
+          'gone',
+        );
+        final valid = library.addHighlight(
+          id,
+          jsonEncode(<String, Object?>{
+            'chapter': 0,
+            'start': 0,
+            'end': 5,
+            'quote': 'hello',
+          }),
+          'yellow',
+          'hello',
+        );
+        final controller = ReaderController(
+          book: Book(
+            id: id,
+            title: 't',
+            path: bookFile.path,
+            formats: ['epub'],
+          ),
+          library: library,
+          stats: ReadingStatsTracker(library),
+        );
+        try {
+          await controller.load();
+          expect(controller.highlights.map((h) => h.chapter), <int>[0]);
+
+          expect(controller.goToHighlight(stale), isFalse);
+          expect(controller.takePendingJumpOffset(), isNull);
+          expect(controller.goToHighlight(valid), isTrue);
+          expect(controller.takePendingJumpOffset(), 0);
+        } finally {
+          controller.dispose();
+          library.close();
+        }
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    },
+  );
+
+  test('each reader ends the session of its own book', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-session');
+    final library = Library('${tmp.path}/library.db');
+    try {
+      final epub = base64Decode(_singleChapterEpub());
+      final fileA = File('${tmp.path}/a.epub')..writeAsBytesSync(epub);
+      final fileB = File('${tmp.path}/b.epub')..writeAsBytesSync(epub);
+      final idA = library.addBook(
+        Book(title: 'a', path: fileA.path, formats: ['epub']),
+      );
+      final idB = library.addBook(
+        Book(title: 'b', path: fileB.path, formats: ['epub']),
+      );
+      final stats = ReadingStatsTracker(library);
+      final readerA = ReaderController(
+        book: Book(id: idA, title: 'a', path: fileA.path, formats: ['epub']),
+        library: library,
+        stats: stats,
+      );
+      final readerB = ReaderController(
+        book: Book(id: idB, title: 'b', path: fileB.path, formats: ['epub']),
+        library: library,
+        stats: stats,
+      );
+      await readerA.load();
+      await readerB.load();
+
+      // Closing A first must end A's session, not B's.
+      readerA.dispose();
+      expect(stats.activeElapsed(idA), isNull);
+      expect(stats.activeElapsed(idB), isNotNull);
+      expect(stats.recentSessions(10).single['book_id'], idA);
+
+      readerB.dispose();
+      expect(stats.activeElapsed(idB), isNull);
+      expect(stats.recentSessions(10).map((s) => s['book_id']).toList(), <int>[
+        idB,
+        idA,
+      ]);
+    } finally {
+      library.close();
       tmp.deleteSync(recursive: true);
     }
   });
@@ -294,11 +500,25 @@ Future<void> _waitUntil(
 
 /// Minimal single-page PDF with the given MediaBox and no page content.
 Uint8List _pdfBytes(String mediaBox) {
-  final objects = <String>[
+  return _encodePdf(<String>[
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [$mediaBox] >>',
-  ];
+  ]);
+}
+
+/// Minimal PDF with [count] empty 100x100 pages.
+Uint8List _pdfPages(int count) {
+  final kids = <String>[for (var i = 0; i < count; i++) '${i + 3} 0 R'];
+  return _encodePdf(<String>[
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [${kids.join(' ')}] /Count $count >>',
+    for (var i = 0; i < count; i++)
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>',
+  ]);
+}
+
+Uint8List _encodePdf(List<String> objects) {
   final out = BytesBuilder()..add('%PDF-1.4\n'.codeUnits);
   final offsets = <int>[0];
   for (var num = 1; num <= objects.length; num++) {
@@ -339,7 +559,11 @@ String _singleChapterEpub() {
     ..addFile(ArchiveFile.string('mimetype', 'application/epub+zip'))
     ..addFile(ArchiveFile.string('META-INF/container.xml', container))
     ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
-    ..addFile(ArchiveFile.string(
-        'OEBPS/ch1.xhtml', '<html><body><p>hello world</p></body></html>'));
+    ..addFile(
+      ArchiveFile.string(
+        'OEBPS/ch1.xhtml',
+        '<html><body><p>hello world</p></body></html>',
+      ),
+    );
   return base64Encode(ZipEncoder().encode(archive));
 }

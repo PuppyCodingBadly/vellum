@@ -12,8 +12,9 @@ import 'book_cover.dart';
 /// A cover-forward grid of [BookCard]s.
 ///
 /// The tile's main-axis extent is computed from the actual column width:
-/// cover (2:3) plus the two-line caption. That keeps the caption inside the
-/// tile at every window size instead of letting the grid's aspect ratio guess.
+/// cover (2:3) plus the caption extent [BookCard] reports for the current text
+/// scale. That keeps the caption inside the tile at every window size and
+/// every text scale instead of letting the grid guess.
 class BookGrid extends StatelessWidget {
   const BookGrid({
     super.key,
@@ -35,10 +36,10 @@ class BookGrid extends StatelessWidget {
 
   static const double _maxTileWidth = 182;
   static const double _gap = 22;
-  static const double _captionHeight = 64;
 
   @override
   Widget build(BuildContext context) {
+    final textScaler = MediaQuery.textScalerOf(context);
     return Scrollbar(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -46,15 +47,20 @@ class BookGrid extends StatelessWidget {
             0.0,
             constraints.maxWidth - padding.horizontal,
           );
-          final count = math.max(
-            2,
-            (extent / (_maxTileWidth + _gap)).ceil(),
-          );
+          final count = math.max(2, (extent / (_maxTileWidth + _gap)).ceil());
           final tileWidth = math.max(
             80.0,
             (extent - _gap * (count - 1)) / count,
           );
-          final tileHeight = tileWidth * 1.5 + _captionHeight;
+          final tileHeight =
+              tileWidth * 1.5 + BookCard.captionExtent(textScaler);
+          // The key of each tile is the book it shows; the map lets the sliver
+          // match that key to the book's new index, so a reordered grid keeps
+          // each tile's hover and focus with its book.
+          final indexByKey = <Object, int>{};
+          for (var i = 0; i < books.length; i++) {
+            indexByKey[books[i].id ?? books[i].path] = i;
+          }
           return GridView.builder(
             padding: padding,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -64,9 +70,15 @@ class BookGrid extends StatelessWidget {
               crossAxisSpacing: _gap,
             ),
             itemCount: books.length,
+            findChildIndexCallback: (key) =>
+                key is ValueKey<Object> ? indexByKey[key.value] : null,
             itemBuilder: (context, index) {
               final book = books[index];
               return Builder(
+                // Identity, not the slot: hover and focus belong to the book,
+                // so they follow it across a reorder or a shrink instead of
+                // landing on whichever book takes over the reused element.
+                key: ValueKey<Object>(book.id ?? book.path),
                 builder: (cardContext) => BookCard(
                   book: book,
                   onTap: onTap == null ? null : () => onTap!(book),

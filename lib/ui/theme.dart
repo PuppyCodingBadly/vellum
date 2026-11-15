@@ -33,6 +33,17 @@ double _contrast(Color a, Color b) {
   return (math.max(la, lb) + 0.05) / (math.min(la, lb) + 0.05);
 }
 
+/// Ink that stays legible on [fill]: white when it clears the label contrast
+/// floor, black otherwise.
+///
+/// Filled accent controls and accent swatches both sit on the raw accent, so
+/// they share this decision; [VellumPalette.forMode] derives its `onAccent`
+/// with it.
+Color readableInkOn(Color fill) =>
+    _contrast(Colors.white, fill) >= _minButtonLabelContrast
+    ? Colors.white
+    : Colors.black;
+
 /// The colours of one appearance mode.
 @immutable
 class VellumPalette extends ThemeExtension<VellumPalette> {
@@ -74,7 +85,9 @@ class VellumPalette extends ThemeExtension<VellumPalette> {
   /// Primary action, selection, and focus.
   final Color accent;
 
-  /// Accent blended toward the text colour until it reads on the background.
+  /// Accent blended toward black or white until it clears the text contrast
+  /// floor on every chrome surface it labels: page, sidebar, dialogs, and
+  /// raised chrome such as selection, chips, and snackbars.
   final Color accentSoft;
 
   final Color text;
@@ -152,39 +165,35 @@ class VellumPalette extends ThemeExtension<VellumPalette> {
     final towards = brightness == Brightness.dark ? Colors.white : Colors.black;
     return base.copyWith(
       accent: accent,
-      accentSoft: _readableOn(
-        accent,
-        towards,
+      accentSoft: _readableOn(accent, towards, [
         base.background,
         base.sidebar,
-        brightness == Brightness.dark ? 0.4 : 0.22,
-      ),
-      onAccent: _onAccent(accent),
+        base.surface,
+        base.surfaceHigh,
+      ], brightness == Brightness.dark ? 0.4 : 0.22),
+      onAccent: readableInkOn(accent),
     );
   }
 
+  /// Blends [accent] toward [towards] in 5% steps until it clears the text
+  /// contrast floor on every surface in [surfaces], starting at [blend].
   static Color _readableOn(
     Color accent,
     Color towards,
-    Color background,
-    Color sidebar,
+    List<Color> surfaces,
     double blend,
   ) {
     var factor = blend;
     var candidate = Color.lerp(accent, towards, factor)!;
     while (factor < 1 &&
-        (_contrast(candidate, background) < _minTextContrast ||
-            _contrast(candidate, sidebar) < _minTextContrast)) {
+        surfaces.any(
+          (surface) => _contrast(candidate, surface) < _minTextContrast,
+        )) {
       factor = math.min(1, factor + 0.05);
       candidate = Color.lerp(accent, towards, factor)!;
     }
     return candidate;
   }
-
-  static Color _onAccent(Color accent) =>
-      _contrast(Colors.white, accent) >= _minButtonLabelContrast
-      ? Colors.white
-      : Colors.black;
 
   @override
   VellumPalette copyWith({
@@ -245,6 +254,34 @@ class VellumPalette extends ThemeExtension<VellumPalette> {
       placeholderInk: Color.lerp(placeholderInk, other.placeholderInk, t)!,
       placeholderText: Color.lerp(placeholderText, other.placeholderText, t)!,
     );
+  }
+}
+
+/// The accent colours a user may choose, and how the stored setting resolves
+/// to one.
+abstract final class VellumAccents {
+  /// Named accent colours from the GTK palette.
+  static const Map<String, Color> named = {
+    'blue': Color(0xFF3584E4),
+    'teal': Color(0xFF2190A4),
+    'green': Color(0xFF3A944A),
+    'yellow': Color(0xFFC88800),
+    'orange': Color(0xFFED5B00),
+    'red': Color(0xFFE62D42),
+    'pink': Color(0xFFD56199),
+    'purple': Color(0xFF9141AC),
+    'slate': Color(0xFF6F8396),
+  };
+
+  static final RegExp _hexPattern = RegExp(r'^#[0-9a-fA-F]{6}$');
+
+  /// Resolves a palette [nameOrHex]; unknown values fall back to blue.
+  static Color resolve(String nameOrHex) {
+    final value = nameOrHex.trim();
+    if (_hexPattern.hasMatch(value)) {
+      return Color(0xFF000000 | int.parse(value.substring(1), radix: 16));
+    }
+    return named[value] ?? named['blue']!;
   }
 }
 

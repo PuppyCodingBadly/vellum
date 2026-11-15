@@ -65,11 +65,23 @@ class PdfBook {
   late final FPDF_DOCUMENT _doc;
   bool _closed = false;
 
-  /// Largest bitmap rendered in one call: 100 MP (≈400 MB of BGRA pixels).
+  /// Transient memory one rendered page may claim.
+  ///
+  /// A render holds three copies at once: PDFium's BGRA bitmap, the RGBA
+  /// [img.Image] copied out of it, and the PNG encoder's row and output
+  /// buffers. A pixel-only cap at 100 MP quietly asked for ~1.2 GB of
+  /// transient memory, so the cap is a byte budget divided by that per-pixel
+  /// cost.
+  static const int maxRasterBytes = 768 * 1000 * 1000;
+
+  /// Bytes one rasterized pixel costs while the page is encoded.
+  static const int bytesPerRasterPixel = 12;
+
+  /// Largest bitmap rendered in one call: 64 MP, ≈768 MB transient.
   ///
   /// Crafted MediaBoxes and deep zooms must fail before allocating, not take
   /// the process down with an OOM.
-  static const int maxRasterPixels = 100 * 1000 * 1000;
+  static const int maxRasterPixels = maxRasterBytes ~/ bytesPerRasterPixel;
 
   void _ensureOpen() {
     if (_closed) throw StateError('PDF document is closed: $_path');
@@ -82,17 +94,6 @@ class PdfBook {
     if (_closed) return;
     _closed = true;
     _library.FPDF_CloseDocument(_doc);
-  }
-
-  /// Releases PDFium's process-global resources.
-  ///
-  /// Only call once the isolate owning this library is finished with every
-  /// document (the reader worker calls it just before exiting).
-  static void shutdownLibrary() {
-    final pdfium = _pdfiumCache;
-    if (pdfium == null) return;
-    _pdfiumCache = null;
-    pdfium.FPDF_DestroyLibrary();
   }
 
   /// Bitmap size for a page of [widthPoints]×[heightPoints] at [scale].
@@ -110,10 +111,8 @@ class PdfBook {
     if (!widthPoints.isFinite || !heightPoints.isFinite) {
       throw const PdfRenderException('PDF page has an invalid size');
     }
-    final width =
-        (widthPoints * scale).round().clamp(1, 1 << 30);
-    final height =
-        (heightPoints * scale).round().clamp(1, 1 << 30);
+    final width = (widthPoints * scale).round().clamp(1, 1 << 30);
+    final height = (heightPoints * scale).round().clamp(1, 1 << 30);
     if (width * height > maxRasterPixels) {
       throw const PdfRenderException(
         'PDF page is too large to render at this zoom',
@@ -124,7 +123,12 @@ class PdfBook {
 
   static PDFium? _pdfiumCache;
 
-  /// Load and initialize PDFium once per process.
+  /// Load and initialize PDFium once for this isolate.
+  ///
+  /// The cache is a static, so it is isolate-local, while PDFium's init and
+  /// destroy calls act on the process-global library. A worker isolate must
+  /// therefore never destroy it: the UI isolate's cache would keep a handle to
+  /// a library that no longer works.
   ///
   /// Honors `PDFIUM_PATH` when set and existing, then a bundled copy under
   /// `$HOME/.local/share/vellum-flutter/pdfium/lib/libpdfium.so`, and finally
@@ -181,8 +185,7 @@ class PdfBook {
     }
     // FPDF_GetPageLabel reports the required buffer size in bytes, including
     // the two-byte UTF-16 terminator.
-    final needed =
-        _library.FPDF_GetPageLabel(_doc, index, ffi.nullptr, 0);
+    final needed = _library.FPDF_GetPageLabel(_doc, index, ffi.nullptr, 0);
     if (needed > 2) {
       final buffer = calloc<ffi.Uint16>(needed ~/ 2);
       try {
@@ -211,10 +214,7 @@ class PdfBook {
   /// original glyphs into a tintable atlas. Not every PDF has a text layer;
   /// in that case the result reports [PdfReflowPage.hasText] false and the
   /// reader keeps showing the page bitmap. No OCR is performed.
-  PdfReflowPage reflowPage(
-    int index, {
-    double renderScale = 3.0,
-  }) {
+  PdfReflowPage reflowPage(int index, {double renderScale = 3.0}) {
     _ensureOpen();
     final count = pageCount();
     if (index < 0 || index >= count) {
@@ -278,7 +278,10 @@ class PdfBook {
       final raster = img.Image.fromBytes(
         width: size.width,
         height: size.height,
-        bytes: buffer.cast<ffi.Uint8>().asTypedList(stride * size.height).buffer,
+        bytes: buffer
+            .cast<ffi.Uint8>()
+            .asTypedList(stride * size.height)
+            .buffer,
         rowStride: stride,
         order: img.ChannelOrder.bgra,
       );
@@ -295,14 +298,7 @@ class PdfBook {
       final charCount = _library.FPDFText_CountChars(loaded);
       final chars = <PdfChar>[];
       for (var i = 0; i < charCount; i++) {
-        if (_library.FPDFText_GetCharBox(
-              loaded,
-              i,
-              left,
-              right,
-              bottom,
-              top,
-            ) ==
+        if (_library.FPDFText_GetCharBox(loaded, i, left, right, bottom, top) ==
             0) {
           continue;
         }
@@ -315,13 +311,7 @@ class PdfBook {
         final charBottom = math.min(bottom.value, top.value);
         final charTop = math.max(bottom.value, top.value);
         var baseline = charBottom;
-        if (_library.FPDFText_GetCharOrigin(
-              loaded,
-              i,
-              originX,
-              originY,
-            ) !=
-            0) {
+        if (_library.FPDFText_GetCharOrigin(loaded, i, originX, originY) != 0) {
           baseline = originY.value;
         }
         final fontSize = _library.FPDFText_GetFontSize(loaded, i);
@@ -422,9 +412,23 @@ class PdfBook {
       final rasterWidth = size.width;
       final rasterHeight = size.height;
       _library.FPDFBitmap_FillRect(
-          bitmap, 0, 0, rasterWidth, rasterHeight, 0xFFFFFFFF);
+        bitmap,
+        0,
+        0,
+        rasterWidth,
+        rasterHeight,
+        0xFFFFFFFF,
+      );
       _library.FPDF_RenderPageBitmap(
-          bitmap, page, 0, 0, rasterWidth, rasterHeight, 0, 0);
+        bitmap,
+        page,
+        0,
+        0,
+        rasterWidth,
+        rasterHeight,
+        0,
+        0,
+      );
       final buffer = _library.FPDFBitmap_GetBuffer(bitmap);
       final stride = _library.FPDFBitmap_GetStride(bitmap);
       if (buffer == ffi.nullptr || stride <= 0) {

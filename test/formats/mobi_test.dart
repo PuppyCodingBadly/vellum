@@ -9,20 +9,42 @@ import 'package:test/test.dart';
 import 'package:vellum/formats/mobi.dart';
 import 'package:xml/xml.dart';
 
-final _text = '<h1>Alpha</h1><p>one</p>'
+final _text =
+    '<h1>Alpha</h1><p>one</p>'
     '<mbp:pagebreak/>'
     '<h1>Beta</h1><p>two</p><img recindex="1"/>';
 final _gif = [
   ...'GIF89a'.codeUnits,
-  0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+  0x01,
+  0x00,
+  0x01,
+  0x00,
+  0x80,
+  0x00,
+  0x00,
   ...List.filled(16, 0),
 ];
 
-String _makeMobi(String path, {List<int>? text, int encoding = 65001}) {
+String _makeMobi(
+  String path, {
+  List<int>? text,
+  int encoding = 65001,
+  int extraDataFlags = 0,
+}) {
   text ??= utf8.encode(_text);
   final half = text.length ~/ 2;
-  final rec1 = text.sublist(0, half);
-  final rec2 = text.sublist(half);
+  // Each set extra-data flag adds one trailer entry to every text record:
+  // payload bytes followed by a backward varint holding the entry's length.
+  final trailer = <int>[
+    for (var bits = extraDataFlags; bits != 0; bits &= bits - 1) ...[
+      0xAA,
+      0xBB,
+      0xCC,
+      0x04,
+    ],
+  ];
+  final rec1 = [...text.sublist(0, half), ...trailer];
+  final rec2 = [...text.sublist(half), ...trailer];
 
   // Record 0: PalmDOC header (16 bytes) + MOBI header.
   final palmdoc = ByteData(16)
@@ -33,15 +55,18 @@ String _makeMobi(String path, {List<int>? text, int encoding = 65001}) {
     ..setUint16(10, 4096)
     ..setUint16(12, 0)
     ..setUint16(14, 0);
-  final mobi = ByteData(0x70);
+  // The flags sit at 0xE2, so a file that carries them needs the longer header.
+  final mobiHeaderLen = extraDataFlags == 0 ? 0x70 : 0xE4;
+  final mobi = ByteData(mobiHeaderLen);
   for (var i = 0; i < 4; i++) {
     mobi.setUint8(i, 'MOBI'.codeUnits[i]);
   }
   mobi
-    ..setUint32(4, 0xE8) // header length
+    ..setUint32(4, mobiHeaderLen) // header length
     ..setUint32(0x0C, encoding) // text encoding
     ..setUint32(0x50, 3) // first non-book index
     ..setUint32(0x6C, 3); // first image index
+  if (extraDataFlags != 0) mobi.setUint16(0xE2, extraDataFlags);
   final rec0 = [...palmdoc.buffer.asUint8List(), ...mobi.buffer.asUint8List()];
 
   final records = [rec0, rec1, rec2, _gif];
@@ -110,7 +135,8 @@ void main() {
   test('text encoding cp1252', () {
     final text = latin1.encode('<h1>Café</h1><p>one</p>'); // é = 0xE9 cp1252
     final mobi = MobiBook(
-        _makeMobi('${tmp.path}/cp1252.mobi', text: text, encoding: 1252));
+      _makeMobi('${tmp.path}/cp1252.mobi', text: text, encoding: 1252),
+    );
     expect(mobi.sectionHtml(0), contains('Café'));
   });
 
@@ -130,6 +156,29 @@ void main() {
     expect(File(gifPath).existsSync(), isFalse);
     // Images mapping rebuilt from directory listing.
     expect(mobi.sectionHtml(1), isNot(contains('img-3.gif')));
+  });
+
+  test('oversized recindex leaves the tag and the section intact', () {
+    final text = utf8.encode(
+      '<h1>Alpha</h1><p>one</p><img recindex="12345678901234567890"/>',
+    );
+    final mobi = MobiBook(_makeMobi('${tmp.path}/recindex.mobi', text: text));
+
+    final html = mobi.sectionHtml(0);
+    expect(html, contains('one'));
+    expect(html, contains('recindex="12345678901234567890"'));
+    expect(mobi.sections().single.$2, 'Alpha');
+  });
+
+  test('extra-data trailers are stripped before decompression', () {
+    final mobi = MobiBook(
+      _makeMobi('${tmp.path}/trailer.mobi', extraDataFlags: 0x3),
+    );
+
+    final source = mobi.sectionSource(0) + mobi.sectionSource(1);
+    expect(source, isNot(contains('\uFFFD')));
+    expect(source, _text);
+    expect(mobi.sections(), hasLength(2));
   });
 
   test('garbage file throws FormatException', () {

@@ -266,3 +266,220 @@ def test_real_calibre_layout_loads_and_searches(sidecar, tmp_path):
     assert book["isbn"] == "9780441013593"
     assert book["language"] == "eng"
     assert book["source_name"] == "Real Layout Source"
+
+
+STORE_RELATIVE_INIT = '''
+from calibre.gui2.store import StorePlugin
+
+from . import search
+from calibre_plugins.store_rel.search import search_libgen
+
+
+class RelStore(StorePlugin):
+    name = "Rel Store"
+    description = "Store plugin using calibre's package layout."
+
+    def get_details(self, result, *args, **kwargs):
+        result.downloads["EPUB"] = "http://example.invalid/rel.epub"
+'''
+
+STORE_RELATIVE_SEARCH = '''
+import os
+
+assert __file__.endswith("search.py"), __file__
+
+
+class _Hit:
+    def __init__(self, title):
+        self.title = title
+        self.author = "Rel Author"
+        self.formats = "EPUB"
+        self.detail_item = "rel-1"
+        self.cover_url = ""
+        self.downloads = {}
+
+
+def search_libgen(query, max_results=10, timeout=60.0):
+    assert os.path.basename(__file__) == "search.py"
+    return [_Hit("Relative " + query)]
+'''
+
+STORE_BROKEN_SEARCH = '''
+from calibre.gui2.store import StorePlugin
+
+
+class BrokenStore(StorePlugin):
+    name = "Broken Store"
+    description = "Search always raises."
+
+
+def search_libgen(query, max_results=10, timeout=60.0):
+    raise RuntimeError("store backend unavailable")
+'''
+
+STORE_WITHOUT_SEARCH = '''
+from calibre.gui2.store import StorePlugin
+
+
+class NoSearchStore(StorePlugin):
+    name = "No Search Store"
+    description = "Has no search callable at all."
+'''
+
+STORE_FAILING_RESOLVER_INIT = '''
+from calibre.customize import Plugin
+
+from . import search
+
+
+class FailingStore(Plugin):
+    name = "Failing Store"
+    description = "Search works; resolution raises."
+
+    def get_details(self, result, *args, **kwargs):
+        raise RuntimeError("catalog is down")
+'''
+
+STORE_SIMPLE_SEARCH = '''
+class _Hit:
+    def __init__(self, title):
+        self.title = title
+        self.author = "Fail Author"
+        self.formats = "EPUB"
+        self.detail_item = "fail-1"
+        self.cover_url = ""
+        self.downloads = {}
+
+
+def search_libgen(query, max_results=10, timeout=60.0):
+    return [_Hit("Hit " + query)]
+'''
+
+
+def _build_zip(path, name, files):
+    """Build a plugin zip the way calibre does: marker plus package tree."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"plugin-import-name-{name}.txt", name)
+        for member, source in files.items():
+            zf.writestr(member, source)
+
+
+def test_store_zip_with_relative_imports_loads(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "store-rel.zip")
+    _build_zip(zip_path, "store_rel", {
+        "store_rel/__init__.py": STORE_RELATIVE_INIT,
+        "store_rel/search.py": STORE_RELATIVE_SEARCH,
+    })
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    result = resp["result"]
+    assert result["kind"] == "store"
+    assert result["name"] == "Rel Store"
+
+    resp = sidecar.call("store_search", store="Rel Store", query="dune",
+                        max_results=5, timeout=10.0)
+    hit = resp["result"][0]
+    assert hit["title"] == "Relative dune"
+
+    # Resolution goes through the plugin's own get_details(), not the
+    # legacy module-level hook.
+    resp = sidecar.call("store_fetch_download", store="Rel Store",
+                        result=hit, timeout=10.0)
+    assert resp["result"]["download_url"] == "http://example.invalid/rel.epub"
+    assert resp["result"]["formats"] == "EPUB"
+
+
+def test_store_search_failure_surfaces_error(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "store-broken.zip")
+    _build_zip(zip_path, "store_broken", {
+        "store_broken/__init__.py": STORE_BROKEN_SEARCH,
+    })
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    assert resp["result"]["kind"] == "store"
+
+    resp = sidecar.call("store_search", store="Broken Store", query="dune",
+                        max_results=5, timeout=10.0)
+    assert "result" not in resp
+    assert "store backend unavailable" in resp["error"]
+    assert sidecar.call("ping")["result"] == "pong"
+
+
+def test_store_without_search_fn_is_a_load_error(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "store-nosearch.zip")
+    _build_zip(zip_path, "store_nosearch", {
+        "store_nosearch/__init__.py": STORE_WITHOUT_SEARCH,
+    })
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    assert "error" in resp
+    assert "search callable" in resp["error"]
+
+
+def test_resolver_failure_carries_reason(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "store-failing.zip")
+    _build_zip(zip_path, "store_fail", {
+        "store_fail/__init__.py": STORE_FAILING_RESOLVER_INIT,
+        "store_fail/search.py": STORE_SIMPLE_SEARCH,
+    })
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    assert resp["result"]["name"] == "Failing Store"
+
+    resp = sidecar.call("store_search", store="Failing Store", query="dune",
+                        max_results=5, timeout=10.0)
+    hit = resp["result"][0]
+
+    resp = sidecar.call("store_fetch_download", store="Failing Store",
+                        result=hit, timeout=10.0)
+    assert "download_url" not in resp["result"]
+    assert "catalog is down" in resp["result"]["error"]
+
+
+def test_directory_named_zip_does_not_abort_load_all(sidecar, tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "not-a-zip.zip").mkdir()
+    _build_fakesrc_zip(str(plugin_dir / "fake-metadata-src.zip"))
+
+    resp = sidecar.call("load_all", plugin_dir=str(plugin_dir))
+    result = resp["result"]
+    assert [e["name"] for e in result["metadata"]] == ["Fake Source"]
+    assert [os.path.basename(f["zip"]) for f in result["failures"]] == [
+        "not-a-zip.zip"]
+    assert result["failures"][0]["reason"]
+
+
+def test_failed_replacement_install_keeps_working_archive(sidecar, tmp_path):
+    plugin_dir = str(tmp_path / "plugins")
+    zip_path = str(tmp_path / "fake.zip")
+    _build_fakesrc_zip(zip_path)
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=zip_path)
+    assert resp["result"]["name"] == "Fake Source"
+
+    installed = os.path.join(plugin_dir, "fake.zip")
+    with open(installed, "rb") as fh:
+        original = fh.read()
+
+    # Same basename, so this install would replace the working archive.
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    broken_zip = broken / "fake.zip"
+    with zipfile.ZipFile(broken_zip, "w") as zf:
+        zf.writestr("plugin-import-name-fakesrc.txt", "fakesrc")
+        zf.writestr("fakesrc/__init__.py", "this is not python(")
+
+    resp = sidecar.call("load", plugin_dir=plugin_dir, zip_path=str(broken_zip))
+    assert "error" in resp
+
+    with open(installed, "rb") as fh:
+        assert fh.read() == original
+
+    resp = sidecar.call("metadata_search", title="x", authors=[], isbn="",
+                        timeout=5.0)
+    assert {m["title"] for m in resp["result"]} == {
+        "Fake Book One", "Fake Book Two"}

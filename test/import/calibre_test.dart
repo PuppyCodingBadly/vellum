@@ -1,11 +1,12 @@
 /// Tests for importing a calibre library folder.
 ///
-/// Mirrors /tmp/vellum/tests/test_calibre.py. The Dart port cannot
-/// monkeypatch `_importRow`, so the per-row-failure test breaks the target
-/// library's schema instead: every row fails, the import completes, and
-/// failures are counted rather than thrown.
+/// Mirrors `tests/test_calibre.py` in the original application's tree. The
+/// Dart port cannot monkeypatch `_importRow`, so the per-row-failure test
+/// breaks the target library's schema instead: every row fails, the import
+/// completes, and failures are counted rather than thrown.
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -89,11 +90,9 @@ void main() {
   late Directory calibreRoot;
 
   Directory createCalibreLibrary() {
-    final root = Directory(p.join(tmp.path, 'Calibre Library'))
-      ..createSync();
-    final bookDir =
-        Directory(p.join(root.path, 'Jane Author', 'A Book (1)'))
-          ..createSync(recursive: true);
+    final root = Directory(p.join(tmp.path, 'Calibre Library'))..createSync();
+    final bookDir = Directory(p.join(root.path, 'Jane Author', 'A Book (1)'))
+      ..createSync(recursive: true);
     File(p.join(bookDir.path, 'Book.epub')).writeAsBytesSync([0x65]);
     File(p.join(bookDir.path, 'Book.pdf')).writeAsBytesSync([0x70]);
     File(p.join(bookDir.path, 'cover.jpg')).writeAsBytesSync([0x6A]);
@@ -126,8 +125,11 @@ void main() {
 
   test('importCalibreLibrary imports full metadata', () async {
     final progress = <(int, int)>[];
-    final result = await importCalibreLibrary(library, calibreRoot.path,
-        progress: (done, total) => progress.add((done, total)));
+    final result = await importCalibreLibrary(
+      library,
+      calibreRoot.path,
+      progress: (done, total) => progress.add((done, total)),
+    );
     expect(result.added, 1);
     expect(result.skipped, 0);
     expect(result.failed, 0);
@@ -171,8 +173,10 @@ void main() {
   });
 
   test('missing metadata.db throws', () async {
-    expect(() => importCalibreLibrary(library, tmp.path),
-        throwsA(isA<ArgumentError>()));
+    expect(
+      () => importCalibreLibrary(library, tmp.path),
+      throwsA(isA<ArgumentError>()),
+    );
   });
 
   test('format path outside library is ignored', () async {
@@ -186,6 +190,52 @@ void main() {
     expect(book.path, '');
     expect(book.formats, isEmpty);
   });
+
+  test('symlinked book directory outside library is rejected', () async {
+    final outside = Directory(p.join(tmp.path, 'outside'))..createSync();
+    File(p.join(outside.path, 'Book.epub')).writeAsBytesSync([0x65]);
+    File(p.join(outside.path, 'cover.jpg')).writeAsBytesSync([0x6A]);
+    final bookDir = Directory(
+      p.join(calibreRoot.path, 'Jane Author', 'A Book (1)'),
+    );
+    bookDir.deleteSync(recursive: true);
+    Link(bookDir.path).createSync(outside.path);
+
+    final result = await importCalibreLibrary(library, calibreRoot.path);
+    expect(result.added, 1);
+    final book = library.allBooks(includeHidden: true).single;
+    expect(book.path, '');
+    expect(book.formats, isEmpty);
+    expect(book.coverPath, '');
+  }, skip: Platform.isWindows);
+
+  test('symlinked format and cover outside library are rejected', () async {
+    final outside = File(p.join(tmp.path, 'Outside.epub'))
+      ..writeAsBytesSync([0x65]);
+    final bookDir = p.join(calibreRoot.path, 'Jane Author', 'A Book (1)');
+    File(p.join(bookDir, 'Book.epub')).deleteSync();
+    File(p.join(bookDir, 'cover.jpg')).deleteSync();
+    Link(p.join(bookDir, 'Book.epub')).createSync(outside.path);
+    Link(p.join(bookDir, 'cover.jpg')).createSync(outside.path);
+
+    final result = await importCalibreLibrary(library, calibreRoot.path);
+    expect(result.added, 1);
+    final book = library.allBooks(includeHidden: true).single;
+    expect(book.formats, ['pdf']);
+    expect(book.path, p.join(bookDir, 'Book.pdf'));
+    expect(book.coverPath, '');
+  }, skip: Platform.isWindows);
+
+  test('symlink to a file inside the library still imports', () async {
+    final bookDir = p.join(calibreRoot.path, 'Jane Author', 'A Book (1)');
+    File(p.join(bookDir, 'Book.epub')).deleteSync();
+    Link(p.join(bookDir, 'Book.epub')).createSync(p.join(bookDir, 'Book.pdf'));
+
+    await importCalibreLibrary(library, calibreRoot.path);
+    final book = library.allBooks(includeHidden: true).single;
+    expect(book.formats, ['epub', 'pdf']);
+    expect(book.path, p.join(bookDir, 'Book.epub'));
+  }, skip: Platform.isWindows);
 
   test('row failure is counted, not fatal', () async {
     // Breaking the library schema makes every per-row import throw
@@ -204,14 +254,52 @@ void main() {
   test('broken optional table does not fail the book', () async {
     final db = sqlite3.open(p.join(calibreRoot.path, 'metadata.db'));
     db.execute('DROP TABLE books_tags_link');
-    db.execute('CREATE TABLE books_tags_link ('
-        ' id INTEGER PRIMARY KEY, book INTEGER, tag_id INTEGER)');
+    db.execute(
+      'CREATE TABLE books_tags_link ('
+      ' id INTEGER PRIMARY KEY, book INTEGER, tag_id INTEGER)',
+    );
     db.dispose();
 
     final result = await importCalibreLibrary(library, calibreRoot.path);
     expect(result.added, 1);
     expect(result.failed, 0);
     expect(library.allBooks(includeHidden: true).single.tags, isEmpty);
+  });
+
+  test('import yields to the event loop and reports progress', () async {
+    final db = sqlite3.open(p.join(calibreRoot.path, 'metadata.db'));
+    for (var id = 2; id <= 30; id++) {
+      db.execute(
+        'INSERT INTO books (id, title, path, has_cover, uuid)'
+        " VALUES (?, ?, '', 0, ?)",
+        [id, 'Book $id', 'uuid-$id'],
+      );
+    }
+    db.dispose();
+
+    var ticks = 0;
+    var microtaskRan = false;
+    final timer = Timer.periodic(Duration.zero, (_) => ticks++);
+    final progress = <(int, int)>[];
+    final result = await importCalibreLibrary(
+      library,
+      calibreRoot.path,
+      progress: (done, total) {
+        progress.add((done, total));
+        scheduleMicrotask(() => microtaskRan = true);
+      },
+    );
+    timer.cancel();
+
+    expect(result.added, 30);
+    expect(result.failed, 0);
+    // A frame-scheduled callback must get to run while rows are imported.
+    expect(ticks, greaterThan(0));
+    expect(microtaskRan, isTrue);
+    expect(progress, [(25, 30), (30, 30)]);
+    for (var i = 1; i < progress.length; i++) {
+      expect(progress[i].$1, greaterThan(progress[i - 1].$1));
+    }
   });
 
   test('import does not modify the calibre database', () async {

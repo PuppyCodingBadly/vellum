@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../metadata.dart';
+import '../universal.dart';
 
 const _apiUrl = 'https://openlibrary.org/search.json';
 
@@ -43,21 +44,25 @@ class OpenLibrary extends MetadataSource {
   }
 
   @override
-  Future<List<Metadata>> searchFreeText(String query,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<List<Metadata>> searchFreeText(
+    String query, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     query = query.trim();
     if (query.isEmpty) return [];
-    return _query({
-      'q': query,
-      'limit': '20',
-      'language': 'eng',
-      'fields': _fields,
-    }, client, timeout);
+    return _query(
+      {'q': query, 'limit': '20', 'language': 'eng', 'fields': _fields},
+      client,
+      timeout,
+    );
   }
 
   Future<List<Metadata>> _query(
-      Map<String, String> params, http.Client? client, Duration timeout) async {
+    Map<String, String> params,
+    http.Client? client,
+    Duration timeout,
+  ) async {
     final httpClient = client ?? http.Client();
     try {
       final uri = Uri.parse(_apiUrl).replace(queryParameters: params);
@@ -67,7 +72,7 @@ class OpenLibrary extends MetadataSource {
       final docs = (data['docs'] as List?) ?? [];
       return [
         for (final doc in docs)
-          if (_parseDoc(doc as Map<String, Object?>) case final meta?) meta
+          if (_parseDoc(doc as Map<String, Object?>) case final meta?) meta,
       ];
     } catch (_) {
       return [];
@@ -77,19 +82,20 @@ class OpenLibrary extends MetadataSource {
   }
 
   @override
-  Future<Uint8List?> downloadCover(Metadata meta,
-      {http.Client? client,
-      Duration timeout = const Duration(seconds: 15)}) async {
+  Future<Uint8List?> downloadCover(
+    Metadata meta, {
+    http.Client? client,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     if (meta.coverUrl.isEmpty) return null;
-    final httpClient = client ?? http.Client();
     try {
-      final resp = await httpClient.get(Uri.parse(meta.coverUrl)).timeout(timeout);
-      if (resp.statusCode != 200) return null;
-      return resp.bodyBytes;
+      return await fetchCoverBytes(
+        meta.coverUrl,
+        client: client,
+        timeout: timeout,
+      );
     } catch (_) {
       return null;
-    } finally {
-      if (client == null) httpClient.close();
     }
   }
 
@@ -115,19 +121,17 @@ class OpenLibrary extends MetadataSource {
 
     return Metadata(
       title: title,
-      authors: (doc['author_name'] as List?)
-              ?.map((e) => e.toString())
-              .toList() ??
+      authors:
+          (doc['author_name'] as List?)?.map((e) => e.toString()).toList() ??
           [],
       isbn: isbn,
       publisher: firstOf('publisher'),
       pubdate: pubdate != null && pubdate != 0 ? pubdate.toString() : '',
       language: firstOf('language'),
       description: '',
-      tags:
-          ((doc['subject'] as List?)?.map((e) => e.toString()).toList() ?? [])
-              .take(8)
-              .toList(),
+      tags: ((doc['subject'] as List?)?.map((e) => e.toString()).toList() ?? [])
+          .take(8)
+          .toList(),
       rating: 0.0,
       coverUrl: coverId != null
           ? 'https://covers.openlibrary.org/b/id/$coverId-L.jpg'

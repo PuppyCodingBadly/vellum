@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter_test/flutter_test.dart' show TestWidgetsFlutterBinding;
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 import 'package:vellum/app_state.dart';
@@ -11,6 +12,10 @@ import 'package:vellum/plugins/plugin_controller.dart';
 import 'package:vellum/stats/reading_stats.dart';
 
 void main() {
+  // AppState.showToast reaches ScaffoldMessenger through a global key, which
+  // needs a binding even though these tests never pump a widget.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory root;
   late Library library;
   late AppState state;
@@ -59,6 +64,21 @@ void main() {
   test('unregistering without a reader is harmless', () {
     state.unregisterReader();
     expect(state.hasOpenReaders, isFalse);
+  });
+
+  test('calibreImportRunning notifies on both transitions', () async {
+    final folder = Directory(p.join(root.path, 'calibre'))..createSync();
+    // A valid (present) but empty metadata.db makes the import fail after the
+    // running flag flips, exercising both transitions without a fixture.
+    File(p.join(folder.path, 'metadata.db')).writeAsBytesSync(const []);
+
+    final seen = <bool>[];
+    state.addListener(() => seen.add(state.calibreImportRunning));
+
+    expect(await state.importCalibreFolder(folder.path), isTrue);
+    expect(seen.first, isTrue);
+    expect(seen.last, isFalse);
+    expect(state.calibreImportRunning, isFalse);
   });
 
   test('dispose closes the active library', () {
