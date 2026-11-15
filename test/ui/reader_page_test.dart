@@ -5,22 +5,28 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:vellum/app_state.dart';
 import 'package:vellum/core/config.dart';
 import 'package:vellum/core/db.dart';
+import 'package:vellum/core/ink.dart';
 import 'package:vellum/core/models.dart';
 import 'package:vellum/fts/indexer.dart';
 import 'package:vellum/metadata/engine.dart';
 import 'package:vellum/plugins/plugin_controller.dart';
 import 'package:vellum/reader/document_model.dart';
 import 'package:vellum/stats/reading_stats.dart';
+import 'package:vellum/ui/ink/ink_surface.dart';
+import 'package:vellum/ui/ink/ink_toolbar.dart';
 import 'package:vellum/ui/reader_page.dart';
 import '../support/test_support.dart';
 
@@ -65,7 +71,7 @@ void main() {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
-  Future<void> openReader(WidgetTester tester) async {
+  Future<void> openReader(WidgetTester tester, {bool settle = true}) async {
     await tester.pumpWidget(
       AppStateScope(
         state: state,
@@ -88,6 +94,13 @@ void main() {
       ),
     );
     await tester.tap(find.text('Open book'));
+    if (!settle) {
+      // A rendering PDF page keeps a spinner animating, so settling would
+      // never finish; pump the route in and let the caller wait for pixels.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      return;
+    }
     await tester.pumpAndSettle();
   }
 
@@ -259,6 +272,279 @@ void main() {
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
   });
+
+  testWidgets('stylus ink persists across visits and survives font scaling', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await openReader(tester);
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+
+    await _drawOnText(tester);
+    final drawn = tester.widget<InkSurface>(find.byType(InkSurface));
+    expect(drawn.strokes, hasLength(1));
+    final stroke = drawn.strokes.single;
+    expect(stroke.anchor.kind, InkAnchorKind.text);
+    expect(stroke.anchor.end, greaterThan(stroke.anchor.start));
+    expect(library.listInkStrokes(book.id!, 0), hasLength(1));
+
+    // A chapter visit drops the ink and coming back reads it from the DB.
+    await tester.tap(find.byTooltip('Next'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<InkSurface>(find.byType(InkSurface)).strokes, isEmpty);
+    await tester.tap(find.byTooltip('Previous'));
+    await tester.pumpAndSettle();
+    final reloadedSurface = tester.widget<InkSurface>(find.byType(InkSurface));
+    expect(reloadedSurface.strokes, hasLength(1));
+    final reloaded = reloadedSurface.strokes.single;
+    expect(reloaded.anchor.start, stroke.anchor.start);
+    expect(reloaded.anchor.end, stroke.anchor.end);
+
+    // A font-size change keeps the stroke over the same character range.
+    final before = reloadedSurface.rectFor(reloaded);
+    await tester.tap(find.byTooltip('Increase font size'));
+    await tester.pumpAndSettle();
+    final scaledSurface = tester.widget<InkSurface>(find.byType(InkSurface));
+    final after = scaledSurface.rectFor(reloaded);
+    expect(reloaded.anchor.start, stroke.anchor.start);
+    expect(reloaded.anchor.end, stroke.anchor.end);
+    expect(after.overlaps(before), isTrue);
+  });
+
+  testWidgets('eraser, undo and redo edit stored ink', (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await openReader(tester);
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    final start = await _drawOnText(tester);
+    expect(library.listInkStrokes(book.id!, 0), hasLength(1));
+
+    var toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.canUndo, isTrue);
+    expect(toolbar.canRedo, isFalse);
+
+    toolbar.onUndo();
+    await tester.pumpAndSettle();
+    expect(library.listInkStrokes(book.id!, 0), isEmpty);
+    toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.canUndo, isFalse);
+    expect(toolbar.canRedo, isTrue);
+
+    toolbar.onRedo();
+    await tester.pumpAndSettle();
+    expect(library.listInkStrokes(book.id!, 0), hasLength(1));
+
+    // The eraser removes only the hit stroke; undo restores it.
+    tester.widget<InkToolbar>(find.byType(InkToolbar)).onTool(InkTool.eraser);
+    await tester.pump();
+    final erase = await tester.startGesture(
+      start + const Offset(25, 2),
+      kind: PointerDeviceKind.stylus,
+    );
+    await tester.pump();
+    await erase.up();
+    await tester.pumpAndSettle();
+    expect(library.listInkStrokes(book.id!, 0), isEmpty);
+    toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.canUndo, isTrue);
+    toolbar.onUndo();
+    await tester.pumpAndSettle();
+    expect(library.listInkStrokes(book.id!, 0), hasLength(1));
+  });
+
+  testWidgets('ink mode toggles the toolbar and restores selection', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await openReader(tester);
+    expect(find.byType(InkToolbar), findsNothing);
+    expect(tester.widget<InkSurface>(find.byType(InkSurface)).enabled, isFalse);
+    expect(
+      tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .enableInteractiveSelection,
+      isNot(false),
+    );
+    expect(
+      tester
+          .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+          .physics,
+      isNull,
+    );
+
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    expect(find.byType(InkToolbar), findsOneWidget);
+    expect(tester.widget<InkSurface>(find.byType(InkSurface)).enabled, isTrue);
+    expect(
+      tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .enableInteractiveSelection,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+          .physics,
+      isA<NeverScrollableScrollPhysics>(),
+    );
+
+    tester.widget<InkToolbar>(find.byType(InkToolbar)).onClose();
+    await tester.pumpAndSettle();
+    expect(find.byType(InkToolbar), findsNothing);
+    expect(tester.widget<InkSurface>(find.byType(InkSurface)).enabled, isFalse);
+    expect(
+      tester
+          .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+          .physics,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .enableInteractiveSelection,
+      isNot(false),
+    );
+  });
+
+  testWidgets('compact 480px header fits the ink controls', (tester) async {
+    tester.view.physicalSize = const Size(480, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await openReader(tester);
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    expect(find.byType(InkToolbar), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a PDF page stroke survives zoom', (tester) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final path = p.join(tmp.path, 'page.pdf');
+    File(path).writeAsBytesSync(_singlePagePdf());
+    final id = library.addBook(
+      Book(title: 'PDF Book', formats: const ['pdf'], path: path),
+    );
+    book = library.getBook(id)!;
+    await openReader(tester, settle: false);
+    await tester.runAsync(() async {
+      await pumpUntil(
+        tester,
+        () => find.byType(InkSurface).evaluate().isNotEmpty,
+      );
+    });
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    final centre = tester.getCenter(find.byType(InkSurface));
+    final gesture = await tester.startGesture(
+      centre,
+      kind: PointerDeviceKind.stylus,
+    );
+    await tester.pump();
+    await gesture.moveBy(const Offset(40, 30));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final drawn = tester.widget<InkSurface>(find.byType(InkSurface));
+    expect(drawn.strokes, hasLength(1));
+    final stroke = drawn.strokes.single;
+    expect(stroke.anchor.kind, InkAnchorKind.page);
+    final before = drawn.rectFor(stroke);
+    expect(before.width, greaterThan(0));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 400)),
+    );
+    await tester.pumpAndSettle();
+
+    // Zoom only raises the rendered resolution; the stroke stays on the same
+    // page point instead of drifting with the new pixels.
+    final zoomed = tester.widget<InkSurface>(find.byType(InkSurface));
+    expect(zoomed.strokes, hasLength(1));
+    final after = zoomed.rectFor(stroke);
+    expect(after.width, closeTo(before.width, 1.0));
+    expect(after.height, closeTo(before.height, 1.0));
+    expect(after.contains(zoomed.strokes.single.pointLocal(0, after)), isTrue);
+    expect(library.listInkStrokes(book.id!, 0), hasLength(1));
+
+    // Tear the reader down inside the test and let the PDF worker's 2 s
+    // close-ack timeout fire, so it cannot outlive the fake-async scope.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 3));
+  });
+}
+
+/// Draws a short stylus stroke over the first line of chapter text.
+///
+/// Returns the global point the stroke started at, so eraser tests can hit it.
+Future<Offset> _drawOnText(WidgetTester tester) async {
+  final editable = renderEditableOf(tester);
+  final caret = editable.getLocalRectForCaret(const TextPosition(offset: 30));
+  final start = editable.localToGlobal(caret.topLeft) + const Offset(1, 4);
+  final gesture = await tester.startGesture(
+    start,
+    kind: PointerDeviceKind.stylus,
+  );
+  await tester.pump();
+  await gesture.moveBy(const Offset(60, 3));
+  await tester.pump();
+  await gesture.up();
+  await tester.pumpAndSettle();
+  return start;
+}
+
+/// Minimal single-page PDF with an empty page.
+Uint8List _singlePagePdf() {
+  const objects = <String>[
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
+  ];
+  final out = BytesBuilder()..add('%PDF-1.4\n'.codeUnits);
+  final offsets = <int>[0];
+  for (var i = 0; i < objects.length; i++) {
+    offsets.add(out.length);
+    out.add('${i + 1} 0 obj\n'.codeUnits);
+    out.add(objects[i].codeUnits);
+    out.add('\nendobj\n'.codeUnits);
+  }
+  final xref = out.length;
+  final size = objects.length + 1;
+  out.add('xref\n0 $size\n'.codeUnits);
+  out.add('0000000000 65535 f \n'.codeUnits);
+  for (final offset in offsets.sublist(1)) {
+    out.add('${offset.toString().padLeft(10, '0')} 00000 n \n'.codeUnits);
+  }
+  out.add(
+    'trailer\n<< /Size $size /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n'
+        .codeUnits,
+  );
+  return out.toBytes();
 }
 
 RenderEditable renderEditableOf(WidgetTester tester) {

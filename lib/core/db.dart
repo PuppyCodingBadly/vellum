@@ -3,12 +3,15 @@
 /// Ports `vellum/core/db.py` (class Library) to Dart using package:sqlite3.
 library;
 
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sqlite3/open.dart';
 import 'package:sqlite3/sqlite3.dart';
 
+import 'ink.dart';
 import 'models.dart';
 
 /// Case-folds [value] for catalogue matching.
@@ -108,6 +111,8 @@ CREATE INDEX IF NOT EXISTS formats_book ON formats(book_id);
 CREATE INDEX IF NOT EXISTS highlights_book ON highlights(book_id);
 CREATE INDEX IF NOT EXISTS reading_sessions_book ON reading_sessions(book_id);
 CREATE INDEX IF NOT EXISTS shelf_books_book ON shelf_books(book_id);
+CREATE INDEX IF NOT EXISTS ink_strokes_book_chapter
+    ON ink_strokes(book_id, chapter);
 ''';
 
   /// Directory covers etc. live next to: cwd for `:memory:`, otherwise the
@@ -216,6 +221,27 @@ CREATE TABLE IF NOT EXISTS fts_index_state (
 );
 ''';
 
+  /// Handwriting strokes, anchored to a book's chapter and a page rectangle.
+  ///
+  /// Created by [_migrate] rather than [_createSchema]: installed libraries
+  /// predate it, while fresh ones run the same migration, so the definition
+  /// exists once.
+  static const _inkSchema = '''
+CREATE TABLE IF NOT EXISTS ink_strokes (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    start INTEGER NOT NULL DEFAULT 0,
+    end INTEGER NOT NULL DEFAULT 0,
+    rect TEXT NOT NULL,
+    color INTEGER NOT NULL,
+    width REAL NOT NULL,
+    points BLOB NOT NULL,
+    created TEXT NOT NULL
+);
+''';
+
   void _createSchema() {
     _db.execute('BEGIN');
     try {
@@ -277,6 +303,9 @@ CREATE TABLE IF NOT EXISTS fts_index_state (
         'ALTER TABLE reading_positions ADD COLUMN progress REAL NOT NULL DEFAULT 0',
       );
     }
+    // Ink annotations postdate the first library files; this upgrades an
+    // existing catalogue in place and is a no-op afterwards.
+    _db.execute(_inkSchema);
   }
 
   static String _nowIso() => DateTime.now().toUtc().toIso8601String();
@@ -668,6 +697,81 @@ CREATE TABLE IF NOT EXISTS fts_index_state (
     );
     if (rows.isEmpty) return null;
     return rows.first['locator'] as String;
+  }
+
+  // ---- Ink annotations ----
+
+  /// Strokes of [bookId] in [chapter], oldest first.
+  List<InkStroke> listInkStrokes(int bookId, int chapter) => _inkStrokes(
+    'SELECT * FROM ink_strokes WHERE book_id = ? AND chapter = ? ORDER BY id',
+    [bookId, chapter],
+  );
+
+  /// Every stroke of [bookId], chapter by chapter.
+  List<InkStroke> listInkStrokesForBook(int bookId) => _inkStrokes(
+    'SELECT * FROM ink_strokes WHERE book_id = ? ORDER BY chapter, id',
+    [bookId],
+  );
+
+  List<InkStroke> _inkStrokes(String sql, List<Object?> params) =>
+      _db.select(sql, params).map(_rowToInkStroke).toList();
+
+  /// Rebuilds a stroke through [InkAnchor.fromJson], so a row written by an
+  /// older or newer build fails the same way a JSON document would.
+  static InkStroke _rowToInkStroke(Row row) {
+    final anchor = InkAnchor.fromJson({
+      'kind': row['kind'],
+      'chapter': row['chapter'],
+      'start': row['start'],
+      'end': row['end'],
+      'rect': jsonDecode(row['rect'] as String),
+    });
+    return InkStroke(
+      id: row['id'] as int,
+      anchor: anchor,
+      color: row['color'] as int,
+      width: (row['width'] as num).toDouble(),
+      points: InkCodec.decodePoints(row['points'] as Uint8List),
+    );
+  }
+
+  /// Inserts [stroke] for [bookId] and returns its id, also set on [stroke].
+  int addInkStroke(int bookId, InkStroke stroke) {
+    final anchor = stroke.anchor;
+    final rectJson = jsonEncode(anchor.toJson()['rect']);
+    final points = Uint8List.view(
+      stroke.points.buffer,
+      stroke.points.offsetInBytes,
+      stroke.points.lengthInBytes,
+    );
+    final id = _write(() {
+      _db.execute(
+        'INSERT INTO ink_strokes '
+        '(book_id, chapter, kind, start, end, rect, color, width, points, '
+        'created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          bookId,
+          anchor.chapter,
+          anchor.kind.name,
+          anchor.start,
+          anchor.end,
+          rectJson,
+          stroke.color,
+          stroke.width,
+          points,
+          _nowIso(),
+        ],
+      );
+      return _db.lastInsertRowId;
+    });
+    stroke.id = id;
+    return id;
+  }
+
+  void deleteInkStroke(int id) {
+    _write(() {
+      _db.execute('DELETE FROM ink_strokes WHERE id = ?', [id]);
+    });
   }
 
   // ---- Shelves (new feature) ----

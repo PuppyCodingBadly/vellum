@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vellum/core/db.dart';
+import 'package:vellum/core/ink.dart';
 import 'package:vellum/core/models.dart';
 import 'package:vellum/formats/pdf_reflow.dart';
 import 'package:vellum/reader/reader_controller.dart';
@@ -483,7 +485,254 @@ void main() {
       tmp.deleteSync(recursive: true);
     }
   });
+
+  test('ink settings notify listeners', () {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-inkset');
+    final library = Library('${tmp.path}/library.db');
+    try {
+      final controller = ReaderController(
+        book: Book(title: 't', path: '', formats: ['epub']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        var notifications = 0;
+        controller.addListener(() => notifications++);
+
+        controller.setInkMode(true);
+        controller.setInkTool(InkTool.eraser);
+        controller.setInkColor(0xFF00FF00);
+        controller.setInkWidth(4);
+        expect(notifications, 4);
+        expect(controller.inkMode, isTrue);
+        expect(controller.inkTool, InkTool.eraser);
+        expect(controller.inkColor, 0xFF00FF00);
+        expect(controller.inkWidth, 4);
+
+        // A repeated value or an invalid width changes nothing.
+        controller.setInkMode(true);
+        controller.setInkWidth(-1);
+        expect(notifications, 4);
+      } finally {
+        controller.dispose();
+      }
+    } finally {
+      library.close();
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test('ink strokes persist across readers and undo/redo edit them', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-ink');
+    try {
+      final bookFile = File('${tmp.path}/book.epub')
+        ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
+      final library = Library('${tmp.path}/library.db');
+      final id = library.addBook(
+        Book(title: 't', path: bookFile.path, formats: ['epub']),
+      );
+      final book = Book(
+        id: id,
+        title: 't',
+        path: bookFile.path,
+        formats: ['epub'],
+      );
+      final controller = ReaderController(
+        book: book,
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        expect(controller.inkStrokes, isEmpty);
+        expect(controller.canUndoInk, isFalse);
+        expect(controller.canRedoInk, isFalse);
+
+        final stroke = _textStroke();
+        final strokeId = controller.addInkStroke(stroke);
+        expect(strokeId, greaterThan(0));
+        expect(controller.inkStrokes.single.id, strokeId);
+        expect(controller.canUndoInk, isTrue);
+        expect(library.listInkStrokes(id, 0), hasLength(1));
+
+        // Reopening the book reads the persisted stroke back.
+        final reopened = ReaderController(
+          book: book,
+          library: library,
+          stats: ReadingStatsTracker(library),
+        );
+        await reopened.load();
+        expect(reopened.inkStrokes, hasLength(1));
+        expect(reopened.inkStrokes.single.anchor.kind, InkAnchorKind.text);
+        expect(reopened.inkStrokes.single.anchor.start, 0);
+        expect(reopened.inkStrokes.single.anchor.end, 5);
+        expect(reopened.inkStrokes.single.color, stroke.color);
+        reopened.dispose();
+
+        controller.undoInk();
+        expect(controller.inkStrokes, isEmpty);
+        expect(controller.canUndoInk, isFalse);
+        expect(controller.canRedoInk, isTrue);
+        expect(library.listInkStrokes(id, 0), isEmpty);
+
+        controller.redoInk();
+        expect(controller.inkStrokes, hasLength(1));
+        expect(controller.canRedoInk, isFalse);
+        expect(library.listInkStrokes(id, 0), hasLength(1));
+
+        controller.eraseInkStroke(controller.inkStrokes.single);
+        expect(controller.inkStrokes, isEmpty);
+        expect(library.listInkStrokes(id, 0), isEmpty);
+
+        controller.undoInk();
+        expect(controller.inkStrokes, hasLength(1));
+        expect(library.listInkStrokes(id, 0), hasLength(1));
+      } finally {
+        controller.dispose();
+        library.close();
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test('ink reloads on chapter change and clears undo history', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-ink-nav');
+    try {
+      final bookFile = File('${tmp.path}/broken.epub')
+        ..writeAsBytesSync(_epubWithBrokenSecondChapter());
+      final library = Library('${tmp.path}/library.db');
+      final id = library.addBook(
+        Book(title: 't', path: bookFile.path, formats: ['epub']),
+      );
+      final controller = ReaderController(
+        book: Book(id: id, title: 't', path: bookFile.path, formats: ['epub']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        controller.addInkStroke(_textStroke());
+        expect(controller.inkStrokes, hasLength(1));
+        expect(controller.canUndoInk, isTrue);
+
+        controller.next();
+        expect(controller.index, 1);
+        expect(controller.inkStrokes, isEmpty);
+        expect(controller.canUndoInk, isFalse);
+        expect(controller.canRedoInk, isFalse);
+
+        // Coming back reloads the first chapter's stroke.
+        controller.previous();
+        expect(controller.index, 0);
+        expect(controller.inkStrokes, hasLength(1));
+        expect(library.listInkStrokes(id, 0), hasLength(1));
+      } finally {
+        controller.dispose();
+        library.close();
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test('page ink collects page anchors across PDF pages', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-pageink');
+    try {
+      final file = File('${tmp.path}/pages.pdf')
+        ..writeAsBytesSync(_pdfPages(2));
+      final library = Library('${tmp.path}/library.db');
+      final id = library.addBook(
+        Book(title: 'p', path: file.path, formats: ['pdf']),
+      );
+      final controller = ReaderController(
+        book: Book(id: id, title: 'p', path: file.path, formats: ['pdf']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        expect(controller.isPdf, isTrue);
+        controller.addInkStroke(_pageStroke(controller.index));
+        controller.addInkStroke(_textStroke());
+        controller.next();
+        controller.addInkStroke(_pageStroke(controller.index));
+
+        final pages = controller.pageInkStrokes();
+        expect(pages, hasLength(2));
+        expect(pages.map((stroke) => stroke.anchor.chapter), <int>[0, 1]);
+        expect(
+          pages.every((stroke) => stroke.anchor.kind == InkAnchorKind.page),
+          isTrue,
+        );
+
+        // Zoom changes display pixels, not the stored page geometry.
+        final points = pages.first.points.toList();
+        controller.zoomIn();
+        expect(controller.pageInkStrokes().first.points, points);
+      } finally {
+        controller.dispose();
+        library.close();
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
+  test('ink without a saved book id stays in memory only', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-noid');
+    final library = Library('${tmp.path}/library.db');
+    try {
+      final bookFile = File('${tmp.path}/book.epub')
+        ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
+      final controller = ReaderController(
+        book: Book(title: 't', path: bookFile.path, formats: ['epub']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        expect(controller.addInkStroke(_textStroke()), -1);
+        expect(controller.inkStrokes, hasLength(1));
+        expect(controller.pageInkStrokes(), isEmpty);
+
+        controller.eraseInkStroke(controller.inkStrokes.single);
+        expect(controller.inkStrokes, isEmpty);
+      } finally {
+        controller.dispose();
+      }
+    } finally {
+      library.close();
+      tmp.deleteSync(recursive: true);
+    }
+  });
 }
+
+/// A text-anchored stroke used by the ink tests.
+InkStroke _textStroke() => InkStroke(
+  anchor: InkAnchor(
+    kind: InkAnchorKind.text,
+    chapter: 0,
+    start: 0,
+    end: 5,
+    rect: Rect.fromLTWH(10, 20, 40, 18),
+  ),
+  color: 0xFF112233,
+  width: 2.5,
+  points: Float32List.fromList(<double>[0.1, 0.5, 1, 0.9, 0.5, 1]),
+);
+
+/// A page-anchored stroke used by the ink tests.
+InkStroke _pageStroke(int chapter) => InkStroke(
+  anchor: InkAnchor(
+    kind: InkAnchorKind.page,
+    chapter: chapter,
+    rect: Rect.fromLTWH(0, 0, 100, 100),
+  ),
+  color: 0xFF445566,
+  width: 3,
+  points: Float32List.fromList(<double>[0.2, 0.2, 1, 0.8, 0.8, 1]),
+);
 
 Future<void> _waitUntil(
   bool Function() condition, {

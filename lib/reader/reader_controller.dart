@@ -10,6 +10,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/db.dart';
+import '../core/ink.dart';
 import '../core/models.dart';
 import '../formats/dictionary.dart' as dictionary;
 import '../formats/epub.dart';
@@ -182,6 +183,14 @@ class ReaderController extends ChangeNotifier {
   DateTime _lastPositionWrite = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _saveTimer;
 
+  final List<InkStroke> _inkStrokes = <InkStroke>[];
+  final List<_InkOperation> _inkUndo = <_InkOperation>[];
+  final List<_InkOperation> _inkRedo = <_InkOperation>[];
+  bool _inkMode = false;
+  InkTool _inkTool = InkTool.pen;
+  int _inkColor = 0xFF1F1B16;
+  double _inkWidth = 2.0;
+
   /// Reader format chosen for this book.
   ReaderFormat get kind => _kind;
 
@@ -235,6 +244,179 @@ class ReaderController extends ChangeNotifier {
           color: highlightColor(highlight.color),
         ),
   ];
+
+  /// True while ink strokes are being drawn over the page.
+  bool get inkMode => _inkMode;
+
+  /// Active ink tool (pen or eraser).
+  InkTool get inkTool => _inkTool;
+
+  /// Active ink colour, ARGB.
+  int get inkColor => _inkColor;
+
+  /// Active ink width in logical pixels.
+  double get inkWidth => _inkWidth;
+
+  /// Strokes belonging to the current item.
+  List<InkStroke> get inkStrokes => List<InkStroke>.unmodifiable(_inkStrokes);
+
+  /// Whether an undoable ink operation exists in this session.
+  bool get canUndoInk => _inkUndo.isNotEmpty;
+
+  /// Whether a redoable ink operation exists in this session.
+  bool get canRedoInk => _inkRedo.isNotEmpty;
+
+  /// Turns ink capture on or off.
+  void setInkMode(bool enabled) {
+    if (_inkMode == enabled) return;
+    _inkMode = enabled;
+    notifyListeners();
+  }
+
+  /// Selects the pen or the eraser.
+  void setInkTool(InkTool tool) {
+    if (_inkTool == tool) return;
+    _inkTool = tool;
+    notifyListeners();
+  }
+
+  /// Selects the ink colour from an ARGB value.
+  void setInkColor(int argb) {
+    if (_inkColor == argb) return;
+    _inkColor = argb;
+    notifyListeners();
+  }
+
+  /// Selects the ink width in logical pixels.
+  void setInkWidth(double width) {
+    if (!width.isFinite || width <= 0) return;
+    if ((_inkWidth - width).abs() < 1e-9) return;
+    _inkWidth = width;
+    notifyListeners();
+  }
+
+  /// Loads the current item's strokes and forgets this chapter's undo history.
+  ///
+  /// Called after opening and on every chapter change; callers notify, so it
+  /// does not notify itself.
+  void loadInk() {
+    _inkStrokes.clear();
+    _inkUndo.clear();
+    _inkRedo.clear();
+    final bookId = book.id;
+    if (bookId == null) return;
+    try {
+      _inkStrokes.addAll(_library.listInkStrokes(bookId, _index));
+    } catch (_) {
+      _inkStrokes.clear();
+    }
+  }
+
+  /// Persists [stroke] on the current item and returns its row id.
+  ///
+  /// A book without an id keeps the stroke for the session and returns -1.
+  /// A failed write reports a toast and returns -1 without changing the page.
+  int addInkStroke(InkStroke stroke) {
+    final bookId = book.id;
+    var id = -1;
+    if (bookId != null) {
+      try {
+        id = _library.addInkStroke(bookId, stroke);
+      } catch (_) {
+        _onToast?.call('Could not save ink');
+        return -1;
+      }
+    }
+    _inkStrokes.add(stroke);
+    _inkUndo.add(_InkOperation.add(stroke));
+    _inkRedo.clear();
+    notifyListeners();
+    return id;
+  }
+
+  /// Removes [stroke] from the current item and deletes its row.
+  void eraseInkStroke(InkStroke stroke) {
+    final at = _inkStrokes.indexWhere(
+      (candidate) =>
+          identical(candidate, stroke) ||
+          (stroke.id != null && candidate.id == stroke.id),
+    );
+    if (at < 0) return;
+    final removed = _inkStrokes.removeAt(at);
+    final id = removed.id;
+    if (id != null) {
+      try {
+        _library.deleteInkStroke(id);
+      } catch (_) {
+        // The row may already be gone; the page must still drop the stroke.
+      }
+    }
+    _inkUndo.add(_InkOperation.erase(removed));
+    _inkRedo.clear();
+    notifyListeners();
+  }
+
+  /// Reverses the last ink add or erase of this session.
+  void undoInk() {
+    if (_inkUndo.isEmpty) return;
+    final operation = _inkUndo.last;
+    if (!_applyInkOperation(operation, undo: true)) return;
+    _inkUndo.removeLast();
+    _inkRedo.add(operation);
+    notifyListeners();
+  }
+
+  /// Re-applies the last ink operation undone in this session.
+  void redoInk() {
+    if (_inkRedo.isEmpty) return;
+    final operation = _inkRedo.last;
+    if (!_applyInkOperation(operation, undo: false)) return;
+    _inkRedo.removeLast();
+    _inkUndo.add(operation);
+    notifyListeners();
+  }
+
+  /// All page-anchored strokes of this book, across pages, for export.
+  List<InkStroke> pageInkStrokes() {
+    final bookId = book.id;
+    if (bookId == null) return const <InkStroke>[];
+    try {
+      return [
+        for (final stroke in _library.listInkStrokesForBook(bookId))
+          if (stroke.anchor.kind == InkAnchorKind.page) stroke,
+      ];
+    } catch (_) {
+      return const <InkStroke>[];
+    }
+  }
+
+  bool _applyInkOperation(_InkOperation operation, {required bool undo}) {
+    final adding = operation.isAdd != undo;
+    if (adding) {
+      final bookId = book.id;
+      if (bookId != null) {
+        try {
+          _library.addInkStroke(bookId, operation.stroke);
+        } catch (_) {
+          _onToast?.call('Could not save ink');
+          return false;
+        }
+      }
+      _inkStrokes.add(operation.stroke);
+      return true;
+    }
+    final at = _inkStrokes.indexOf(operation.stroke);
+    if (at >= 0) _inkStrokes.removeAt(at);
+    final id = operation.stroke.id;
+    if (id != null) {
+      try {
+        _library.deleteInkStroke(id);
+      } catch (_) {
+        // A missing row still means the stroke is gone from the page.
+      }
+    }
+    return true;
+  }
 
   /// Reader text scale (0.8–1.6).
   double get fontScale => _fontScale;
@@ -327,6 +509,7 @@ class ReaderController extends ChangeNotifier {
       _loadHighlights();
       _restorePosition();
       _loadCurrentDocument();
+      loadInk();
       _loading = false;
       final id = book.id;
       if (id != null) {
@@ -726,6 +909,7 @@ class ReaderController extends ChangeNotifier {
       _pendingJumpOffset = jumpOffset;
       _savePosition();
     }
+    loadInk();
     notifyListeners();
     if (isPdf) _renderPdf();
   }
@@ -875,6 +1059,19 @@ class ReaderController extends ChangeNotifier {
       _pdfCache.remove(_pdfCache.keys.first);
     }
   }
+}
+
+/// One reversible ink edit: an add or an erase of a stroke.
+class _InkOperation {
+  _InkOperation.add(this.stroke) : isAdd = true;
+
+  _InkOperation.erase(this.stroke) : isAdd = false;
+
+  /// The stroke the operation added or removed.
+  final InkStroke stroke;
+
+  /// True for an add, false for an erase.
+  final bool isAdd;
 }
 
 /// Renders PDF pages on a long-lived worker isolate so navigation does not

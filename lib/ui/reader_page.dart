@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -13,10 +14,14 @@ import 'package:window_manager/window_manager.dart';
 
 import '../app_state.dart';
 import '../core/gestures.dart';
+import '../core/ink.dart';
 import '../core/models.dart';
+import '../formats/annotated_pdf.dart';
 import '../formats/pdf_reflow.dart';
 import '../reader/document_model.dart';
 import '../reader/reader_controller.dart';
+import 'ink/ink_surface.dart';
+import 'ink/ink_toolbar.dart';
 import 'theme.dart';
 
 const double _baseFontSize = 17.0;
@@ -60,6 +65,7 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _navigationPending = false;
   bool _chapterReady = true;
   GlobalKey _textLayoutKey = GlobalKey(debugLabel: 'reader-text');
+  GlobalKey _inkSurfaceKey = GlobalKey(debugLabel: 'reader-ink');
   String _currentContentKey = '';
   bool _focusRequested = false;
 
@@ -262,8 +268,12 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   /// The paragraph currently rendering the chapter, if it is laid out.
-  RenderEditable? _findRenderEditable() {
-    final root = _textLayoutKey.currentContext?.findRenderObject();
+  RenderEditable? _findRenderEditable() =>
+      _findRenderEditableFrom(_textLayoutKey);
+
+  /// The paragraph under [key], if it is laid out.
+  RenderEditable? _findRenderEditableFrom(GlobalKey key) {
+    final root = key.currentContext?.findRenderObject();
     if (root == null) return null;
     RenderEditable? found;
     void visit(RenderObject object) {
@@ -291,6 +301,253 @@ class _ReaderPageState extends State<ReaderPage> {
       viewport = outer;
     }
     return null;
+  }
+
+  // -- ink -------------------------------------------------------------------
+
+  /// True when a document/page is laid out under an ink surface.
+  bool get _inkAvailable {
+    final controller = _controller;
+    if (controller == null ||
+        controller.loading ||
+        controller.hasError ||
+        controller.items.isEmpty) {
+      return false;
+    }
+    if (controller.isPdf) {
+      return controller.pdfReflow
+          ? controller.pdfReflowPage != null
+          : controller.pdfPageBytes != null;
+    }
+    return controller.document != null;
+  }
+
+  void _toggleInkMode() {
+    final controller = _controller;
+    if (controller == null) return;
+    if (!controller.inkMode) {
+      _dismissSelection();
+      _clearSelection();
+    }
+    controller.setInkMode(!controller.inkMode);
+  }
+
+  /// Builds a text anchor from the surface-local pen segment.
+  InkAnchor _textAnchor(
+    Offset firstLocal,
+    Offset lastLocal, {
+    required GlobalKey textKey,
+    required GlobalKey surfaceKey,
+    required int chapter,
+  }) {
+    final controller = _controller;
+    final document = controller?.document;
+    final text = _findRenderEditableFrom(textKey);
+    final surface = surfaceKey.currentContext?.findRenderObject();
+    final fallbackRect = Rect.fromPoints(firstLocal, lastLocal).inflate(1);
+    if (controller == null ||
+        document == null ||
+        text == null ||
+        !text.hasSize ||
+        surface is! RenderBox) {
+      return InkAnchor(
+        kind: InkAnchorKind.text,
+        chapter: chapter,
+        rect: fallbackRect,
+      );
+    }
+    int documentOffset(Offset local) {
+      final global = surface.localToGlobal(local);
+      final rendered = text.getPositionForPoint(global);
+      return document
+          .renderedToDocument(rendered.offset)
+          .clamp(0, document.plainText.length);
+    }
+
+    var start = documentOffset(firstLocal);
+    var end = documentOffset(lastLocal);
+    if (start > end) {
+      final swap = start;
+      start = end;
+      end = swap;
+    }
+    final rect =
+        _textRangeRect(document, text, surface, start, end) ?? fallbackRect;
+    return InkAnchor(
+      kind: InkAnchorKind.text,
+      chapter: chapter,
+      start: start,
+      end: end,
+      rect: rect,
+    );
+  }
+
+  /// Resolves the display rect of a text-anchored stroke in surface space.
+  ///
+  /// Re-measuring from the character range keeps a stroke over the same words
+  /// after a font-size change instead of leaving it at its old pixels. The
+  /// keys are the stroke's own chapter, so an outgoing chapter's ink is not
+  /// re-measured against the incoming chapter during a transition.
+  Rect _textRectFor(
+    InkStroke stroke, {
+    required GlobalKey textKey,
+    required GlobalKey surfaceKey,
+  }) {
+    final document = _controller?.document;
+    final text = _findRenderEditableFrom(textKey);
+    final surface = surfaceKey.currentContext?.findRenderObject();
+    if (document == null || text == null || surface is! RenderBox) {
+      return stroke.anchor.rect;
+    }
+    return _textRangeRect(
+          document,
+          text,
+          surface,
+          stroke.anchor.start,
+          stroke.anchor.end,
+        ) ??
+        stroke.anchor.rect;
+  }
+
+  Rect? _textRangeRect(
+    DocumentModel document,
+    RenderEditable text,
+    RenderBox surface,
+    int start,
+    int end,
+  ) {
+    final from = document.documentStartToRendered(start);
+    final to = document.documentEndToRendered(end);
+    Rect? local;
+    if (to > from) {
+      for (final box in text.getBoxesForSelection(
+        TextSelection(baseOffset: from, extentOffset: to),
+      )) {
+        final rect = box.toRect();
+        local = local?.expandToInclude(rect) ?? rect;
+      }
+    }
+    local ??= text.getLocalRectForCaret(TextPosition(offset: from));
+    final topLeft = surface.globalToLocal(text.localToGlobal(local.topLeft));
+    final bottomRight = surface.globalToLocal(
+      text.localToGlobal(local.bottomRight),
+    );
+    final rect = Rect.fromPoints(topLeft, bottomRight);
+    if (rect.width > 0 && rect.height > 0) return rect;
+    return Rect.fromLTWH(
+      rect.left,
+      rect.top,
+      math.max(rect.width, 1),
+      math.max(rect.height, 1),
+    );
+  }
+
+  /// Pixel size of a PNG, read from its IHDR header.
+  ///
+  /// The PDF page rect needs the rendered image's aspect ratio before the
+  /// codec finishes decoding, so the header is enough.
+  static Size? _pngPixelSize(Uint8List bytes) {
+    if (bytes.length < 24) return null;
+    const signature = <int>[
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+    ];
+    for (var i = 0; i < signature.length; i++) {
+      if (bytes[i] != signature[i]) return null;
+    }
+    final header = ByteData.sublistView(bytes, 16, 24);
+    return Size(header.getUint32(0).toDouble(), header.getUint32(4).toDouble());
+  }
+
+  /// Rect `BoxFit.contain` gives a page image inside [box].
+  static Rect _fitPageRect(Size imageSize, Size box) {
+    if (imageSize.width <= 0 ||
+        imageSize.height <= 0 ||
+        box.width <= 0 ||
+        box.height <= 0) {
+      return Rect.zero;
+    }
+    final scale = math.min(
+      box.width / imageSize.width,
+      box.height / imageSize.height,
+    );
+    final width = imageSize.width * scale;
+    final height = imageSize.height * scale;
+    return Rect.fromLTWH(
+      (box.width - width) / 2,
+      (box.height - height) / 2,
+      width,
+      height,
+    );
+  }
+
+  bool _canExportAnnotatedPdf(ReaderController controller) =>
+      controller.isPdf &&
+      !controller.pdfReflow &&
+      controller.pageInkStrokes().isNotEmpty;
+
+  /// Renders page-anchored ink into a copy of the PDF and saves it.
+  Future<void> _exportAnnotatedPdf() async {
+    final controller = _controller;
+    if (controller == null || !controller.isPdf || controller.pdfReflow) return;
+    final byPage = <int, List<InkStroke>>{};
+    for (final stroke in controller.pageInkStrokes()) {
+      byPage
+          .putIfAbsent(stroke.anchor.chapter, () => <InkStroke>[])
+          .add(stroke);
+    }
+    if (byPage.isEmpty) return;
+    final suggestedName = '${controller.book.title} (annotated).pdf';
+    try {
+      final location = await getSaveLocation(
+        suggestedName: suggestedName,
+        acceptedTypeGroups: const <XTypeGroup>[
+          XTypeGroup(label: 'PDF', extensions: <String>['pdf']),
+        ],
+      );
+      if (location == null) return;
+      final bytes = await buildAnnotatedPdf(
+        sourcePath: controller.book.path,
+        strokesByPage: byPage,
+      );
+      final file = XFile.fromData(
+        bytes,
+        mimeType: 'application/pdf',
+        name: suggestedName,
+      );
+      await file.saveTo(location.path);
+      _appState?.showToast('Annotated PDF saved');
+    } catch (_) {
+      _appState?.showToast('Could not export annotated PDF');
+    }
+  }
+
+  InkSurface _inkSurface({
+    required ReaderController controller,
+    required InkAnchorKind kind,
+    required Rect Function(InkStroke) rectFor,
+    required InkAnchor Function(Offset firstLocal, Offset lastLocal)
+    anchorBuilder,
+    required Widget child,
+    Key? key,
+  }) {
+    return InkSurface(
+      key: key,
+      enabled: controller.inkMode,
+      tool: controller.inkTool,
+      color: Color(controller.inkColor),
+      width: controller.inkWidth,
+      // Only strokes drawn on this kind of anchor belong to this surface;
+      // a page stroke would otherwise be redrawn over the first reflow block.
+      strokes: [
+        for (final stroke in controller.inkStrokes)
+          if (stroke.anchor.kind == kind) stroke,
+      ],
+      rectFor: rectFor,
+      anchorBuilder: anchorBuilder,
+      onStrokeComplete: controller.addInkStroke,
+      onErase: controller.eraseInkStroke,
+      child: child,
+    );
   }
 
   // -- navigation ------------------------------------------------------------
@@ -789,6 +1046,8 @@ class _ReaderPageState extends State<ReaderPage> {
             unawaited(_toggleFullscreen());
           case 'copy-page':
             unawaited(_copyPageText());
+          case 'export-pdf':
+            unawaited(_exportAnnotatedPdf());
           default:
             appState.readerTheme = value;
         }
@@ -817,6 +1076,13 @@ class _ReaderPageState extends State<ReaderPage> {
             child: Text(entry.value),
           ),
         const PopupMenuDivider(),
+        if (_canExportAnnotatedPdf(controller)) ...[
+          const PopupMenuItem<String>(
+            value: 'export-pdf',
+            child: Text('Export annotated PDF…'),
+          ),
+          const PopupMenuDivider(),
+        ],
         const PopupMenuItem<String>(
           value: 'fullscreen',
           child: Text('Fullscreen'),
@@ -985,6 +1251,8 @@ class _ReaderPageState extends State<ReaderPage> {
                       children: [
                         _buildHeader(controller, appState, colors),
                         Expanded(child: _buildBody(controller, colors)),
+                        if (controller.inkMode)
+                          _buildInkToolbar(controller, colors),
                         _buildProgress(controller, colors),
                       ],
                     ),
@@ -1042,6 +1310,14 @@ class _ReaderPageState extends State<ReaderPage> {
                       hasItems && controller.index < controller.items.length - 1
                       ? _next
                       : null,
+                ),
+                IconButton(
+                  tooltip: controller.inkMode ? 'Stop drawing' : 'Draw',
+                  icon: Icon(
+                    controller.inkMode ? Icons.edit : Icons.edit_outlined,
+                  ),
+                  color: controller.inkMode ? colors.link : null,
+                  onPressed: _inkAvailable ? _toggleInkMode : null,
                 ),
                 Expanded(
                   child: compact
@@ -1110,6 +1386,23 @@ class _ReaderPageState extends State<ReaderPage> {
                   if (controller.supportsHighlights)
                     _buildHighlightsMenu(controller, colors),
                   _buildThemeMenu(appState),
+                  if (_canExportAnnotatedPdf(controller))
+                    PopupMenuButton<String>(
+                      tooltip: 'More options',
+                      icon: const Icon(Icons.more_vert),
+                      position: PopupMenuPosition.under,
+                      onSelected: (value) {
+                        if (value == 'export-pdf') {
+                          unawaited(_exportAnnotatedPdf());
+                        }
+                      },
+                      itemBuilder: (context) => const <PopupMenuEntry<String>>[
+                        PopupMenuItem<String>(
+                          value: 'export-pdf',
+                          child: Text('Export annotated PDF…'),
+                        ),
+                      ],
+                    ),
                   IconButton(
                     tooltip: 'Toggle fullscreen (F11)',
                     icon: const Icon(Icons.fullscreen),
@@ -1165,9 +1458,12 @@ class _ReaderPageState extends State<ReaderPage> {
       // A fresh key per chapter keeps the outgoing AnimatedSwitcher child
       // from sharing the key used to measure the incoming paragraph.
       _textLayoutKey = GlobalKey(debugLabel: 'reader-text');
+      _inkSurfaceKey = GlobalKey(debugLabel: 'reader-ink');
     }
+    final textKey = _textLayoutKey;
+    final inkKey = _inkSurfaceKey;
     return GestureDetector(
-      onHorizontalDragEnd: _onSwipe,
+      onHorizontalDragEnd: controller.inkMode ? null : _onSwipe,
       child: Listener(
         onPointerDown: (event) => _pointer = event.position,
         onPointerMove: (event) => _pointer = event.position,
@@ -1181,6 +1477,9 @@ class _ReaderPageState extends State<ReaderPage> {
           },
           child: SingleChildScrollView(
             controller: _scrollController,
+            physics: controller.inkMode
+                ? const NeverScrollableScrollPhysics()
+                : null,
             padding: EdgeInsets.symmetric(
               horizontal: fontSize,
               vertical: fontSize,
@@ -1201,34 +1500,52 @@ class _ReaderPageState extends State<ReaderPage> {
                       child: SizedBox(
                         key: ValueKey<String>(_currentContentKey),
                         width: width,
-                        child: KeyedSubtree(
-                          key: _textLayoutKey,
-                          child: _chapterReady
-                              ? SelectableText.rich(
-                                  _buildTextSpan(
-                                    document,
-                                    controller,
-                                    colors,
-                                    width,
-                                  ),
-                                  key: ValueKey<int>(_selectionEpoch),
-                                  maxLines: null,
-                                  style: TextStyle(
-                                    fontFamily: kReaderFont,
-                                    color: colors.foreground,
-                                    fontSize: fontSize,
-                                    height: 1.62,
-                                  ),
-                                  textScaler: TextScaler.noScaling,
-                                  selectionColor: colors.foreground.withValues(
-                                    alpha: 0.25,
-                                  ),
-                                  onSelectionChanged: _onSelectionChanged,
-                                  contextMenuBuilder:
-                                      (context, editableTextState) =>
-                                          const SizedBox.shrink(),
-                                )
-                              : const SizedBox.shrink(),
+                        child: _inkSurface(
+                          controller: controller,
+                          kind: InkAnchorKind.text,
+                          key: inkKey,
+                          rectFor: (stroke) => _textRectFor(
+                            stroke,
+                            textKey: textKey,
+                            surfaceKey: inkKey,
+                          ),
+                          anchorBuilder: (firstLocal, lastLocal) => _textAnchor(
+                            firstLocal,
+                            lastLocal,
+                            textKey: textKey,
+                            surfaceKey: inkKey,
+                            chapter: controller.index,
+                          ),
+                          child: KeyedSubtree(
+                            key: textKey,
+                            child: _chapterReady
+                                ? SelectableText.rich(
+                                    _buildTextSpan(
+                                      document,
+                                      controller,
+                                      colors,
+                                      width,
+                                    ),
+                                    key: ValueKey<int>(_selectionEpoch),
+                                    maxLines: null,
+                                    enableInteractiveSelection:
+                                        !controller.inkMode,
+                                    style: TextStyle(
+                                      fontFamily: kReaderFont,
+                                      color: colors.foreground,
+                                      fontSize: fontSize,
+                                      height: 1.62,
+                                    ),
+                                    textScaler: TextScaler.noScaling,
+                                    selectionColor: colors.foreground
+                                        .withValues(alpha: 0.25),
+                                    onSelectionChanged: _onSelectionChanged,
+                                    contextMenuBuilder:
+                                        (context, editableTextState) =>
+                                            const SizedBox.shrink(),
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
                         ),
                       ),
                     );
@@ -1249,7 +1566,7 @@ class _ReaderPageState extends State<ReaderPage> {
         ? 'pdf-${controller.index}'
         : 'pdf-${controller.index}-error';
     return GestureDetector(
-      onHorizontalDragEnd: _onSwipe,
+      onHorizontalDragEnd: controller.inkMode ? null : _onSwipe,
       child: SizedBox.expand(
         child: AnimatedSwitcher(
           duration: _animationEnabled ? _animationDuration : Duration.zero,
@@ -1290,11 +1607,32 @@ class _ReaderPageState extends State<ReaderPage> {
                             ),
                           ),
                         )
-                : Image.memory(
-                    bytes,
-                    fit: BoxFit.contain,
-                    gaplessPlayback: true,
-                    filterQuality: FilterQuality.medium,
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final box = constraints.biggest;
+                      final imageSize = _pngPixelSize(bytes);
+                      final pageRect = imageSize == null
+                          ? Offset.zero & box
+                          : _fitPageRect(imageSize, box);
+                      return _inkSurface(
+                        controller: controller,
+                        kind: InkAnchorKind.page,
+                        rectFor: (_) => pageRect,
+                        anchorBuilder: (firstLocal, lastLocal) => InkAnchor(
+                          kind: InkAnchorKind.page,
+                          chapter: controller.index,
+                          rect: pageRect,
+                        ),
+                        child: SizedBox.expand(
+                          child: Image.memory(
+                            bytes,
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                            filterQuality: FilterQuality.medium,
+                          ),
+                        ),
+                      );
+                    },
                   ),
           ),
         ),
@@ -1332,10 +1670,33 @@ class _ReaderPageState extends State<ReaderPage> {
     return _PdfReflowView(
       key: ValueKey<int>(controller.index),
       page: page,
+      controller: controller,
       fontSize:
           _baseFontSize * (appState?.readerFontScale ?? controller.fontScale),
       foreground: colors.foreground,
       background: colors.background,
+    );
+  }
+
+  Widget _buildInkToolbar(ReaderController controller, _ReaderColors colors) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      child: InkToolbar(
+        tool: controller.inkTool,
+        color: Color(controller.inkColor),
+        width: controller.inkWidth,
+        canUndo: controller.canUndoInk,
+        canRedo: controller.canRedoInk,
+        foreground: colors.foreground,
+        background: colors.background,
+        accent: colors.link,
+        onTool: controller.setInkTool,
+        onColor: (color) => controller.setInkColor(color.toARGB32()),
+        onWidth: controller.setInkWidth,
+        onUndo: controller.undoInk,
+        onRedo: controller.redoInk,
+        onClose: () => controller.setInkMode(false),
+      ),
     );
   }
 
@@ -1483,12 +1844,14 @@ class _PdfReflowView extends StatefulWidget {
   const _PdfReflowView({
     super.key,
     required this.page,
+    required this.controller,
     required this.fontSize,
     required this.foreground,
     required this.background,
   });
 
   final PdfReflowPage page;
+  final ReaderController controller;
   final double fontSize;
   final Color foreground;
   final Color background;
@@ -1499,10 +1862,77 @@ class _PdfReflowView extends StatefulWidget {
 
 class _PdfReflowViewState extends State<_PdfReflowView> {
   final ScrollController _scroll = ScrollController();
+  final GlobalKey _inkSurfaceKey = GlobalKey(debugLabel: 'reflow-ink');
+  final List<GlobalKey> _blockKeys = <GlobalKey>[];
   ui.Image? _atlas;
   Uint8List? _atlasBytes;
   bool _loading = true;
   String? _error;
+
+  /// A key per laid-out block, so ink can be anchored to block rectangles
+  /// instead of to pixel offsets that move with the font size.
+  void _syncBlockKeys() {
+    final count = widget.page.blocks.length;
+    while (_blockKeys.length > count) {
+      _blockKeys.removeLast();
+    }
+    while (_blockKeys.length < count) {
+      _blockKeys.add(
+        GlobalKey(debugLabel: 'reflow-block-${_blockKeys.length}'),
+      );
+    }
+  }
+
+  Rect? _blockRect(int index) {
+    if (index < 0 || index >= _blockKeys.length) return null;
+    final surface = _inkSurfaceKey.currentContext?.findRenderObject();
+    final block = _blockKeys[index].currentContext?.findRenderObject();
+    if (surface is! RenderBox || block is! RenderBox) return null;
+    return surface.globalToLocal(block.localToGlobal(Offset.zero)) & block.size;
+  }
+
+  Rect _strokeRect(InkStroke stroke) =>
+      _blockRect(stroke.anchor.start) ?? stroke.anchor.rect;
+
+  InkAnchor _blockAnchor(Offset firstLocal, Offset lastLocal) {
+    _syncBlockKeys();
+    int? containing(Offset point) {
+      for (var i = 0; i < _blockKeys.length; i++) {
+        if (_blockRect(i)?.contains(point) ?? false) return i;
+      }
+      return null;
+    }
+
+    var index = containing(firstLocal) ?? containing(lastLocal);
+    if (index == null) {
+      var nearest = double.infinity;
+      for (var i = 0; i < _blockKeys.length; i++) {
+        final rect = _blockRect(i);
+        if (rect == null) continue;
+        final distance = (rect.center - firstLocal).distance;
+        if (distance < nearest) {
+          nearest = distance;
+          index = i;
+        }
+      }
+    }
+    final rect = index == null
+        ? Rect.fromPoints(firstLocal, lastLocal).inflate(1)
+        : _blockRect(index) ?? Rect.fromPoints(firstLocal, lastLocal);
+    return InkAnchor(
+      kind: InkAnchorKind.reflowBlock,
+      chapter: widget.controller.index,
+      start: index ?? 0,
+      end: index ?? 0,
+      rect: rect,
+    );
+  }
+
+  Widget _blockWidget(PdfReflowBlock block, ui.Image atlas) {
+    if (block is PdfReflowParagraph) return _paragraph(block, atlas);
+    if (block is PdfReflowImageBlock) return _image(block);
+    return const SizedBox.shrink();
+  }
 
   @override
   void initState() {
@@ -1578,10 +2008,15 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
         ),
       );
     }
+    _syncBlockKeys();
+    final controller = widget.controller;
     return Scrollbar(
       controller: _scroll,
       child: SingleChildScrollView(
         controller: _scroll,
+        physics: controller.inkMode
+            ? const NeverScrollableScrollPhysics()
+            : null,
         padding: EdgeInsets.symmetric(
           horizontal: widget.fontSize,
           vertical: widget.fontSize * 1.2,
@@ -1589,15 +2024,30 @@ class _PdfReflowViewState extends State<_PdfReflowView> {
         child: Center(
           child: ConstrainedBox(
             constraints: BoxConstraints(maxWidth: widget.fontSize * 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final block in widget.page.blocks)
-                  if (block is PdfReflowParagraph)
-                    _paragraph(block, atlas)
-                  else if (block is PdfReflowImageBlock)
-                    _image(block),
+            child: InkSurface(
+              key: _inkSurfaceKey,
+              enabled: controller.inkMode,
+              tool: controller.inkTool,
+              color: Color(controller.inkColor),
+              width: controller.inkWidth,
+              strokes: [
+                for (final stroke in controller.inkStrokes)
+                  if (stroke.anchor.kind == InkAnchorKind.reflowBlock) stroke,
               ],
+              rectFor: _strokeRect,
+              anchorBuilder: _blockAnchor,
+              onStrokeComplete: controller.addInkStroke,
+              onErase: controller.eraseInkStroke,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < widget.page.blocks.length; i++)
+                    KeyedSubtree(
+                      key: _blockKeys[i],
+                      child: _blockWidget(widget.page.blocks[i], atlas),
+                    ),
+                ],
+              ),
             ),
           ),
         ),

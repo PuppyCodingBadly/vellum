@@ -42,6 +42,9 @@ Updates: `flatpak update io.github.vellum.Vellum`.
   - Light, Sepia, and Dark themes (or follow the system scheme)
   - table of contents, page/chapter turns, swipe gestures, and fullscreen
   - text highlights with a highlights panel (EPUB/MOBI)
+  - handwriting annotations anchored to the text or page they were drawn on:
+    ink follows reflow, font size, zoom, and theme changes; pen/eraser, four
+    inks, three widths, undo/redo; PDFs can export an annotated copy
   - in-reader dictionary lookup
   - automatic reading-position resume
   - reading-session tracking

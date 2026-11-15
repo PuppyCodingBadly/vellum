@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:path/path.dart' as p;
 
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 import 'package:vellum/core/db.dart';
+import 'package:vellum/core/ink.dart';
 import 'package:vellum/core/models.dart';
 
 void main() {
@@ -674,6 +677,165 @@ INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
 
       expect(lib.search('100%').map((b) => b.title), ['100% Pure']);
       expect(lib.search('a_b').map((b) => b.title), ['a_b']);
+    });
+  });
+
+  group('ink strokes', () {
+    InkStroke stroke({
+      int chapter = 0,
+      InkAnchorKind kind = InkAnchorKind.text,
+      int start = 0,
+      int end = 0,
+      List<Offset> points = const [Offset(0.1, 0.2), Offset(0.4, 0.6)],
+      List<double> pressure = const [0.5, 0.8],
+      double width = 2.5,
+      int color = 0xFF112233,
+    }) {
+      return InkStroke(
+        anchor: InkAnchor(
+          kind: kind,
+          chapter: chapter,
+          start: start,
+          end: end,
+          rect: const Rect.fromLTWH(4, 8, 600, 800),
+        ),
+        color: color,
+        width: width,
+        points: Float32List.sublistView(
+          InkCodec.encodePoints(points, pressure),
+        ),
+      );
+    }
+
+    test('adds and lists strokes per chapter with every field intact', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final bookId = lib.addBook(Book(title: 'Inky'));
+
+      final first = stroke(chapter: 1, start: 10, end: 20);
+      final second = stroke(chapter: 1, kind: InkAnchorKind.page);
+      final third = stroke(
+        chapter: 0,
+        kind: InkAnchorKind.reflowBlock,
+        start: 3,
+      );
+
+      final firstId = lib.addInkStroke(bookId, first);
+      expect(firstId, greaterThan(0));
+      expect(first.id, firstId);
+      lib.addInkStroke(bookId, second);
+      lib.addInkStroke(bookId, third);
+      expect(second.id, greaterThan(firstId));
+
+      final chapterOne = lib.listInkStrokes(bookId, 1);
+      expect(chapterOne.map((s) => s.id), [first.id, second.id]);
+      expect(chapterOne.map((s) => s.anchor.chapter), [1, 1]);
+
+      final loaded = chapterOne.first;
+      expect(loaded.anchor.kind, InkAnchorKind.text);
+      expect(loaded.anchor.start, 10);
+      expect(loaded.anchor.end, 20);
+      expect(loaded.anchor.rect, const Rect.fromLTWH(4, 8, 600, 800));
+      expect(loaded.color, 0xFF112233);
+      expect(loaded.width, 2.5);
+      expect(loaded.pointCount, 2);
+      expect(loaded.points[0], closeTo(0.1, 1e-6));
+      expect(loaded.points[1], closeTo(0.2, 1e-6));
+      expect(loaded.points[2], closeTo(0.5, 1e-6));
+      expect(loaded.points[5], closeTo(0.8, 1e-6));
+
+      // Whole-book listing groups by chapter, keeping insertion order.
+      expect(lib.listInkStrokesForBook(bookId).map((s) => s.anchor.kind), [
+        InkAnchorKind.reflowBlock,
+        InkAnchorKind.text,
+        InkAnchorKind.page,
+      ]);
+      expect(lib.listInkStrokes(bookId, 2), isEmpty);
+      expect(lib.listInkStrokesForBook(9999), isEmpty);
+    });
+
+    test('deletes one stroke and ignores unknown ids', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final bookId = lib.addBook(Book(title: 'Inky'));
+
+      final first = stroke(chapter: 1);
+      final second = stroke(chapter: 1);
+      lib.addInkStroke(bookId, first);
+      lib.addInkStroke(bookId, second);
+
+      lib.deleteInkStroke(first.id!);
+      expect(lib.listInkStrokes(bookId, 1).map((s) => s.id), [second.id]);
+
+      lib.deleteInkStroke(4242);
+      expect(lib.listInkStrokes(bookId, 1), hasLength(1));
+    });
+
+    test('deleting the book cascades to its strokes', () {
+      final lib = Library(':memory:');
+      addTearDown(lib.close);
+      final bookId = lib.addBook(Book(title: 'Inky'));
+      final otherId = lib.addBook(Book(title: 'Other'));
+
+      lib.addInkStroke(bookId, stroke(chapter: 0));
+      lib.addInkStroke(bookId, stroke(chapter: 1));
+      lib.addInkStroke(otherId, stroke(chapter: 0));
+
+      lib.deleteBook(bookId);
+      expect(lib.listInkStrokesForBook(bookId), isEmpty);
+      expect(lib.listInkStrokesForBook(otherId), hasLength(1));
+    });
+
+    test('migrates an old library without the ink table', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-ink-migrate');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final path = '${tmp.path}/library.db';
+
+      final raw = sqlite3.open(path);
+      raw.execute('''
+CREATE TABLE books (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    sort TEXT NOT NULL DEFAULT '',
+    isbn TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    pubdate TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    cover_path TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    rating REAL NOT NULL DEFAULT 0.0,
+    added TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO books (title) VALUES ('Old Book');
+''');
+      expect(
+        raw.select("SELECT name FROM sqlite_master WHERE name='ink_strokes'"),
+        isEmpty,
+      );
+      raw.dispose();
+
+      final lib = Library(path);
+      final bookId = lib.allBooks().single.id!;
+      final added = stroke(
+        chapter: 2,
+        kind: InkAnchorKind.reflowBlock,
+        start: 7,
+      );
+      final id = lib.addInkStroke(bookId, added);
+      final loaded = lib.listInkStrokes(bookId, 2).single;
+      expect(loaded.id, id);
+      expect(loaded.anchor.kind, InkAnchorKind.reflowBlock);
+      expect(loaded.anchor.start, 7);
+      expect(loaded.pointCount, 2);
+      lib.close();
+
+      final check = sqlite3.open(path);
+      expect(
+        check.select("SELECT name FROM sqlite_master WHERE name='ink_strokes'"),
+        isNotEmpty,
+      );
+      check.dispose();
     });
   });
 }
