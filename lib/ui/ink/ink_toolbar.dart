@@ -6,6 +6,8 @@
 /// a font or a palette of its own.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../core/ink.dart';
@@ -23,6 +25,7 @@ class InkToolbar extends StatelessWidget {
     required this.foreground,
     required this.background,
     required this.accent,
+    this.paper,
     required this.onTool,
     required this.onColor,
     required this.onWidth,
@@ -31,13 +34,66 @@ class InkToolbar extends StatelessWidget {
     required this.onClose,
   });
 
-  /// The four ink colours, in the order the bar shows them.
+  /// The four ink colours, in the order the bar shows them, on light paper.
   static const List<Color> inkColors = <Color>[
     Color(0xFF1F1B16), // warm black
     Color(0xFFA6342B), // red
     Color(0xFF2B5F8F), // blue
     Color(0xFFA8761C), // ochre
   ];
+
+  /// The same four roles on a dark page: the neutral becomes parchment so
+  /// notes stay visible, and the pigments brighten to keep their contrast.
+  static const List<Color> darkInkColors = <Color>[
+    Color(0xFFF4E7D4), // parchment
+    Color(0xFFE06C5A), // red
+    Color(0xFF86B7E6), // blue
+    Color(0xFFE0AE5C), // ochre
+  ];
+
+  /// The ink palette that reads against [background].
+  static List<Color> paletteFor(Color background) =>
+      background.computeLuminance() < 0.35 ? darkInkColors : inkColors;
+
+  /// The default ink colour for [background]: the palette's neutral, which is
+  /// always the highest-contrast role in its palette.
+  static Color defaultInkFor(Color background) => paletteFor(background).first;
+
+  /// WCAG relative-luminance contrast ratio for two opaque colours.
+  static double contrastRatio(Color a, Color b) {
+    final first = a.computeLuminance();
+    final second = b.computeLuminance();
+    final lighter = math.max(first, second);
+    final darker = math.min(first, second);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  /// Whether [ink] stays legible on [background]; 3:1 is the UI-text floor.
+  static bool hasContrast(
+    Color ink,
+    Color background, {
+    double minimum = 3.0,
+  }) => contrastRatio(ink, background) >= minimum;
+
+  /// The same colour role in the palette that reads on [paper].
+  ///
+  /// A colour the user picked on the other palette keeps its role (ochre stays
+  /// ochre) instead of snapping to the neutral; anything unrecognized becomes
+  /// the neutral, which is guaranteed to contrast.
+  static Color adaptInk(Color ink, Color paper) {
+    final palette = paletteFor(paper);
+    final argb = ink.toARGB32();
+    if (palette.any((candidate) => candidate.toARGB32() == argb)) return ink;
+    final opposite = identical(palette, inkColors) ? darkInkColors : inkColors;
+    final index = opposite.indexWhere(
+      (candidate) => candidate.toARGB32() == argb,
+    );
+    if (index >= 0) {
+      final mapped = palette[index];
+      if (hasContrast(mapped, paper)) return mapped;
+    }
+    return palette.first;
+  }
 
   /// The three stroke widths offered by the bar, in logical pixels.
   static const List<double> inkWidths = <double>[2, 4, 6];
@@ -54,6 +110,13 @@ class InkToolbar extends StatelessWidget {
   final bool canRedo;
   final Color foreground;
   final Color background;
+
+  /// The surface the ink is drawn on, when it differs from [background].
+  ///
+  /// Defaults to [background]; a PDF page bitmap, for example, is white under
+  /// a dark-painted bar.
+  final Color? paper;
+
   final Color accent;
 
   final ValueChanged<InkTool> onTool;
@@ -101,7 +164,7 @@ class InkToolbar extends StatelessWidget {
             _gap(),
             _divider(muted),
             _gap(),
-            for (final ink in inkColors) _colourDot(ink),
+            for (final ink in paletteFor(paper ?? background)) _colourDot(ink),
             _gap(),
             _divider(muted),
             _gap(),
@@ -212,6 +275,10 @@ class InkToolbar extends StatelessWidget {
     0xFF1F1B16 => 'Black ink',
     0xFFA6342B => 'Red ink',
     0xFF2B5F8F => 'Blue ink',
+    0xFFF4E7D4 => 'Parchment ink',
+    0xFFE06C5A => 'Red ink',
+    0xFF86B7E6 => 'Blue ink',
+    0xFFE0AE5C => 'Ochre ink',
     _ => 'Ochre ink',
   };
 

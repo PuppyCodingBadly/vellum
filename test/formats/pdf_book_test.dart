@@ -5,16 +5,79 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:vellum/formats/ocr.dart';
 import 'package:vellum/formats/pdf_book.dart';
 import 'package:vellum/formats/pdf_reflow.dart';
 
 const _pngMagic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// An engine that recognizes nothing, for pages expected to stay images.
+class _EmptyOcr implements OcrEngine {
+  const _EmptyOcr();
+
+  @override
+  Future<OcrLayout> recognize(
+    Uint8List png, {
+    required int imageWidth,
+    required int imageHeight,
+    required double dpi,
+  }) async => OcrLayout(
+    words: const <OcrWord>[],
+    imageWidth: imageWidth,
+    imageHeight: imageHeight,
+  );
+}
+
+/// An engine that returns fixed words, standing in for Tesseract.
+class _FixedOcr implements OcrEngine {
+  _FixedOcr(this.words);
+
+  final List<OcrWord> words;
+
+  @override
+  Future<OcrLayout> recognize(
+    Uint8List png, {
+    required int imageWidth,
+    required int imageHeight,
+    required double dpi,
+  }) async =>
+      OcrLayout(words: words, imageWidth: imageWidth, imageHeight: imageHeight);
+}
+
+/// An engine without a usable installation.
+class _ThrowingOcr implements OcrEngine {
+  const _ThrowingOcr();
+
+  @override
+  Future<OcrLayout> recognize(
+    Uint8List png, {
+    required int imageWidth,
+    required int imageHeight,
+    required double dpi,
+  }) async => throw const OcrException(
+    'OCR is unavailable: install tesseract-ocr to read scanned pages.',
+  );
+}
+
+OcrWord _ocrWord(String text, int left, int top, int width, int height) =>
+    OcrWord(
+      text: text,
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      block: 1,
+      paragraph: 1,
+      line: 1,
+      confidence: 95,
+    );
 
 /// Build a minimal valid multi-page PDF with a real xref table.
 String _makePdf(
   String path, [
   List<String> texts = const ['Hello page one', 'Hello page two'],
   String mediaBox = '0 0 612 792',
+  List<String>? streams,
 ]) {
   final objects = <List<int>>[];
   objects.add('<< /Type /Catalog /Pages 2 0 R >>'.codeUnits);
@@ -26,7 +89,7 @@ String _makePdf(
   );
   final fontObj = 3 + texts.length * 2;
   for (var i = 0; i < texts.length; i++) {
-    final content = 'BT /F1 24 Tf 72 700 Td (${texts[i]}) Tj ET';
+    final content = streams?[i] ?? 'BT /F1 24 Tf 72 700 Td (${texts[i]}) Tj ET';
     objects.add(
       '<< /Type /Page /Parent 2 0 R /MediaBox [$mediaBox] '
               '/Resources << /Font << /F1 $fontObj 0 R >> >> '
@@ -94,14 +157,14 @@ void main() {
     );
   });
 
-  test('reflow reads the PDF text layer without OCR', () {
+  test('reflow reads the PDF text layer without OCR', () async {
     final pdf = PdfBook(
       _makePdf('${tmp.path}/reflow.pdf', [
         'Hello reflow page with several words',
       ]),
     );
     try {
-      final page = pdf.reflowPage(0);
+      final page = await pdf.reflowPage(0);
       expect(page.hasText, isTrue);
       expect(page.atlasPng, isNotNull);
       final text = page.blocks
@@ -121,14 +184,64 @@ void main() {
     }
   });
 
-  test('a scanned page reports no text layer', () {
+  test('a scanned page falls back when OCR finds nothing', () async {
     // A PDF with no content stream still has a page but no text layer.
-    final pdf = PdfBook(_makePdf('${tmp.path}/blank.pdf', ['']));
+    final pdf = PdfBook(
+      _makePdf('${tmp.path}/blank.pdf', ['']),
+      ocr: const _EmptyOcr(),
+    );
     try {
-      final page = pdf.reflowPage(0);
+      final page = await pdf.reflowPage(0);
       expect(page.hasText, isFalse);
       expect(page.atlasPng, isNull);
-      expect(page.message, contains('no text layer'));
+      expect(page.message, contains('OCR found no text'));
+    } finally {
+      pdf.close();
+    }
+  });
+
+  test('a page without a text layer reflows from OCR word boxes', () async {
+    // Two filled rectangles stand in for recognized words; no text objects.
+    final pdf = PdfBook(
+      _makePdf(
+        '${tmp.path}/scan.pdf',
+        [''],
+        '0 0 612 792',
+        ['0.1 0.1 0.1 rg 72 700 100 20 re f 180 700 60 20 re f'],
+      ),
+      ocr: _FixedOcr(<OcrWord>[
+        _ocrWord('Scanned', 216, 216, 300, 60),
+        _ocrWord('words', 540, 216, 180, 60),
+      ]),
+    );
+    try {
+      final page = await pdf.reflowPage(0);
+      expect(page.hasText, isTrue);
+      expect(page.usedOcr, isTrue);
+      expect(page.atlasPng, isNotNull);
+      final paragraphs = page.blocks.whereType<PdfReflowParagraph>().toList();
+      expect(paragraphs.single.text, 'Scanned words');
+      expect(paragraphs.single.lines.single.words, hasLength(2));
+      expect(
+        paragraphs.single.lines.single.words.every(
+          (word) => word.atlasWidth > 0,
+        ),
+        isTrue,
+      );
+    } finally {
+      pdf.close();
+    }
+  });
+
+  test('unavailable OCR keeps the page image and explains why', () async {
+    final pdf = PdfBook(
+      _makePdf('${tmp.path}/scan.pdf', ['']),
+      ocr: const _ThrowingOcr(),
+    );
+    try {
+      final page = await pdf.reflowPage(0);
+      expect(page.hasText, isFalse);
+      expect(page.message, contains('install tesseract-ocr'));
     } finally {
       pdf.close();
     }

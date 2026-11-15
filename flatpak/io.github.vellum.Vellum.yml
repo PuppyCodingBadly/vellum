@@ -26,6 +26,8 @@ finish-args:
   - --filesystem=xdg-documents
   # PDFium is bundled; the Dart loader honors this path first.
   - --env=PDFIUM_PATH=/app/lib/libpdfium.so
+  # The OCR fallback runs /app/bin/tesseract; its language data lives here.
+  - --env=TESSDATA_PREFIX=/app/share/tessdata
 
 modules:
   # Calibre plugins import third-party libraries that the GNOME runtime does
@@ -65,6 +67,55 @@ modules:
         path: wheels/urllib3-2.8.0-py3-none-any.whl
       - type: file
         path: wheels/charset_normalizer-3.5.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+
+  # Scanned PDF pages have no text layer; the reader sends the page raster to
+  # Tesseract and reflows its word boxes. Only the English model is bundled;
+  # build with more models in tessdata-eng to read other scripts.
+  - name: tesseract
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DBUILD_SHARED_LIBS:BOOL=ON
+      - -DBUILD_TRAINING_TOOLS:BOOL=OFF
+      - -DBUILD_TESTS:BOOL=OFF
+      - -DENABLE_LTO:BOOL=ON
+    post-install:
+      - install -Dm644 ${FLATPAK_BUILDER_BUILDDIR}/LICENSE /app/share/licenses/io.github.vellum.Vellum/TESSERACT-LICENSE
+    sources:
+      - type: archive
+        url: https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.3.tar.gz
+        sha256: 9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884
+    modules:
+      - name: leptonica
+        buildsystem: cmake-ninja
+        builddir: true
+        config-opts:
+          - -DBUILD_SHARED_LIBS:BOOL=ON
+          - -DENABLE_PNG:BOOL=ON
+          - -DENABLE_TIFF:BOOL=OFF
+          - -DENABLE_WEBP:BOOL=OFF
+          - -DENABLE_GIF:BOOL=OFF
+          - -DENABLE_OPENJPEG:BOOL=OFF
+          - -DENABLE_JPEG:BOOL=OFF
+        post-install:
+          - install -Dm644 ${FLATPAK_BUILDER_BUILDDIR}/leptonica-license.txt /app/share/licenses/io.github.vellum.Vellum/LEPTONICA-LICENSE
+        sources:
+          - type: archive
+            url: https://github.com/DanBloomberg/leptonica/releases/download/1.87.0/leptonica-1.87.0.tar.gz
+            sha256: c73363397f96eb1295602bf44d708a994ad42046c791bf03ea0505d829bdb6a7
+
+  - name: tessdata-eng
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 eng.traineddata /app/share/tessdata/eng.traineddata
+      - install -Dm644 LICENSE /app/share/licenses/io.github.vellum.Vellum/TESSDATA-LICENSE
+    sources:
+      - type: file
+        url: https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/eng.traineddata
+        sha256: 7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
+      - type: file
+        url: https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/LICENSE
+        sha256: cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
 
   - name: vellum
     buildsystem: simple

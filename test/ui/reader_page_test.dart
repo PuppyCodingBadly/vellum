@@ -439,6 +439,49 @@ void main() {
     );
   });
 
+  testWidgets('copper pages start drawing with contrasting ink', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    state.readerTheme = 'copper';
+    await openReader(tester);
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+
+    final toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.color.toARGB32(), InkToolbar.darkInkColors.first.toARGB32());
+    expect(InkToolbar.hasContrast(toolbar.color, toolbar.background), isTrue);
+    expect(find.byTooltip('Parchment ink'), findsOneWidget);
+  });
+
+  testWidgets('switching to copper while drawing keeps the note visible', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await openReader(tester);
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<InkToolbar>(find.byType(InkToolbar)).color.toARGB32(),
+      InkToolbar.inkColors.first.toARGB32(),
+    );
+
+    state.readerTheme = 'copper';
+    await tester.pumpAndSettle();
+
+    final toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.color.toARGB32(), InkToolbar.darkInkColors.first.toARGB32());
+    expect(InkToolbar.hasContrast(toolbar.color, toolbar.background), isTrue);
+  });
+
   testWidgets('compact 480px header fits the ink controls', (tester) async {
     tester.view.physicalSize = const Size(480, 800);
     tester.view.devicePixelRatio = 1.0;
@@ -516,10 +559,117 @@ void main() {
     );
     expect(library.listInkStrokes(book.id!, 0), hasLength(1));
 
-    // Tear the reader down inside the test and let the PDF worker's 2 s
+    // Tear the reader down inside the test and let the PDF worker's 25 s
     // close-ack timeout fire, so it cannot outlive the fake-async scope.
     await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(seconds: 26));
+  });
+
+  testWidgets('reflowing a page re-adapts ink for the theme paper', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final content = 'BT /F1 24 Tf 72 300 Td (Hello reflow page) Tj ET';
+    final path = p.join(tmp.path, 'text.pdf');
+    File(path).writeAsBytesSync(
+      _singlePagePdf(<String>[
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] '
+            '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        '<< /Length ${content.length} >>\nstream\n$content\nendstream',
+      ]),
+    );
+    final id = library.addBook(
+      Book(title: 'Text PDF', formats: const ['pdf'], path: path),
+    );
+    book = library.getBook(id)!;
+    state.readerTheme = 'copper';
+    await openReader(tester, settle: false);
+    await tester.runAsync(() async {
+      await pumpUntil(
+        tester,
+        () => find.byType(InkSurface).evaluate().isNotEmpty,
+      );
+    });
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+    // The page bitmap is white, so ink starts dark.
+    var toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.color.toARGB32(), InkToolbar.inkColors.first.toARGB32());
+    expect(toolbar.paper?.toARGB32(), 0xFFFFFFFF);
+
+    await tester.tap(find.byTooltip('Reflow text'));
+    await tester.runAsync(() async {
+      await pumpUntil(tester, () {
+        final finder = find.byType(InkToolbar);
+        if (finder.evaluate().isEmpty) return false;
+        return tester.widget<InkToolbar>(finder).paper?.toARGB32() !=
+            0xFFFFFFFF;
+      });
+    });
+    await tester.pumpAndSettle();
+
+    // Reflow paints on the copper paper; the retained warm black would be
+    // invisible there, so the reader adapts to the dark palette.
+    toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.paper?.toARGB32(), 0xFF1B120E);
+    expect(toolbar.color.toARGB32(), InkToolbar.darkInkColors.first.toARGB32());
+    expect(InkToolbar.hasContrast(toolbar.color, toolbar.paper!), isTrue);
+
+    // Tear the reader down inside the test and let the PDF worker's 25 s
+    // close-ack timeout fire, so it cannot outlive the fake-async scope.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 26));
+  });
+
+  testWidgets('a PDF page keeps ink visible on its white bitmap', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final path = p.join(tmp.path, 'page.pdf');
+    File(path).writeAsBytesSync(_singlePagePdf());
+    final id = library.addBook(
+      Book(title: 'PDF Book', formats: const ['pdf'], path: path),
+    );
+    book = library.getBook(id)!;
+    state.readerTheme = 'copper';
+    await openReader(tester, settle: false);
+    await tester.runAsync(() async {
+      await pumpUntil(
+        tester,
+        () => find.byType(InkSurface).evaluate().isNotEmpty,
+      );
+    });
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Draw'));
+    await tester.pumpAndSettle();
+
+    // The raster is white, so the dark palette's parchment would vanish even
+    // though the copper bar asks for it.
+    final toolbar = tester.widget<InkToolbar>(find.byType(InkToolbar));
+    expect(toolbar.color.toARGB32(), InkToolbar.inkColors.first.toARGB32());
+    expect(
+      InkToolbar.hasContrast(toolbar.color, const Color(0xFFFFFFFF)),
+      isTrue,
+    );
+
+    // Tear the reader down inside the test and let the PDF worker's 25 s
+    // close-ack timeout fire, so it cannot outlive the fake-async scope.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 26));
   });
 }
 
@@ -543,12 +693,14 @@ Future<Offset> _drawOnText(WidgetTester tester) async {
 }
 
 /// Minimal single-page PDF with an empty page.
-Uint8List _singlePagePdf() {
-  const objects = <String>[
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
-  ];
+Uint8List _singlePagePdf([List<String>? pageObjects]) {
+  final objects =
+      pageObjects ??
+      const <String>[
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
+      ];
   final out = BytesBuilder()..add('%PDF-1.4\n'.codeUnits);
   final offsets = <int>[0];
   for (var i = 0; i < objects.length; i++) {

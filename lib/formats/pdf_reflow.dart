@@ -1,16 +1,23 @@
 /// Layout analysis and word-sprite atlases for PDF reflow.
 ///
-/// The page is never OCR'd. PDFium's text layer supplies a box, a baseline,
-/// and a font size for every character; this file groups those into words,
-/// lines, and paragraphs, then crops the original glyphs out of the raster as
-/// tintable sprites. The reader wraps those sprites to the window width, so
-/// the original type and symbols survive while the line breaks do not.
+/// PDFium's text layer supplies a box, a baseline, and a font size for every
+/// character; this file groups those into words, lines, and paragraphs, then
+/// crops the original glyphs out of the raster as tintable sprites. The reader
+/// wraps those sprites to the window width, so the original type and symbols
+/// survive while the line breaks do not.
+///
+/// Pages without a text layer (scans) take the same sprite path from
+/// Tesseract's word boxes instead of PDFium's characters: [buildPdfReflowPageFromOcr]
+/// keeps Tesseract's block/paragraph/line ids for the layout, so the reader
+/// reflows recognized words with the same cropping and wrapping.
 library;
 
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
+
+import 'ocr.dart';
 
 /// One character from PDFium's text layer, in PDF user-space points.
 class PdfChar {
@@ -65,11 +72,12 @@ class PdfReflowPage {
     required this.medianFontSize,
     required this.bodyWidth,
     required this.hasText,
+    this.usedOcr = false,
     this.message,
   });
 
-  /// A page with no usable text layer. The reader falls back to the page
-  /// bitmap rather than inventing text with OCR.
+  /// A page that could not be reflowed from either a text layer or OCR. The
+  /// reader shows the page bitmap and [message] explains why.
   factory PdfReflowPage.fallback(
     String message, {
     required double pageWidth,
@@ -82,6 +90,7 @@ class PdfReflowPage {
     medianFontSize: 12,
     bodyWidth: pageWidth,
     hasText: false,
+    usedOcr: false,
     message: message,
   );
 
@@ -97,6 +106,9 @@ class PdfReflowPage {
   final double bodyWidth;
 
   final bool hasText;
+
+  /// True when the words came from Tesseract instead of a text layer.
+  final bool usedOcr;
 
   /// Why reflow could not run (no text layer, rotated page, dense page).
   final String? message;
@@ -274,17 +286,12 @@ PdfReflowPage buildPdfReflowPage({
   }
 
   var columns = _readingOrder(_groupLines(words), pageWidth);
-  // Page numbers and running heads live in the margins and are short.
-  bool keeps(_LineDraft line) {
-    final width = line.right - line.left;
-    final inTop = line.top > pageHeight * 0.955;
-    final inBottom = line.bottom < pageHeight * 0.045;
-    return !(inTop || inBottom) || width > pageWidth * 0.55;
-  }
-
   final keptColumns = <_Column>[];
   for (final column in columns) {
-    final lines = column.lines.where(keeps).toList();
+    final lines = <_LineDraft>[
+      for (final line in column.lines)
+        if (_keepsLine(line, pageWidth, pageHeight)) line,
+    ];
     if (lines.isNotEmpty) keptColumns.add(_Column(lines));
   }
   columns = keptColumns;
@@ -297,14 +304,274 @@ PdfReflowPage buildPdfReflowPage({
   }
 
   final bodyLines = columns.expand((column) => column.lines).toList();
+  return _assembleReflowPage(
+        paragraphs: _groupParagraphs(
+          columns,
+          medianFontSize: medianFontSize,
+          pageWidth: pageWidth,
+        ),
+        bodyLines: bodyLines,
+        words: words,
+        images: images,
+        bitmap: bitmap,
+        renderScale: renderScale,
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+        medianFontSize: medianFontSize,
+      ) ??
+      PdfReflowPage.fallback(
+        'This page is too dense to reflow; showing the page image.',
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+      );
+}
+
+/// Build a reflow page from Tesseract word boxes instead of a text layer.
+///
+/// Used for scanned pages, where PDFium has no characters to measure. Layout
+/// comes from Tesseract's own analysis: words that share a paragraph id form
+/// one [PdfReflowParagraph], a line id one line, and the TSV order is the
+/// reading order — including two-column pages and blocks that the glyph-gap
+/// heuristic in [buildPdfReflowPage] cannot see.
+///
+/// Word crops, tinting, wrapping, and image blocks are shared with the text
+/// layer path through [_assembleReflowPage].
+PdfReflowPage buildPdfReflowPageFromOcr({
+  required OcrLayout layout,
+  required List<PdfImagePlacement> images,
+  required img.Image bitmap,
+  required double renderScale,
+  required double pageWidth,
+  required double pageHeight,
+}) {
+  if (layout.words.isEmpty) {
+    return PdfReflowPage.fallback(
+      'OCR found no text on this page; showing the page image.',
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+    );
+  }
+  if (renderScale <= 0 ||
+      !renderScale.isFinite ||
+      pageWidth <= 0 ||
+      pageHeight <= 0) {
+    return PdfReflowPage.fallback(
+      'This page could not be reflowed.',
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+    );
+  }
+
+  // Tesseract boxes are image pixels from the top-left; reflow works in PDF
+  // points from the bottom-left. A word's box height is roughly 3/4 of its
+  // em, so expand it to a font-size estimate — only the ratio between lines
+  // matters for headings and the reader's median scale.
+  final tokens = <_OcrToken>[];
+  var textLeft = double.infinity;
+  var textRight = double.negativeInfinity;
+  var textTop = double.negativeInfinity;
+  var textBottom = double.infinity;
+  for (final word in layout.words) {
+    final left = word.left / renderScale;
+    final right = word.right / renderScale;
+    final top = pageHeight - word.top / renderScale;
+    final bottom = pageHeight - word.bottom / renderScale;
+    if (!left.isFinite ||
+        !right.isFinite ||
+        !top.isFinite ||
+        !bottom.isFinite ||
+        right <= left ||
+        top <= bottom) {
+      continue;
+    }
+    tokens.add(
+      _OcrToken(
+        word.block,
+        word.paragraph,
+        word.line,
+        _WordDraft.box(
+          text: word.text,
+          // Words in one line are separated by spaces; a run of wide
+          // characters is joined without one.
+          breakBefore: word.isWideScript
+              ? PdfWordBreak.wideCharacter
+              : PdfWordBreak.space,
+          left: left,
+          right: right,
+          bottom: bottom,
+          top: top,
+          baseline: bottom,
+          fontSize: math.max(1.0, (top - bottom) * 4 / 3),
+        ),
+      ),
+    );
+    textLeft = math.min(textLeft, left);
+    textRight = math.max(textRight, right);
+    textTop = math.max(textTop, top);
+    textBottom = math.min(textBottom, bottom);
+  }
+  if (tokens.isEmpty) {
+    return PdfReflowPage.fallback(
+      'OCR found no usable words on this page; showing the page image.',
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+    );
+  }
+
+  // Maps keep insertion order, which is Tesseract's reading order.
+  final paragraphs = <String, _OcrParagraph>{};
+  for (final token in tokens) {
+    final key = '${token.block}/${token.paragraph}';
+    paragraphs
+        .putIfAbsent(key, () => _OcrParagraph(token.block, token.paragraph))
+        .lines
+        .putIfAbsent(token.line, () => <_OcrToken>[])
+        .add(token);
+  }
+
+  final sizes = tokens.map((token) => token.word.fontSize).toList()..sort();
+  final medianFontSize = sizes[sizes.length ~/ 2].clamp(5.0, 72.0).toDouble();
+
+  // Paragraph indents are measured from their own block, not the page: a
+  // right-hand column starts halfway across the paper and is not a quote.
+  final kept = <(_OcrParagraph, List<_LineDraft>)>[];
+  final blockLeft = <int, double>{};
+  final blockRight = <int, double>{};
+  for (final paragraph in paragraphs.values) {
+    final lines = <_LineDraft>[];
+    for (final lineTokens in paragraph.lines.values) {
+      final line = _LineDraft(<_WordDraft>[
+        for (final token in lineTokens) token.word,
+      ]);
+      if (!_keepsLine(line, pageWidth, pageHeight)) continue;
+      lines.add(line);
+      blockLeft[paragraph.block] = math.min(
+        blockLeft[paragraph.block] ?? line.left,
+        line.left,
+      );
+      blockRight[paragraph.block] = math.max(
+        blockRight[paragraph.block] ?? line.right,
+        line.right,
+      );
+    }
+    if (lines.isNotEmpty) kept.add((paragraph, lines));
+  }
+
+  final drafts = <_ParagraphDraft>[];
+  for (final (paragraph, lines) in kept) {
+    final left = blockLeft[paragraph.block];
+    final right = blockRight[paragraph.block];
+    if (left == null || right == null) continue;
+    final indent = (lines.map((line) => line.left).reduce(math.min) - left)
+        .clamp(0.0, math.max(1.0, right - left))
+        .toDouble();
+    drafts.add(
+      _ParagraphDraft(
+        lines: lines,
+        kind: _classify(lines, medianFontSize, left),
+        indentPoints: indent,
+        top: lines.map((line) => line.top).reduce(math.max),
+      ),
+    );
+  }
+  if (drafts.isEmpty) {
+    return PdfReflowPage.fallback(
+      'Only page furniture was found; showing the page image.',
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+    );
+  }
+
+  final bodyLines = <_LineDraft>[for (final draft in drafts) ...draft.lines];
+  // A full-page scan is a PDF image behind the recognized words; re-inserting
+  // it as a figure would print the page twice. Drop any placement that
+  // encloses the text, keep photos that only sit beside it.
+  final textArea = (textRight - textLeft) * (textTop - textBottom);
+  final keptImages = <PdfImagePlacement>[
+    for (final image in images)
+      if (textArea <= 0 ||
+          !_containsText(
+            image,
+            textLeft,
+            textRight,
+            textTop,
+            textBottom,
+            textArea,
+          ))
+        image,
+  ];
+  return _assembleReflowPage(
+        paragraphs: drafts,
+        bodyLines: bodyLines,
+        words: tokens.map((token) => token.word).toList(),
+        images: keptImages,
+        bitmap: bitmap,
+        renderScale: renderScale,
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+        medianFontSize: medianFontSize,
+        usedOcr: true,
+      ) ??
+      PdfReflowPage.fallback(
+        'This page is too dense to reflow; showing the page image.',
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+      );
+}
+
+/// One recognized word with its Tesseract layout ids.
+class _OcrToken {
+  const _OcrToken(this.block, this.paragraph, this.line, this.word);
+
+  final int block;
+  final int paragraph;
+  final int line;
+  final _WordDraft word;
+}
+
+/// One Tesseract paragraph, holding lines by id in reading order.
+class _OcrParagraph {
+  _OcrParagraph(this.block, this.paragraph);
+
+  final int block;
+  final int paragraph;
+  final Map<int, List<_OcrToken>> lines = <int, List<_OcrToken>>{};
+}
+
+/// True when [image] covers at least 80% of the recognized text box.
+bool _containsText(
+  PdfImagePlacement image,
+  double left,
+  double right,
+  double top,
+  double bottom,
+  double textArea,
+) {
+  final width = math.min(image.right, right) - math.max(image.left, left);
+  final height = math.min(image.top, top) - math.max(image.bottom, bottom);
+  if (width <= 0 || height <= 0) return false;
+  return width * height >= textArea * 0.8;
+}
+
+/// Shared tail of both reflow paths: atlas, blocks, and image placement.
+///
+/// Returns null when the page is too dense for one atlas; callers turn that
+/// into a fallback with their own message.
+PdfReflowPage? _assembleReflowPage({
+  required List<_ParagraphDraft> paragraphs,
+  required List<_LineDraft> bodyLines,
+  required List<_WordDraft> words,
+  required List<PdfImagePlacement> images,
+  required img.Image bitmap,
+  required double renderScale,
+  required double pageWidth,
+  required double pageHeight,
+  required double medianFontSize,
+  bool usedOcr = false,
+}) {
   final bodyLeft = bodyLines.map((line) => line.left).reduce(math.min);
   final bodyRight = bodyLines.map((line) => line.right).reduce(math.max);
   final bodyWidth = math.max(1.0, bodyRight - bodyLeft);
-  final paragraphDrafts = _groupParagraphs(
-    columns,
-    medianFontSize: medianFontSize,
-    pageWidth: pageWidth,
-  );
 
   final lineByWord = <_WordDraft, _LineDraft>{};
   for (final line in bodyLines) {
@@ -319,16 +586,10 @@ PdfReflowPage buildPdfReflowPage({
     renderScale: renderScale,
     pageHeight: pageHeight,
   );
-  if (atlas == null) {
-    return PdfReflowPage.fallback(
-      'This page is too dense to reflow; showing the page image.',
-      pageWidth: pageWidth,
-      pageHeight: pageHeight,
-    );
-  }
+  if (atlas == null) return null;
 
   final blocks = <PdfReflowBlock>[
-    for (final draft in paragraphDrafts) _paragraph(draft, atlas.sprites),
+    for (final draft in paragraphs) _paragraph(draft, atlas.sprites),
   ];
   for (final image in images) {
     final width = image.right - image.left;
@@ -350,16 +611,23 @@ PdfReflowPage buildPdfReflowPage({
       scale: renderScale,
     );
     if (png == null) continue;
-    blocks.add(
-      PdfReflowImageBlock(
-        png: png,
-        widthPoints: width,
-        heightPoints: height,
-        top: image.top,
-      ),
+    final block = PdfReflowImageBlock(
+      png: png,
+      widthPoints: width,
+      heightPoints: height,
+      top: image.top,
     );
+    // Keep the caller's paragraph order and slot the figure into it by
+    // vertical position; sorting the whole list would interleave columns.
+    var at = blocks.length;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].top < block.top) {
+        at = i;
+        break;
+      }
+    }
+    blocks.insert(at, block);
   }
-  blocks.sort((a, b) => b.top.compareTo(a.top));
 
   return PdfReflowPage(
     atlasPng: atlas.png,
@@ -369,7 +637,16 @@ PdfReflowPage buildPdfReflowPage({
     medianFontSize: medianFontSize,
     bodyWidth: bodyWidth,
     hasText: true,
+    usedOcr: usedOcr,
   );
+}
+
+/// Page numbers and running heads live in the margins and are short.
+bool _keepsLine(_LineDraft line, double pageWidth, double pageHeight) {
+  final width = line.right - line.left;
+  final inTop = line.top > pageHeight * 0.955;
+  final inBottom = line.bottom < pageHeight * 0.045;
+  return !(inTop || inBottom) || width > pageWidth * 0.55;
 }
 
 PdfReflowParagraph _paragraph(
@@ -423,7 +700,7 @@ PdfReflowWord _spriteWord(_WordDraft word, _Sprite? sprite) {
 // ---------------------------------------------------------------------------
 
 class _WordDraft {
-  _WordDraft(this.chars, this.breakBefore)
+  _WordDraft(List<PdfChar> chars, this.breakBefore)
     : text = chars.map((char) => char.text).join(),
       left = chars.map((char) => char.left).reduce(math.min),
       right = chars.map((char) => char.right).reduce(math.max),
@@ -432,7 +709,18 @@ class _WordDraft {
       baseline = chars.first.baseline,
       fontSize = chars.map((char) => char.fontSize).reduce(math.max);
 
-  final List<PdfChar> chars;
+  /// A word with measured geometry but no PDF characters, for OCR.
+  const _WordDraft.box({
+    required this.text,
+    required this.breakBefore,
+    required this.left,
+    required this.right,
+    required this.bottom,
+    required this.top,
+    required this.baseline,
+    required this.fontSize,
+  });
+
   final String text;
   final PdfWordBreak breakBefore;
   final double left;
@@ -564,11 +852,16 @@ List<_WordDraft> _groupWords(List<PdfChar> chars) {
 }
 
 bool _isWideCharacter(int code) =>
+    (code >= 0x2E80 && code <= 0x2FFF) || // CJK radicals
+    (code >= 0x3000 && code <= 0x303F) || // CJK punctuation
     (code >= 0x3040 && code <= 0x30FF) || // Hiragana/Katakana
+    (code >= 0x3100 && code <= 0x312F) || // Bopomofo
+    (code >= 0x31C0 && code <= 0x31EF) || // CJK strokes
     (code >= 0x3400 && code <= 0x4DBF) || // CJK Extension A
     (code >= 0x4E00 && code <= 0x9FFF) || // CJK Unified
     (code >= 0xAC00 && code <= 0xD7AF) || // Hangul
     (code >= 0xF900 && code <= 0xFAFF) || // CJK Compatibility
+    (code >= 0xFF00 && code <= 0xFFEF) || // Fullwidth forms
     (code >= 0x20000 && code <= 0x2FA1F); // CJK Extensions B–F
 
 List<_LineDraft> _groupLines(List<_WordDraft> words) {

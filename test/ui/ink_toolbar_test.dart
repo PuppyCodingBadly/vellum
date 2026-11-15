@@ -144,4 +144,74 @@ void main() {
       );
     }
   });
+
+  test('dark pages get a light palette with a contrasting default', () {
+    const copper = Color(0xFF1B120E);
+    expect(InkToolbar.paletteFor(copper), InkToolbar.darkInkColors);
+    expect(InkToolbar.paletteFor(Colors.white), InkToolbar.inkColors);
+    expect(InkToolbar.defaultInkFor(copper), InkToolbar.darkInkColors.first);
+    expect(
+      InkToolbar.hasContrast(InkToolbar.defaultInkFor(copper), copper),
+      isTrue,
+    );
+    // Warm black is the light-page default; it disappears on copper.
+    expect(InkToolbar.hasContrast(InkToolbar.inkColors.first, copper), isFalse);
+    for (final ink in InkToolbar.darkInkColors) {
+      expect(InkToolbar.hasContrast(ink, copper), isTrue, reason: '$ink');
+    }
+  });
+
+  test('a retained colour keeps its role on the current palette', () {
+    const copper = Color(0xFF1B120E);
+    expect(
+      InkToolbar.adaptInk(InkToolbar.inkColors.first, copper),
+      InkToolbar.darkInkColors.first,
+    );
+    expect(
+      InkToolbar.adaptInk(InkToolbar.inkColors.last, copper),
+      InkToolbar.darkInkColors.last,
+    );
+    expect(
+      InkToolbar.adaptInk(InkToolbar.darkInkColors[1], Colors.white),
+      InkToolbar.inkColors[1],
+    );
+    expect(
+      InkToolbar.adaptInk(const Color(0xFF123456), copper),
+      InkToolbar.darkInkColors.first,
+    );
+    expect(
+      InkToolbar.adaptInk(const Color(0xFF123456), Colors.white),
+      InkToolbar.inkColors.first,
+    );
+  });
+
+  testWidgets('a dark bar offers the light palette', (tester) async {
+    const copper = Color(0xFF1B120E);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: InkToolbar(
+            tool: InkTool.pen,
+            color: InkToolbar.darkInkColors.first,
+            width: 4,
+            canUndo: false,
+            canRedo: false,
+            foreground: const Color(0xFFEBD3B8),
+            background: copper,
+            accent: const Color(0xFFE8A15C),
+            onTool: (_) {},
+            onColor: (_) {},
+            onWidth: (_) {},
+            onUndo: () {},
+            onRedo: () {},
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('Parchment ink'), findsOneWidget);
+    expect(find.byTooltip('Red ink'), findsOneWidget);
+    expect(find.byTooltip('Black ink'), findsNothing);
+  });
 }

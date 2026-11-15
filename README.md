@@ -37,14 +37,16 @@ Updates: `flatpak update io.github.vellum.Vellum`.
 - EPUB/MOBI/PDF reader with:
   - adjustable font size for EPUB and MOBI, and font-scaled PDF page rendering
   - PDF reflow from the original text layer: word sprites are tinted for the
-    reader theme and wrapped to the window, while image-only pages stay as page
-    images
-  - Light, Sepia, and Dark themes (or follow the system scheme)
+    reader theme and wrapped to the window; pages without a text layer are
+    read with Tesseract OCR and reflowed the same way (requires the
+    `tesseract` binary and its `eng` language data)
+  - Light, Sepia, Copper, and Dark themes (or follow the system scheme)
   - table of contents, page/chapter turns, swipe gestures, and fullscreen
   - text highlights with a highlights panel (EPUB/MOBI)
   - handwriting annotations anchored to the text or page they were drawn on:
     ink follows reflow, font size, zoom, and theme changes; pen/eraser, four
-    inks, three widths, undo/redo; PDFs can export an annotated copy
+    inks (with a contrasting light palette on dark themes), three widths,
+    undo/redo; PDFs can export an annotated copy
   - in-reader dictionary lookup
   - automatic reading-position resume
   - reading-session tracking
@@ -63,6 +65,8 @@ Updates: `flatpak update io.github.vellum.Vellum`.
 - Flutter 3.35+ with Linux desktop support (Dart 3.9+)
 - `clang`, `cmake`, `ninja`, `pkg-config`, and GTK 3 development headers
 - Python 3 for the plugin sidecar
+- Tesseract with its `eng` language data for OCR reflow of scanned PDF pages
+  (optional; the Flatpak bundles both)
 - PDFium (optional; see below)
 
 ## Run

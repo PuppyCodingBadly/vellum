@@ -25,6 +25,15 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-11-15">
+      <description>
+        <p>Scanned PDF pages now reflow: pages without a text layer are read
+        with Tesseract OCR, and their words are cropped, tinted, and wrapped
+        like pages that carry a text layer.</p>
+        <p>A Copper reader theme joins Light, Sepia, and Dark, and handwriting
+        starts in a colour that contrasts with dark and copper pages.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-14">
       <description>
         <p>Handwriting anchoring follows each line instead of one bounding

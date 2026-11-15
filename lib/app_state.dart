@@ -296,7 +296,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Reader theme: `follow`|`light`|`sepia`|`dark`.
+  /// Reader theme: `follow`|`light`|`sepia`|`dark`|`copper`.
   String get readerTheme {
     final value = config.getString('reader_theme');
     return _readerThemes.contains(value) ? value : 'follow';
@@ -308,7 +308,13 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  static const Set<String> _readerThemes = {'follow', 'light', 'sepia', 'dark'};
+  static const Set<String> _readerThemes = {
+    'follow',
+    'light',
+    'sepia',
+    'dark',
+    'copper',
+  };
 
   // --- toasts ---
 

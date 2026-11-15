@@ -980,9 +980,30 @@ class ReaderController extends ChangeNotifier {
     _pdfReflowError = null;
     notifyListeners();
 
-    final targets = <int>[current];
-    if (current > 0) targets.add(current - 1);
-    if (current < _items.length - 1) targets.add(current + 1);
+    final cached = _pdfReflowCache[current];
+    if (cached != null) {
+      // A scanned page already cost its OCR run; only text-layer pages are
+      // cheap enough to prefetch around.
+      if (cached.hasText && !cached.usedOcr) {
+        _prefetchPdfReflowNeighbours(serial);
+      }
+      return;
+    }
+    unawaited(_renderPdfReflowPage(serial, current));
+  }
+
+  /// Fetch the neighbours of the current page when they are cheap.
+  ///
+  /// Reflowing a text layer costs little, but a scan costs a Tesseract run;
+  /// queuing three OCRs per page would starve the page being read.
+  void _prefetchPdfReflowNeighbours(int serial) {
+    if (_disposed || !isPdf || !_pdfReflow) return;
+    if (serial != _pdfReflowSerial) return;
+    final current = _index;
+    final targets = <int>[
+      if (current > 0) current - 1,
+      if (current < _items.length - 1) current + 1,
+    ];
     for (final target in targets) {
       if (_pdfReflowCache.containsKey(target)) continue;
       unawaited(_renderPdfReflowPage(serial, target));
@@ -1003,7 +1024,12 @@ class ReaderController extends ChangeNotifier {
     if (_disposed || serial != _pdfReflowSerial) return;
     if (page != null) {
       _putPdfReflowCache(target, page);
-      if (target == _index) _pdfReflowLoading = false;
+      if (target == _index) {
+        _pdfReflowLoading = false;
+        if (page.hasText && !page.usedOcr) {
+          _prefetchPdfReflowNeighbours(serial);
+        }
+      }
     } else if (target == _index) {
       _pdfReflowLoading = false;
       _pdfReflowError = failure ?? 'Could not reflow this page';
@@ -1082,10 +1108,16 @@ class _PdfWorker {
   final String path;
 
   /// How long one request may wait before its session is abandoned.
-  static const Duration _requestTimeout = Duration(seconds: 30);
+  ///
+  /// The budget covers three queued reflow requests at 20 s of OCR each plus
+  /// raster and encode time, so a slow scan is not mistaken for a dead worker.
+  static const Duration _requestTimeout = Duration(seconds: 75);
 
   /// How long the worker gets to close its document before it is killed.
-  static const Duration _closeTimeout = Duration(seconds: 2);
+  ///
+  /// A running 20 s OCR has to finish so the worker can call `pdf.close()`;
+  /// killing the isolate skips that cleanup and leaks the `FPDF_DOCUMENT`.
+  static const Duration _closeTimeout = Duration(seconds: 25);
 
   final Map<int, Completer<Object>> _pending = <int, Completer<Object>>{};
   int _nextId = 0;
@@ -1281,10 +1313,12 @@ class _PdfWorker {
     final receive = ReceivePort();
     replyPort.send(receive.sendPort);
     PdfBook? pdf;
+    var closing = false;
     var chain = Future<void>.value();
     receive.listen((message) {
       final request = message as List;
       if (request.length == 1 && request[0] == 'close') {
+        closing = true;
         chain = chain.then((_) {
           pdf?.close();
           pdf = null;
@@ -1294,13 +1328,18 @@ class _PdfWorker {
       }
       chain = chain.then((_) async {
         final id = request[0] as int;
+        // Requests prefetched behind the close must not start another OCR.
+        if (closing) {
+          replyPort.send(<Object?>[id, null, 'PDF renderer is closed']);
+          return;
+        }
         final index = request[1] as int;
         final scale = (request[2] as num).toDouble();
         final operation = request.length > 3 ? request[3] : null;
         try {
           pdf ??= PdfBook(path);
           final result = operation == 'reflow'
-              ? pdf!.reflowPage(index, renderScale: scale)
+              ? await pdf!.reflowPage(index, renderScale: scale)
               : await pdf!.renderPage(index, scale: scale);
           replyPort.send(<Object?>[id, result, null]);
         } catch (error) {

@@ -10,6 +10,7 @@ import 'package:ffi/ffi.dart';
 import 'package:image/image.dart' as img;
 import 'package:pdfium_dart/pdfium_dart.dart';
 
+import 'ocr.dart';
 import 'pdf_reflow.dart';
 
 /// Default rasterization scale (1.0 = PDF points at 72 dpi).
@@ -34,7 +35,12 @@ class PdfBook {
   ///
   /// Validates the `%PDF-` header and loads the document through PDFium.
   /// Throws [FormatException] when [path] is unreadable or not a PDF.
-  PdfBook(String path) : _path = path {
+  ///
+  /// [ocr] recognizes pages that have no text layer; it defaults to the
+  /// Tesseract CLI. Tests pass a deterministic engine.
+  PdfBook(String path, {OcrEngine? ocr})
+    : _path = path,
+      _ocr = ocr ?? TesseractOcr() {
     final List<int> head;
     RandomAccessFile? file;
     try {
@@ -62,6 +68,7 @@ class PdfBook {
   }
 
   final String _path;
+  final OcrEngine _ocr;
   late final FPDF_DOCUMENT _doc;
   bool _closed = false;
 
@@ -211,10 +218,15 @@ class PdfBook {
   /// Build a reflow layout for [index] from PDFium's text layer.
   ///
   /// The page is rendered once at [renderScale] so the layout can crop the
-  /// original glyphs into a tintable atlas. Not every PDF has a text layer;
-  /// in that case the result reports [PdfReflowPage.hasText] false and the
-  /// reader keeps showing the page bitmap. No OCR is performed.
-  PdfReflowPage reflowPage(int index, {double renderScale = 3.0}) {
+  /// original glyphs into a tintable atlas. Pages without a text layer are
+  /// sent to the OCR engine, whose word boxes drive the same sprite layout;
+  /// when OCR is unavailable or finds nothing, the result reports
+  /// [PdfReflowPage.hasText] false and the reader keeps showing the page
+  /// bitmap.
+  Future<PdfReflowPage> reflowPage(
+    int index, {
+    double renderScale = 3.0,
+  }) async {
     _ensureOpen();
     final count = pageCount();
     if (index < 0 || index >= count) {
@@ -287,45 +299,48 @@ class PdfBook {
       );
 
       final loaded = _library.FPDFText_LoadPage(page);
-      if (loaded == ffi.nullptr) {
-        return PdfReflowPage.fallback(
-          'This page has no text layer; showing the page image.',
-          pageWidth: pageWidth,
-          pageHeight: pageHeight,
-        );
-      }
-      textPage = loaded;
-      final charCount = _library.FPDFText_CountChars(loaded);
       final chars = <PdfChar>[];
-      for (var i = 0; i < charCount; i++) {
-        if (_library.FPDFText_GetCharBox(loaded, i, left, right, bottom, top) ==
-            0) {
-          continue;
+      if (loaded != ffi.nullptr) {
+        textPage = loaded;
+        final charCount = _library.FPDFText_CountChars(loaded);
+        for (var i = 0; i < charCount; i++) {
+          if (_library.FPDFText_GetCharBox(
+                loaded,
+                i,
+                left,
+                right,
+                bottom,
+                top,
+              ) ==
+              0) {
+            continue;
+          }
+          final unicode = _library.FPDFText_GetUnicode(loaded, i);
+          if (unicode <= 0) continue;
+          final text = String.fromCharCode(unicode);
+          if (text == '\u0000' || text == '\uFFFD') continue;
+          final charLeft = math.min(left.value, right.value);
+          final charRight = math.max(left.value, right.value);
+          final charBottom = math.min(bottom.value, top.value);
+          final charTop = math.max(bottom.value, top.value);
+          var baseline = charBottom;
+          if (_library.FPDFText_GetCharOrigin(loaded, i, originX, originY) !=
+              0) {
+            baseline = originY.value;
+          }
+          final fontSize = _library.FPDFText_GetFontSize(loaded, i);
+          chars.add(
+            PdfChar(
+              text: text,
+              left: charLeft,
+              bottom: charBottom,
+              right: charRight,
+              top: charTop,
+              baseline: baseline,
+              fontSize: fontSize > 0 ? fontSize : 12,
+            ),
+          );
         }
-        final unicode = _library.FPDFText_GetUnicode(loaded, i);
-        if (unicode <= 0) continue;
-        final text = String.fromCharCode(unicode);
-        if (text == '\u0000' || text == '\uFFFD') continue;
-        final charLeft = math.min(left.value, right.value);
-        final charRight = math.max(left.value, right.value);
-        final charBottom = math.min(bottom.value, top.value);
-        final charTop = math.max(bottom.value, top.value);
-        var baseline = charBottom;
-        if (_library.FPDFText_GetCharOrigin(loaded, i, originX, originY) != 0) {
-          baseline = originY.value;
-        }
-        final fontSize = _library.FPDFText_GetFontSize(loaded, i);
-        chars.add(
-          PdfChar(
-            text: text,
-            left: charLeft,
-            bottom: charBottom,
-            right: charRight,
-            top: charTop,
-            baseline: baseline,
-            fontSize: fontSize > 0 ? fontSize : 12,
-          ),
-        );
       }
 
       final images = <PdfImagePlacement>[];
@@ -361,6 +376,17 @@ class PdfBook {
         );
       }
 
+      final glyphCount = chars.where((char) => !char.isWhitespace).length;
+      if (glyphCount < 6) {
+        return await _reflowWithOcr(
+          raster: raster,
+          images: images,
+          renderScale: renderScale,
+          pageWidth: pageWidth,
+          pageHeight: pageHeight,
+        );
+      }
+
       return buildPdfReflowPage(
         chars: chars,
         images: images,
@@ -383,6 +409,67 @@ class PdfBook {
       calloc.free(objRight);
       calloc.free(objBottom);
       calloc.free(objTop);
+    }
+  }
+
+  /// Reflow a page whose text layer is missing or unusable, using OCR.
+  ///
+  /// Tesseract's word boxes are cropped from the same raster the text-layer
+  /// path uses, so scanned pages get the same tintable sprites. A missing
+  /// engine is a reader-visible fallback message, not a crash.
+  Future<PdfReflowPage> _reflowWithOcr({
+    required img.Image raster,
+    required List<PdfImagePlacement> images,
+    required double renderScale,
+    required double pageWidth,
+    required double pageHeight,
+  }) async {
+    try {
+      // OCR is the slow part of scanning a page; cap the raster it has to
+      // process and keep the point coordinates honest by adjusting the scale.
+      var bitmap = raster;
+      var scale = renderScale;
+      const budget = 12 * 1000 * 1000;
+      if (raster.width * raster.height > budget) {
+        final factor = math.sqrt(budget / (raster.width * raster.height));
+        final width = math.max(1, (raster.width * factor).floor());
+        final height = math.max(1, (raster.height * factor).floor());
+        bitmap = img.copyResize(
+          raster,
+          width: width,
+          height: height,
+          interpolation: img.Interpolation.average,
+        );
+        scale = renderScale * width / raster.width;
+      }
+      final png = img.encodePng(bitmap);
+      final layout = await _ocr.recognize(
+        png,
+        imageWidth: bitmap.width,
+        imageHeight: bitmap.height,
+        dpi: 72 * scale,
+      );
+      if (layout.words.isEmpty) {
+        return PdfReflowPage.fallback(
+          'OCR found no text on this page; showing the page image.',
+          pageWidth: pageWidth,
+          pageHeight: pageHeight,
+        );
+      }
+      return buildPdfReflowPageFromOcr(
+        layout: layout,
+        images: images,
+        bitmap: bitmap,
+        renderScale: scale,
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+      );
+    } on OcrException catch (error) {
+      return PdfReflowPage.fallback(
+        'This page has no text layer; ${error.message}',
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+      );
     }
   }
 

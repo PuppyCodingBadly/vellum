@@ -81,6 +81,15 @@ void main() {
     expect(state.calibreImportRunning, isFalse);
   });
 
+  test('accepts copper as a reader theme and rejects unknown names', () {
+    state.readerTheme = 'copper';
+    expect(state.readerTheme, 'copper');
+    expect(state.config.getString('reader_theme'), 'copper');
+
+    state.readerTheme = 'neon';
+    expect(state.readerTheme, 'copper');
+  });
+
   test('dispose closes the active library', () {
     final active = state.library;
     state.dispose();

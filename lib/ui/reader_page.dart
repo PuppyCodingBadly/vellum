@@ -66,6 +66,7 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _chapterReady = true;
   GlobalKey _textLayoutKey = GlobalKey(debugLabel: 'reader-text');
   GlobalKey _inkSurfaceKey = GlobalKey(debugLabel: 'reader-ink');
+  Color? _lastInkPaper;
   String _currentContentKey = '';
   bool _focusRequested = false;
 
@@ -99,6 +100,9 @@ class _ReaderPageState extends State<ReaderPage> {
       controller.setFontScale(appState.readerFontScale);
       controller.setPdfReflow(appState.pdfReflow);
     }
+    // `follow` tracks the platform scheme, and any theme switch changes the
+    // page background; keep an active note legible.
+    if (_controller?.inkMode ?? false) _ensureInkContrast();
   }
 
   @override
@@ -154,6 +158,7 @@ class _ReaderPageState extends State<ReaderPage> {
     if (restore != null || jump != null || indexChanged) {
       _scheduleNavigation();
     }
+    _syncInkPaper();
   }
 
   /// Coalesces the notifications of one navigation into a single frame.
@@ -330,6 +335,70 @@ class _ReaderPageState extends State<ReaderPage> {
       _clearSelection();
     }
     controller.setInkMode(!controller.inkMode);
+    if (controller.inkMode) _ensureInkContrast();
+  }
+
+  /// The colour actually under the ink surface.
+  ///
+  /// PDF page bitmaps are opaque white regardless of the reader theme; reflowed
+  /// text paints on the theme paper.
+  Color _inkPaperColor(ReaderController controller, _ReaderColors colors) {
+    if (controller.isPdf &&
+        !(controller.pdfReflow &&
+            (controller.pdfReflowPage?.hasText ?? false))) {
+      return const Color(0xFFFFFFFF);
+    }
+    return colors.background;
+  }
+
+  /// Replaces the active ink when the page background hides it.
+  ///
+  /// Ink is stored by colour, so a note drawn in warm black stays black —
+  /// but starting to draw on a dark or copper page must not use a colour the
+  /// reader cannot see. A deliberately chosen colour that already contrasts
+  /// is left alone.
+  void _ensureInkContrast() {
+    final controller = _controller;
+    final appState = _appState;
+    if (controller == null || appState == null) return;
+    final colors = _resolveReaderColors(
+      appState.readerTheme,
+      Theme.of(context).brightness,
+    );
+    final paper = _inkPaperColor(controller, colors);
+    _lastInkPaper = paper;
+    final ink = Color(controller.inkColor);
+    final palette = InkToolbar.paletteFor(paper);
+    final inPalette = palette.any(
+      (candidate) => candidate.toARGB32() == ink.toARGB32(),
+    );
+    if (inPalette && InkToolbar.hasContrast(ink, paper)) return;
+    controller.setInkColor(InkToolbar.adaptInk(ink, paper).toARGB32());
+  }
+
+  /// Re-checks the ink when the surface under it changes.
+  ///
+  /// Toggling reflow or turning to a page image changes [_inkPaperColor]
+  /// without a theme change, so a colour that was visible a page ago can
+  /// become invisible.
+  void _syncInkPaper() {
+    final controller = _controller;
+    final appState = _appState;
+    if (controller == null || appState == null || !controller.inkMode) return;
+    final paper = _inkPaperColor(
+      controller,
+      _resolveReaderColors(appState.readerTheme, Theme.of(context).brightness),
+    );
+    if (paper == _lastInkPaper) return;
+    _ensureInkContrast();
+  }
+
+  /// Applies a reader theme and keeps an active note visible.
+  void _applyReaderTheme(String value) {
+    final appState = _appState;
+    if (appState == null) return;
+    appState.readerTheme = value;
+    if (_controller?.inkMode ?? false) _ensureInkContrast();
   }
 
   /// Builds a text anchor from the surface-local pen segment.
@@ -1056,6 +1125,7 @@ class _ReaderPageState extends State<ReaderPage> {
       'light': 'Light',
       'sepia': 'Sepia',
       'dark': 'Dark',
+      'copper': 'Copper',
     };
     return PopupMenuButton<String>(
       tooltip: 'Reader options',
@@ -1074,7 +1144,7 @@ class _ReaderPageState extends State<ReaderPage> {
           case 'export-pdf':
             unawaited(_exportAnnotatedPdf());
           default:
-            appState.readerTheme = value;
+            _applyReaderTheme(value);
         }
       },
       itemBuilder: (context) => <PopupMenuEntry<String>>[
@@ -1220,12 +1290,13 @@ class _ReaderPageState extends State<ReaderPage> {
       'light': 'Light',
       'sepia': 'Sepia',
       'dark': 'Dark',
+      'copper': 'Copper',
     };
     return PopupMenuButton<String>(
       tooltip: 'Reader theme',
       icon: const Icon(Icons.palette_outlined),
       position: PopupMenuPosition.under,
-      onSelected: (value) => appState.readerTheme = value,
+      onSelected: _applyReaderTheme,
       itemBuilder: (context) => <PopupMenuEntry<String>>[
         for (final entry in entries.entries)
           PopupMenuItem<String>(
@@ -1716,6 +1787,7 @@ class _ReaderPageState extends State<ReaderPage> {
         foreground: colors.foreground,
         background: colors.background,
         accent: colors.link,
+        paper: _inkPaperColor(controller, colors),
         onTool: controller.setInkTool,
         onColor: (color) => controller.setInkColor(color.toARGB32()),
         onWidth: controller.setInkWidth,
@@ -2309,6 +2381,14 @@ const _ReaderColors _darkColors = _ReaderColors(
   Color(0xFF8FC7D0),
 );
 
+/// Dark, warm-metal counterpart to [_sepiaColors]: copper text on a
+/// brown-black page. All pairs clear 7:1 contrast.
+const _ReaderColors _copperColors = _ReaderColors(
+  Color(0xFF1B120E),
+  Color(0xFFEBD3B8),
+  Color(0xFFE8A15C),
+);
+
 _ReaderColors _resolveReaderColors(String theme, Brightness brightness) {
   switch (theme) {
     case 'light':
@@ -2317,6 +2397,8 @@ _ReaderColors _resolveReaderColors(String theme, Brightness brightness) {
       return _sepiaColors;
     case 'dark':
       return _darkColors;
+    case 'copper':
+      return _copperColors;
     default:
       return brightness == Brightness.dark ? _darkColors : _lightColors;
   }

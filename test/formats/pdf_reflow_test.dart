@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:vellum/formats/ocr.dart';
 import 'package:vellum/formats/pdf_reflow.dart';
 
 List<PdfChar> _line(
@@ -42,6 +43,49 @@ void _paintChars(img.Image bitmap, List<PdfChar> chars, img.Color color) {
       color: color,
     );
   }
+}
+
+/// One OCR word in image pixels from the top-left.
+OcrWord _ocrWord(
+  String text,
+  int left,
+  int top,
+  int width,
+  int height, {
+  int block = 1,
+  int paragraph = 1,
+  int line = 1,
+}) => OcrWord(
+  text: text,
+  left: left,
+  top: top,
+  width: width,
+  height: height,
+  block: block,
+  paragraph: paragraph,
+  line: line,
+  confidence: 95,
+);
+
+/// Paint each OCR word's box as ink on a white page raster.
+img.Image _paintWords(
+  List<OcrWord> words, {
+  required int width,
+  required int height,
+}) {
+  final bitmap = img.Image(width: width, height: height);
+  img.fill(bitmap, color: img.ColorRgb8(255, 255, 255));
+  for (final word in words) {
+    img.fillRect(
+      bitmap,
+      x1: word.left,
+      y1: word.top,
+      x2: word.right - 1,
+      y2: word.bottom - 1,
+      color: img.ColorRgb8(20, 20, 20),
+    );
+  }
+  return bitmap;
 }
 
 void main() {
@@ -88,6 +132,7 @@ void main() {
     );
 
     expect(page.hasText, isTrue);
+    expect(page.usedOcr, isFalse);
     expect(page.atlasPng, isNotNull);
     expect(page.atlasPng!.length, greaterThan(0));
     final paragraphs = page.blocks.whereType<PdfReflowParagraph>().toList();
@@ -119,6 +164,176 @@ void main() {
     expect(page.hasText, isFalse);
     expect(page.atlasPng, isNull);
     expect(page.message, contains('no text layer'));
+  });
+
+  test('OCR word boxes reflow with Tesseract line and paragraph ids', () {
+    const scale = 2.0;
+    final words = <OcrWord>[
+      _ocrWord('Chapter', 100, 80, 140, 34),
+      _ocrWord('One', 250, 80, 70, 34),
+      _ocrWord('The', 100, 200, 40, 24, paragraph: 2),
+      _ocrWord('first', 150, 200, 55, 24, paragraph: 2),
+      _ocrWord('body', 215, 200, 55, 24, paragraph: 2),
+      _ocrWord('line', 280, 200, 40, 24, paragraph: 2),
+      _ocrWord('continues', 100, 232, 95, 24, paragraph: 2, line: 2),
+      _ocrWord('here', 205, 232, 50, 24, paragraph: 2, line: 2),
+      // Tesseract emits the right column after the left, even though both
+      // start at the same height.
+      _ocrWord('Right', 700, 210, 60, 24, block: 2),
+      _ocrWord('column', 770, 210, 75, 24, block: 2),
+      _ocrWord('9', 590, 1500, 20, 20, block: 3),
+    ];
+    final bitmap = _paintWords(words, width: 1224, height: 1584);
+
+    final page = buildPdfReflowPageFromOcr(
+      layout: OcrLayout(
+        words: words,
+        imageWidth: bitmap.width,
+        imageHeight: bitmap.height,
+      ),
+      images: const <PdfImagePlacement>[],
+      bitmap: bitmap,
+      renderScale: scale,
+      pageWidth: 612,
+      pageHeight: 792,
+    );
+
+    expect(page.hasText, isTrue);
+    expect(page.usedOcr, isTrue);
+    expect(page.atlasPng, isNotNull);
+    final paragraphs = page.blocks.whereType<PdfReflowParagraph>().toList();
+    expect(paragraphs.map((paragraph) => paragraph.text), [
+      'Chapter One',
+      'The first body line continues here',
+      'Right column',
+    ]);
+    expect(paragraphs.first.kind, PdfReflowTextKind.heading);
+    // The page number sits in the bottom margin and is page furniture.
+    expect(paragraphs.expand((p) => p.text.split(' ')), isNot(contains('9')));
+    // A second block is a column, not an indent from the page margin.
+    expect(paragraphs[2].kind, PdfReflowTextKind.body);
+    expect(paragraphs[2].indentPoints, lessThan(10));
+    final wordsOut = paragraphs
+        .expand((paragraph) => paragraph.lines)
+        .expand((line) => line.words)
+        .toList();
+    expect(wordsOut.every((word) => word.atlasWidth > 0), isTrue);
+    expect(wordsOut.every((word) => word.widthPoints > 0), isTrue);
+    // Words in a line are separated by spaces when the text is copied.
+    expect(paragraphs.first.text, 'Chapter One');
+  });
+
+  test('OCR wide-script words copy without spaces', () {
+    final words = <OcrWord>[
+      _ocrWord('漢', 100, 200, 30, 30),
+      _ocrWord('字', 135, 200, 30, 30),
+    ];
+    final bitmap = _paintWords(words, width: 400, height: 400);
+    final page = buildPdfReflowPageFromOcr(
+      layout: OcrLayout(
+        words: words,
+        imageWidth: bitmap.width,
+        imageHeight: bitmap.height,
+      ),
+      images: const <PdfImagePlacement>[],
+      bitmap: bitmap,
+      renderScale: 2,
+      pageWidth: 200,
+      pageHeight: 400,
+    );
+    expect(page.hasText, isTrue);
+    expect(
+      page.blocks
+          .whereType<PdfReflowParagraph>()
+          .map((paragraph) => paragraph.text)
+          .join(),
+      '漢字',
+    );
+  });
+
+  test('OCR blocks keep TSV order instead of sorting by top', () {
+    const scale = 2.0;
+    // Both blocks start at the same height and interleave line by line; the
+    // old top-sort reordered them and mixed the columns.
+    final words = <OcrWord>[
+      _ocrWord('One', 100, 200, 60, 24),
+      _ocrWord('two', 100, 232, 60, 24, line: 2),
+      _ocrWord('Three', 700, 200, 90, 24, block: 2),
+      _ocrWord('four', 700, 232, 70, 24, block: 2, line: 2),
+    ];
+    final bitmap = _paintWords(words, width: 1224, height: 1584);
+
+    final page = buildPdfReflowPageFromOcr(
+      layout: OcrLayout(
+        words: words,
+        imageWidth: bitmap.width,
+        imageHeight: bitmap.height,
+      ),
+      images: const <PdfImagePlacement>[],
+      bitmap: bitmap,
+      renderScale: scale,
+      pageWidth: 612,
+      pageHeight: 792,
+    );
+
+    expect(page.hasText, isTrue);
+    final paragraphs = page.blocks
+        .whereType<PdfReflowParagraph>()
+        .map((paragraph) => paragraph.text)
+        .toList();
+    expect(paragraphs, ['One two', 'Three four']);
+  });
+
+  test('OCR keeps a separate photo but drops the scanned page image', () {
+    const scale = 2.0;
+    final words = <OcrWord>[
+      _ocrWord('Scanned', 100, 100, 160, 40),
+      _ocrWord('words', 270, 100, 100, 40),
+    ];
+    final bitmap = _paintWords(words, width: 1224, height: 1584);
+
+    final page = buildPdfReflowPageFromOcr(
+      layout: OcrLayout(
+        words: words,
+        imageWidth: bitmap.width,
+        imageHeight: bitmap.height,
+      ),
+      images: const <PdfImagePlacement>[
+        // The full-page scan behind the recognized words.
+        PdfImagePlacement(left: 0, bottom: 0, right: 612, top: 792),
+        // A photo elsewhere on the page, not enclosing the words.
+        PdfImagePlacement(left: 400, bottom: 60, right: 550, top: 260),
+      ],
+      bitmap: bitmap,
+      renderScale: scale,
+      pageWidth: 612,
+      pageHeight: 792,
+    );
+
+    expect(page.hasText, isTrue);
+    expect(page.usedOcr, isTrue);
+    final images = page.blocks.whereType<PdfReflowImageBlock>().toList();
+    expect(images, hasLength(1));
+    expect(images.single.widthPoints, closeTo(150, 1));
+    expect(images.single.heightPoints, closeTo(200, 1));
+  });
+
+  test('OCR with no words falls back to the page image', () {
+    final bitmap = img.Image(width: 100, height: 100);
+    final page = buildPdfReflowPageFromOcr(
+      layout: const OcrLayout(
+        words: <OcrWord>[],
+        imageWidth: 100,
+        imageHeight: 100,
+      ),
+      images: const <PdfImagePlacement>[],
+      bitmap: bitmap,
+      renderScale: 1,
+      pageWidth: 612,
+      pageHeight: 792,
+    );
+    expect(page.hasText, isFalse);
+    expect(page.message, contains('OCR found no text'));
   });
 
   test('two-column pages read the left column before the right', () {
