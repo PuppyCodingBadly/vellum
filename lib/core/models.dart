@@ -44,6 +44,9 @@ class Book {
   bool hidden;
   String sourceId;
 
+  /// Fraction read, 0–1; 0 for a book that was never opened.
+  double progress;
+
   Book({
     this.id,
     this.title = '',
@@ -62,6 +65,7 @@ class Book {
     this.added = '',
     this.hidden = false,
     this.sourceId = '',
+    this.progress = 0.0,
   })  : authors = authors ?? <String>[],
         tags = tags ?? <String>[],
         formats = formats ?? <String>[];
@@ -85,6 +89,7 @@ class Book {
     String? added,
     bool? hidden,
     String? sourceId,
+    double? progress,
   }) {
     return Book(
       id: id != null ? id() : this.id,
@@ -104,6 +109,7 @@ class Book {
       added: added ?? this.added,
       hidden: hidden ?? this.hidden,
       sourceId: sourceId ?? this.sourceId,
+      progress: progress ?? this.progress,
     );
   }
 
@@ -126,7 +132,8 @@ class Book {
       other.rating == rating &&
       other.added == added &&
       other.hidden == hidden &&
-      other.sourceId == sourceId;
+      other.sourceId == sourceId &&
+      other.progress == progress;
 
   @override
   int get hashCode => Object.hash(
@@ -147,6 +154,7 @@ class Book {
         added,
         hidden,
         sourceId,
+        progress,
       );
 
   @override
@@ -154,7 +162,8 @@ class Book {
       'sort: $sort, isbn: $isbn, publisher: $publisher, pubdate: $pubdate, '
       'language: $language, description: $description, tags: $tags, '
       'formats: $formats, coverPath: $coverPath, path: $path, '
-      'rating: $rating, added: $added, hidden: $hidden, sourceId: $sourceId)';
+      'rating: $rating, added: $added, hidden: $hidden, sourceId: $sourceId, '
+      'progress: $progress)';
 }
 
 bool _listEquals<T>(List<T> a, List<T> b) {

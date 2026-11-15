@@ -8,6 +8,10 @@ import 'package:vellum/core/db.dart';
 import 'package:vellum/core/models.dart';
 
 void main() {
+  // A Library installs the sqlite dynamic-library override; do it before any
+  // test opens the file directly so migration tests do not depend on order.
+  setUpAll(() => Library(':memory:').close());
+
   group('Library basic CRUD', () {
     test(':memory: round trip incl. author order and tag alpha sort', () {
       final lib = Library(':memory:');
@@ -204,6 +208,26 @@ void main() {
       expect(lib.getReadingPosition(id), 'loc-2');
       lib.close();
     });
+
+    test('progress travels with the position and clamps', () {
+      final lib = Library(':memory:');
+      final id = lib.addBook(Book(title: 'Half Read'));
+      final unread = lib.getBook(id)!;
+      expect(unread.progress, 0.0);
+
+      lib.setReadingPosition(id, 'epub:4:0.2500', progress: 0.42);
+      expect(lib.getBook(id)!.progress, closeTo(0.42, 1e-9));
+      expect(lib.allBooks().single.progress, closeTo(0.42, 1e-9));
+
+      // Search hydrates progress through the same path.
+      expect(lib.search('half').single.progress, closeTo(0.42, 1e-9));
+
+      lib.setReadingPosition(id, 'epub:9:1.0000', progress: 4.0);
+      expect(lib.getBook(id)!.progress, 1.0);
+      lib.setReadingPosition(id, 'epub:0:0.0000', progress: double.nan);
+      expect(lib.getBook(id)!.progress, 0.0);
+      lib.close();
+    });
   });
 
   group('migration', () {
@@ -240,6 +264,43 @@ CREATE TABLE books (
       // New columns usable after migration.
       lib.setHidden(books.first.id!, true);
       expect(lib.allBooks(), isEmpty);
+      lib.close();
+      tmp.deleteSync(recursive: true);
+    });
+
+    test('adds progress to an old reading_positions table', () {
+      final tmp = Directory.systemTemp.createTempSync('vellum-migrate-pos');
+      final path = '${tmp.path}/library.db';
+      final raw = sqlite3.open(path);
+      raw.execute('''
+CREATE TABLE books (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    sort TEXT NOT NULL DEFAULT '',
+    isbn TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    pubdate TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    cover_path TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    rating REAL NOT NULL DEFAULT 0.0,
+    added TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE reading_positions (
+    book_id INTEGER PRIMARY KEY,
+    locator TEXT NOT NULL,
+    updated TEXT NOT NULL
+);
+INSERT INTO books (title) VALUES ('Resumed Book');
+INSERT INTO reading_positions VALUES (1, 'epub:2:0.4000', 'now');
+''');
+      raw.dispose();
+
+      final lib = Library(path);
+      expect(lib.getBook(1)!.progress, 0.0);
+      lib.setReadingPosition(1, 'epub:3:0.5000', progress: 0.55);
+      expect(lib.getBook(1)!.progress, closeTo(0.55, 1e-9));
       lib.close();
       tmp.deleteSync(recursive: true);
     });

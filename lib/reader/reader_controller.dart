@@ -300,10 +300,12 @@ class ReaderController extends ChangeNotifier {
     return '$prefix${_index + 1} / ${_items.length}';
   }
 
-  /// Fraction read through the book, `(index + 1) / count`.
+  /// Fraction read through the book, including the position inside the
+  /// current section: `(index + scrollFraction) / count`.
   double get progress {
     if (_items.isEmpty) return 0;
-    return (_index + 1) / _items.length;
+    final within = isPdf ? 0.0 : _lastFraction.clamp(0.0, 1.0).toDouble();
+    return ((_index + within) / _items.length).clamp(0.0, 1.0).toDouble();
   }
 
   /// Locator persisted for this book (`<kind>:<index>:<fraction>`).
@@ -676,7 +678,7 @@ class ReaderController extends ChangeNotifier {
     final bookId = book.id;
     if (bookId == null || _items.isEmpty) return;
     try {
-      _library.setReadingPosition(bookId, locator);
+      _library.setReadingPosition(bookId, locator, progress: progress);
     } catch (_) {
       // Position persistence is best-effort.
     }

@@ -139,6 +139,18 @@ void main() {
     expect(find.text('No Results'), findsNothing);
   });
 
+  testWidgets('read progress appears among the facts', (tester) async {
+    final book = seedBook();
+    library.setReadingPosition(book.id!, 'epub:2:0.5000', progress: 0.43);
+    final resumed = library.getBook(book.id!)!;
+
+    await tester.pumpWidget(wrap(resumed));
+    await tester.pump();
+
+    expect(find.text('Progress'), findsOneWidget);
+    expect(find.text('43%'), findsOneWidget);
+  });
+
   testWidgets('Hide Book persists the hidden flag and flips the action',
       (tester) async {
     final book = seedBook();

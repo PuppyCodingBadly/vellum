@@ -169,6 +169,42 @@ class BookCover extends StatelessWidget {
       );
     }
 
+    // Progress rides the bottom edge of the artwork: one thin rule, the track
+    // behind the read fraction. It sits inside the cover's clip so the corners
+    // stay clean and no chrome creeps onto the artwork elsewhere.
+    Widget withProgress(double w, double h) {
+      final value = book.progress.clamp(0.0, 1.0).toDouble();
+      if (value <= 0) return content(w, h);
+      final palette = context.palette;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          content(w, h),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SizedBox(
+              height: 3,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(
+                    color: palette.placeholderInk.withValues(alpha: 0.45),
+                  ),
+                  FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: value,
+                    child: ColoredBox(color: palette.accent),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     if (fill) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(borderRadius),
@@ -180,7 +216,7 @@ class BookCover extends StatelessWidget {
             final h = constraints.maxHeight.isFinite
                 ? constraints.maxHeight
                 : height;
-            return content(w, h);
+            return withProgress(w, h);
           },
         ),
       );
@@ -190,7 +226,7 @@ class BookCover extends StatelessWidget {
       child: SizedBox(
         width: width,
         height: height,
-        child: content(width, height),
+        child: withProgress(width, height),
       ),
     );
   }
@@ -231,10 +267,16 @@ class _BookCardState extends State<BookCard> {
         ? 'Unknown author'
         : book.authors.join(', ');
     final hidden = book.hidden;
+    final percent = (book.progress.clamp(0.0, 1.0) * 100).round();
+    final readState = percent <= 0
+        ? ''
+        : percent >= 100
+            ? ', finished'
+            : ', $percent% read';
 
     return Semantics(
       button: true,
-      label: '$fullTitle, by $authors${hidden ? ', hidden' : ''}',
+      label: '$fullTitle, by $authors$readState${hidden ? ', hidden' : ''}',
       child: FocusableActionDetector(
         onShowFocusHighlight: (value) => setState(() => _focused = value),
         mouseCursor: SystemMouseCursors.click,

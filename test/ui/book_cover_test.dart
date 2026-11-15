@@ -85,4 +85,25 @@ void main() {
     // The placeholder text replaces the failed image inside its errorBuilder.
     expect(find.text('B'), findsOneWidget);
   });
+
+  testWidgets('the progress rule fills to the read fraction', (tester) async {
+    final book = addBook(p.join(tmp.path, 'gone.png')).copyWith(progress: 0.42);
+
+    await tester.pumpWidget(wrap(BookCover(book: book)));
+    await tester.pump();
+
+    final rule = tester.widget<FractionallySizedBox>(
+      find.byType(FractionallySizedBox),
+    );
+    expect(rule.widthFactor, closeTo(0.42, 1e-9));
+  });
+
+  testWidgets('an unread cover carries no progress rule', (tester) async {
+    final book = addBook('');
+
+    await tester.pumpWidget(wrap(BookCover(book: book)));
+    await tester.pump();
+
+    expect(find.byType(FractionallySizedBox), findsNothing);
+  });
 }

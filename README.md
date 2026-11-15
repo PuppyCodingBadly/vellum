@@ -20,6 +20,11 @@ Updates: `flatpak update io.github.vellum.Vellum`.
 
 - Library grid with 2:3 cover tiles, search, and sorting by title, author,
   rating, or recently added
+- Reading progress on every cover: a thin rule along the artwork's bottom edge
+  fills to the fraction read, and the details page states it as a percentage
+- Generated covers in the Calibre sense: the details page renders the title,
+  author, and publisher with the bundled faces in four styles (Paper, Ink,
+  Accent, Cloth) and saves the PNG locally, leaving fetched artwork intact
 - Library metadata search (title, authors, tags, ISBN) plus full-text search
   across book contents, with chapter-level results
 - SQLite catalogue: books, authors, tags, formats, ratings, covers,

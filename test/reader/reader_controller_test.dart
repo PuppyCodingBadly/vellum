@@ -147,6 +147,38 @@ void main() {
     }
   });
 
+  test('scroll position moves the saved progress', () async {
+    final tmp = Directory.systemTemp.createTempSync('vellum-reader-progress');
+    try {
+      final bookFile = File('${tmp.path}/book.epub')
+        ..writeAsBytesSync(base64Decode(_singleChapterEpub()));
+      final library = Library('${tmp.path}/library.db');
+      final id = library.addBook(
+          Book(title: 't', path: bookFile.path, formats: ['epub']));
+      final controller = ReaderController(
+        book: Book(id: id, title: 't', path: bookFile.path, formats: ['epub']),
+        library: library,
+        stats: ReadingStatsTracker(library),
+      );
+      try {
+        await controller.load();
+        expect(controller.progress, 0.0);
+
+        controller.reportScroll(0.5);
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+        expect(controller.progress, closeTo(0.5, 1e-9));
+        expect(library.getBook(id)!.progress, closeTo(0.5, 1e-9));
+        expect(library.getReadingPosition(id), startsWith('epub:0:0.5000'));
+      } finally {
+        controller.dispose();
+        library.close();
+      }
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
   test('PDF page renders through the worker and disposes cleanly', () async {
     final tmp = Directory.systemTemp.createTempSync('vellum-reader-pdf');
     try {

@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/cover_generator.dart';
 import '../core/models.dart';
+import 'cover_generator_dialog.dart';
 import 'metadata_dialog.dart';
 import 'reader_page.dart';
 import 'theme.dart';
@@ -68,10 +71,45 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
     });
   }
 
-  void _openReader() {
-    Navigator.of(
+  Future<void> _openReader() async {
+    await Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => ReaderPage(book: _book)));
+    if (!mounted) return;
+    final app = _appState;
+    final id = _book.id;
+    if (app == null || id == null) return;
+    await app.refresh();
+    final fresh = app.bookById(id);
+    if (fresh != null && mounted) setState(() => _book = fresh);
+  }
+
+  Future<void> _generateCover() async {
+    final app = _appState;
+    final id = _book.id;
+    if (app == null || id == null) return;
+    final png = await showDialog<Uint8List>(
+      context: context,
+      builder: (context) => CoverGeneratorDialog(book: _book),
+    );
+    if (png == null || !mounted) return;
+    try {
+      final path = await writeGeneratedCover(
+        dataDir: app.dataDir,
+        bookId: id,
+        png: png,
+      );
+      final updated = _book.copyWith(coverPath: path);
+      app.library.updateBook(updated);
+      BookCover.invalidate(id);
+      await app.refresh();
+      if (!mounted) return;
+      final fresh = app.bookById(id);
+      setState(() => _book = fresh ?? updated);
+      app.showToast('Cover generated');
+    } catch (error) {
+      app.showToast('Could not generate the cover: $error');
+    }
   }
 
   Future<void> _toggleHidden() async {
@@ -297,6 +335,10 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
                     child: const Text('Fetch Metadata'),
                   ),
             OutlinedButton(
+              onPressed: _generateCover,
+              child: const Text('Generate Cover'),
+            ),
+            OutlinedButton(
               onPressed: _toggleHidden,
               child: Text(_book.hidden ? 'Unhide Book' : 'Hide Book'),
             ),
@@ -308,12 +350,16 @@ class _BookDetailsPageState extends State<BookDetailsPage> {
   }
 
   Widget _facts(VellumPalette palette) {
+    final progress = _book.progress.clamp(0.0, 1.0).toDouble();
+    final percent = (progress * 100).round().clamp(1, 100);
     final rows = <(String, String)>[
       ('Publisher', _book.publisher),
       ('Published', _book.pubdate),
       ('Language', _book.language),
       ('ISBN', _book.isbn),
       ('Format', _book.formats.join(', ').toUpperCase()),
+      if (progress > 0)
+        ('Progress', progress >= 1 ? 'Finished' : '$percent%'),
     ].where((row) => row.$2.isNotEmpty).toList();
     if (rows.isEmpty) return const SizedBox.shrink();
 

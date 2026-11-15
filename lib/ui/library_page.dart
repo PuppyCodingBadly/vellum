@@ -68,12 +68,15 @@ class LibraryPageState extends State<LibraryPage> {
     unawaited(AppState.of(context).setSearchQuery(value));
   }
 
-  void _openBook(Book book) {
-    Navigator.of(context).push(
+  Future<void> _openBook(Book book) async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => BookDetailsPage(book: book),
       ),
     );
+    // The reader saved a new position; pull it back so the cover's progress
+    // rule is current without a manual refresh.
+    if (mounted) await AppState.of(context).refresh();
   }
 
   @override

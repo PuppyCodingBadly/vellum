@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS highlights (
 CREATE TABLE IF NOT EXISTS reading_positions (
     book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
     locator TEXT NOT NULL,
+    progress REAL NOT NULL DEFAULT 0,
     updated TEXT NOT NULL
 );
 ''';
@@ -232,6 +233,14 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     if (!cols.contains('source_id')) {
       _db.execute(
           "ALTER TABLE books ADD COLUMN source_id TEXT NOT NULL DEFAULT ''");
+    }
+    final positionCols = {
+      for (final row in _db.select('PRAGMA table_info(reading_positions)'))
+        row['name'] as String
+    };
+    if (positionCols.isNotEmpty && !positionCols.contains('progress')) {
+      _db.execute(
+          'ALTER TABLE reading_positions ADD COLUMN progress REAL NOT NULL DEFAULT 0');
     }
   }
 
@@ -403,6 +412,7 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     final authors = <int, List<String>>{};
     final tags = <int, List<String>>{};
     final formats = <int, List<String>>{};
+    final progress = <int, double>{};
     // Stay below SQLite's variable limit on every build.
     const chunkSize = 500;
     for (var start = 0; start < ids.length; start += chunkSize) {
@@ -433,6 +443,12 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
         (formats[r['book_id'] as int] ??= <String>[])
             .add(r['format'] as String);
       }
+      for (final r in _db.select(
+          'SELECT book_id, progress FROM reading_positions '
+          'WHERE book_id IN ($placeholders)',
+          chunk)) {
+        progress[r['book_id'] as int] = (r['progress'] as num).toDouble();
+      }
     }
     return [
       for (final row in rows)
@@ -454,6 +470,7 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
           added: row['added'] as String,
           hidden: (row['hidden'] as int) != 0,
           sourceId: row['source_id'] as String,
+          progress: progress[row['id'] as int] ?? 0.0,
         ),
     ];
   }
@@ -579,12 +596,15 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     });
   }
 
-  void setReadingPosition(int bookId, String locator) {
+  void setReadingPosition(int bookId, String locator, {double progress = 0.0}) {
+    final fraction = progress.isFinite
+        ? progress.clamp(0.0, 1.0).toDouble()
+        : 0.0;
     _write(() {
       _db.execute(
-          'INSERT OR REPLACE INTO reading_positions (book_id, locator, updated) '
-          'VALUES (?, ?, ?)',
-          [bookId, locator, _nowIso()]);
+          'INSERT OR REPLACE INTO reading_positions '
+          '(book_id, locator, progress, updated) VALUES (?, ?, ?, ?)',
+          [bookId, locator, fraction, _nowIso()]);
     });
   }
 
