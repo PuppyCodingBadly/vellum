@@ -25,6 +25,16 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-14">
+      <description>
+        <p>Handwriting annotations anchored to the content: ink stays on its
+        text or page through reflow, font-size, theme, and zoom changes.</p>
+        <p>A pen mode with pen/eraser, four inks, three widths, undo and redo;
+        strokes persist per book and chapter.</p>
+        <p>PDFs can export an annotated copy with the handwriting drawn over
+        the original pages.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-14">
       <description>
         <p>A new visual system: warm-paper and ink palettes, bundled
