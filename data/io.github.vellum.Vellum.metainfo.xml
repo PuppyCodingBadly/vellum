@@ -19,11 +19,29 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.vellum.Vellum.desktop</launchable>
+  <url type="homepage">https://github.com/PuppyCodingBadly/vellum</url>
   <developer id="io.github.vellum">
     <name>Vellum contributors</name>
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-14">
+      <description>
+        <p>A new visual system: warm-paper and ink palettes, bundled
+        Newsreader, Instrument Sans, and Literata faces, and a rewritten
+        library, shelf, details, and reader surface. Cover art carries the
+        colour; chrome stays quiet.</p>
+        <p>PDF reflow without OCR: word sprites are cut from PDFium's text
+        layer, tinted for the reader theme, and wrapped to the window while
+        headings, quotations, lists, and charts keep their order.</p>
+        <p>Reading progress on every cover and in the details page, plus
+        generated typographic covers in Paper, Ink, Accent, and Cloth styles.</p>
+        <p>Security and reliability: untrusted EPUB and plugin paths are
+        contained, the Flatpak no longer grants read access to the whole home,
+        cover and download fetches are bounded, full-text state follows the
+        catalogue, and PDF rendering recovers from worker failures.</p>
+      </description>
+    </release>
     <release version="0.2.4" date="2026-10-28">
       <description>
         <p>A test and tooling release. Adds mutation testing for the Dart
