@@ -151,6 +151,47 @@ void main() {
     expect(find.text('43%'), findsOneWidget);
   });
 
+  testWidgets('Generate Cover saves a PNG and points the book at it',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final book = seedBook();
+    await tester.pumpWidget(wrap(book));
+    await tester.pump();
+
+    await tester.tap(find.text('Generate Cover'));
+    await tester.pump();
+    // The preview future renders a PNG off the test clock; the spinner would
+    // never settle until it resolves.
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Use Cover'), findsOneWidget);
+
+    await tester.tap(find.text('Use Cover'));
+    // showDialog's future completes only once the route's reverse transition
+    // finishes, so settle the route before waiting for the file write.
+    await tester.pumpAndSettle();
+    for (var attempt = 0;
+        attempt < 20 && library.getBook(book.id!)!.coverPath.isEmpty;
+        attempt++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    expect(find.text('Use Cover'), findsNothing);
+    final fresh = library.getBook(book.id!)!;
+    expect(fresh.coverPath, contains('/covers/generated-'));
+    expect(File(fresh.coverPath).existsSync(), isTrue);
+    expect(File(fresh.coverPath).lengthSync(), greaterThan(1000));
+  });
+
   testWidgets('Hide Book persists the hidden flag and flips the action',
       (tester) async {
     final book = seedBook();
